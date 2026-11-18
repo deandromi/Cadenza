@@ -57,7 +57,7 @@ final class DesignGalleryController: NSObject, NSApplicationDelegate {
     }
 }
 
-/// The practice screen draft: the keybed along the bottom, note glyphs
+/// The practice screen draft: the keybed along the bottom, musical notes
 /// blooming in the left field while they sound, the control panel as a glass
 /// lens at the right, the wordmark and a menu for future sections on top.
 final class KeyboardBloomDraft: NSView {
@@ -166,16 +166,19 @@ final class StampDot: NSView {
 }
 
 /// Top-right glass pill opening the menu of future sections, shown disabled
-/// until those sections exist.
+/// until those sections exist. The pill's fitting size is the lens' and the
+/// wrapper's, so the lens never collapses.
 final class MenuLens: NSView {
     private let menuButton = NSButton(title: "Menu", target: nil, action: nil)
+    private let pill: NSStackView
+    private let lens: NSGlassEffectView
 
     init() {
         menuButton.isBordered = false
         menuButton.font = .systemFont(ofSize: 13, weight: .medium)
         menuButton.contentTintColor = PaperTheme.ink
-        let pill = padForLens(menuButton, horizontal: 18, vertical: 12)
-        let lens = makeLens(style: .regular, interactive: true, cornerRadius: 20, contentView: pill)
+        pill = padForLens(menuButton, horizontal: 18, vertical: 12)
+        lens = makeLens(style: .regular, interactive: true, cornerRadius: 20, contentView: pill)
 
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
@@ -194,6 +197,10 @@ final class MenuLens: NSView {
         fatalError("init(coder:) is not supported")
     }
 
+    override var intrinsicContentSize: NSSize {
+        pill.fittingSize
+    }
+
     @objc private func openMenu() {
         let menu = NSMenu()
         for title in ["Sheet music", "Sessions", "MIDI routing", "Settings"] {
@@ -209,6 +216,7 @@ final class MenuLens: NSView {
 /// breathing level line, and the transport, gathered in one glass lens.
 final class ControlPanelLens: NSView {
     private let clock: DesignSessionClock
+    private let rows = NSStackView()
     private let timeLabel = makeInkLabel(
         "0:47",
         font: .monospacedDigitSystemFont(ofSize: 19, weight: .regular),
@@ -255,7 +263,6 @@ final class ControlPanelLens: NSView {
         buttons.orientation = .horizontal
         buttons.spacing = 20
 
-        let rows = NSStackView()
         rows.orientation = .vertical
         rows.alignment = .leading
         rows.spacing = 11
@@ -288,6 +295,12 @@ final class ControlPanelLens: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    /// The panel lives by its content: without an intrinsic size the lens
+    /// has no source of measure and collapses to nothing.
+    override var intrinsicContentSize: NSSize {
+        rows.fittingSize
     }
 
     func setSession(time: String, chord: String, notes: String, level: Double, sounding: Bool) {
@@ -414,24 +427,72 @@ final class KeybedView: NSView {
     }
 }
 
-/// Where playing becomes visible: one serif glyph per sounding pitch, fading
-/// up out of the paper while the note holds, then dissolving as it drifts
-/// toward the keys. Bass left, treble right, mirroring the keybed.
+/// One blooming musical note: the system music-note symbol rendered large,
+/// tinted stamp while it sounds and warm ink once released, resting on a
+/// whisper of shadow.
+final class NoteGlyphView: NSView {
+    enum Phase {
+        case sounding
+        case released
+    }
+
+    private static let symbol = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Note")
+
+    init(height: CGFloat, rotation: CGFloat) {
+        let configured = Self.symbol?.withSymbolConfiguration(
+            NSImage.SymbolConfiguration(pointSize: height, weight: .regular)
+        )
+        let size = configured?.size ?? NSSize(width: height * 0.75, height: height)
+        let aspect = size.width / max(size.height, 1)
+        super.init(frame: NSRect(x: 0, y: 0, width: height * aspect, height: height))
+        frameRotation = rotation
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    var phase: Phase = .sounding {
+        didSet { needsDisplay = true }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let base = Self.symbol else { return }
+        NSGraphicsContext.current?.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.10)
+        shadow.shadowBlurRadius = 5
+        shadow.shadowOffset = NSSize(width: 0, height: -2)
+        shadow.set()
+        let ink: NSColor = phase == .sounding ? PaperTheme.stamp : PaperTheme.ink
+        let image = base.withSymbolConfiguration(
+            NSImage.SymbolConfiguration(paletteColors: [ink])
+        ) ?? base
+        image.draw(in: bounds)
+        NSGraphicsContext.current?.restoreGraphicsState()
+    }
+}
+
+/// Where playing becomes visible: one large musical note per sounding pitch,
+/// falling into the field in a soft cascade, drifting up gently while the
+/// chord holds, then dissolving out of the paper. Bass left, treble right,
+/// mirroring the keybed, sizes and tilts varied so the field breathes.
 final class NoteBloomView: NSView {
     private struct Petal {
-        let label: NSTextField
+        let glyph: NoteGlyphView
         let x: CGFloat
         let yBase: CGFloat
         let spawnAt: Double
         var releaseAt: Double?
     }
 
-    private static let maxPetals = 44
+    private static let maxPetals = 30
     private static let tickInterval = 1.0 / 30.0
     private static let appearOver = 0.7
-    private static let fadeOver = 2.2
-    private static let riseWhileHeld = 15.0
-    private static let riseAfterRelease = 14.0
+    private static let fadeOver = 2.6
+    private static let cascadeStep = 0.09
+    private static let riseWhileHeld = 9.0
+    private static let riseAfterRelease = 11.0
 
     private var petals: [Petal] = []
     private var timer: Timer?
@@ -446,37 +507,35 @@ final class NoteBloomView: NSView {
         fatalError("init(coder:) is not supported")
     }
 
-    /// Spawns one glyph per pitch of a freshly struck chord.
+    /// Spawns one note per pitch of a freshly struck chord, cascading.
     func strike(pitches: [Int]) {
         startTimerIfNeeded()
-        for pitch in pitches {
-            let label = makeInkLabel(
-                noteName(pitch),
-                font: PaperTheme.displaySerif(26),
-                color: PaperTheme.stamp
+        for (offset, pitch) in pitches.enumerated() {
+            let glyph = NoteGlyphView(
+                height: Self.glyphHeight(pitch, in: bounds.height),
+                rotation: Self.rotation(pitch)
             )
-            label.sizeToFit()
-            label.alphaValue = 0
-            addSubview(label)
+            glyph.alphaValue = 0
+            addSubview(glyph)
             petals.append(Petal(
-                label: label,
+                glyph: glyph,
                 x: Self.glyphX(pitch, in: bounds.width),
                 yBase: Self.glyphY(pitch, in: bounds.height),
-                spawnAt: elapsed,
+                spawnAt: elapsed + Double(offset) * Self.cascadeStep,
                 releaseAt: nil
             ))
         }
         while petals.count > Self.maxPetals {
-            petals.removeFirst().label.removeFromSuperview()
+            petals.removeFirst().glyph.removeFromSuperview()
         }
         tick()
     }
 
-    /// Releases every blooming glyph: back to ink, then into the fade.
+    /// Releases every blooming note: back to ink, then into the fade.
     func releaseAll() {
         for index in petals.indices where petals[index].releaseAt == nil {
             petals[index].releaseAt = elapsed
-            petals[index].label.textColor = PaperTheme.ink
+            petals[index].glyph.phase = .released
         }
     }
 
@@ -492,7 +551,7 @@ final class NoteBloomView: NSView {
         var expired: [Int] = []
         for (index, petal) in petals.enumerated() {
             let age = elapsed - petal.spawnAt
-            let appear = Self.smoothstep(min(1, age / Self.appearOver))
+            let appear = Self.smoothstep(min(1, max(0, age / Self.appearOver)))
             let fade: Double
             if let releaseAt = petal.releaseAt {
                 fade = 1 - min(1, (elapsed - releaseAt) / Self.fadeOver)
@@ -502,17 +561,17 @@ final class NoteBloomView: NSView {
             let driftAfterRelease = petal.releaseAt.map {
                 Self.riseAfterRelease * (elapsed - $0)
             } ?? 0
-            let rise = Self.riseWhileHeld * age + driftAfterRelease
+            let rise = Self.riseWhileHeld * max(0, age) + driftAfterRelease
 
-            petal.label.alphaValue = CGFloat(0.92 * appear * fade)
-            petal.label.setFrameOrigin(NSPoint(
-                x: petal.x - petal.label.bounds.width / 2,
-                y: petal.yBase + CGFloat(rise) - petal.label.bounds.height / 2
+            petal.glyph.alphaValue = CGFloat(0.95 * appear * fade)
+            petal.glyph.setFrameOrigin(NSPoint(
+                x: petal.x - petal.glyph.bounds.width / 2,
+                y: petal.yBase + CGFloat(rise)
             ))
             if fade <= 0 { expired.append(index) }
         }
         for index in expired.reversed() {
-            petals.remove(at: index).label.removeFromSuperview()
+            petals.remove(at: index).glyph.removeFromSuperview()
         }
     }
 
@@ -520,18 +579,26 @@ final class NoteBloomView: NSView {
         p * p * (3 - 2 * p)
     }
 
-    /// Pitch mirrored across the field the way the keybed lays it out.
+    /// Notes run from a fifth to close to half the field, by pitch.
+    private static func glyphHeight(_ pitch: Int, in height: CGFloat) -> CGFloat {
+        let variance = Double((pitch * 13) % 7) * 0.027
+        return CGFloat(Double(height) * (0.22 + variance))
+    }
+
+    /// Pitch mirrored across the field the way the keybed lays it out, using
+    /// nearly the full width.
     private static func glyphX(_ pitch: Int, in width: CGFloat) -> CGFloat {
-        let margin = 60.0
-        let usable = Double(width) - 2 * margin
         let fraction = Double(pitch - PianoRange.firstPitch)
             / Double(PianoRange.lastPitch - PianoRange.firstPitch)
-        let jitter = Double((pitch * 53) % 29 - 14)
-        return CGFloat(margin + usable * fraction + jitter)
+        return CGFloat(Double(width) * (0.08 + 0.84 * fraction))
     }
 
     private static func glyphY(_ pitch: Int, in height: CGFloat) -> CGFloat {
-        let jitter = Double((pitch * 31) % 50)
-        return CGFloat(Double(height) * 0.18 + jitter)
+        let spread = Double((pitch * 31) % 100) / 100
+        return CGFloat(Double(height) * (0.08 + 0.24 * spread))
+    }
+
+    private static func rotation(_ pitch: Int) -> CGFloat {
+        CGFloat((pitch * 29) % 13 - 6)
     }
 }
