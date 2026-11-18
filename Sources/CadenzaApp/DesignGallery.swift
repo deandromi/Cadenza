@@ -502,7 +502,23 @@ final class ControlPanelLens: NSView {
 /// top the way a real piano wears it.
 final class KeybedView: NSView {
     private static let naturals = 52
-    private static let feltHeight: CGFloat = 5
+
+    /// the dark bed the keys sit in; it shows through every seam
+    private static let keybed = NSColor(name: "cadenzaKeybed") { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(calibratedWhite: 0.04, alpha: 1.0)
+            : NSColor(calibratedRed: 0.129, green: 0.122, blue: 0.114, alpha: 1.0)
+    }
+
+    /// where each sharp really sits relative to its boundary, in fractions
+    /// of a natural's width, the way a piano's action is actually laid out
+    private static let accidentalOffsets: [Int: CGFloat] = [
+        1: -0.09,
+        3: 0.09,
+        6: -0.11,
+        8: 0.0,
+        10: 0.11,
+    ]
 
     private static let ivory = NSColor(name: "cadenzaKeyIvory") { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
@@ -538,10 +554,11 @@ final class KeybedView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let naturalWidth = bounds.width / CGFloat(Self.naturals)
+        Self.keybed.setFill()
+        bounds.fill()
         drawNaturals(width: naturalWidth)
-        drawSeparators(width: naturalWidth)
         drawAccidentals(width: naturalWidth)
-        drawFelt()
+        drawFallboardShadow()
     }
 
     /// A key front: rounded at the player's edge, square at the fallboard.
@@ -567,39 +584,36 @@ final class KeybedView: NSView {
 
     private func drawNaturals(width: CGFloat) {
         let keyHeight = bounds.height
+        // the seam: dark bed showing between ivory blocks
+        let seam: CGFloat = 0.8
         var index = 0
         for pitch in PianoRange.firstPitch...PianoRange.lastPitch where Self.isNatural(pitch) {
-            let rect = NSRect(x: CGFloat(index) * width, y: 0, width: width, height: keyHeight)
+            let rect = NSRect(
+                x: CGFloat(index) * width + seam,
+                y: 0,
+                width: width - seam * 2,
+                height: keyHeight
+            )
             let key = keyFront(rect, radius: 2.5)
             Self.ivory.setFill()
             key.fill()
             if soundingPitches.contains(pitch) {
-                PaperTheme.stamp.withAlphaComponent(0.16).setFill()
+                PaperTheme.stamp.withAlphaComponent(0.14).setFill()
                 key.fill()
             }
-            // the front falls away from the light: shaded lip, darker foot
-            let band = NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: 7)
+            // the front face dips out of the light: shade washing up from
+            // the foot, breaking at a crisp seam line
+            let lip = NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: 9)
             if let gradient = NSGradient(colors: [
-                Self.ivoryShade.withAlphaComponent(0.0),
                 Self.ivoryShade,
+                Self.ivoryShade.withAlphaComponent(0.0),
             ]) {
-                gradient.draw(in: band, angle: 90)
+                gradient.draw(in: lip, angle: 90)
             }
+            Self.ivoryShade.withAlphaComponent(0.55).setFill()
+            NSRect(x: rect.minX, y: lip.maxY, width: rect.width, height: 1).fill()
             index += 1
         }
-    }
-
-    private func drawSeparators(width: CGFloat) {
-        PaperTheme.hairline.withAlphaComponent(0.45).setStroke()
-        let path = NSBezierPath()
-        path.lineWidth = 1
-        for index in 1...Self.naturals - 1 {
-            let x = CGFloat(index) * width
-            // the seam runs from the felt down to the rounded front
-            path.move(to: NSPoint(x: x, y: 3))
-            path.line(to: NSPoint(x: x, y: bounds.height))
-        }
-        path.stroke()
     }
 
     private func drawAccidentals(width: CGFloat) {
@@ -611,45 +625,63 @@ final class KeybedView: NSView {
                 naturalsPassed += 1
                 continue
             }
-            // each accidental rides the boundary its natural just left
-            let center = CGFloat(naturalsPassed) * width
+            // the sharp leans the way a real action does, never dead-center
+            let drift = Self.accidentalOffsets[pitch % 12] ?? 0
+            let center = CGFloat(naturalsPassed) * width + drift * width
             let rect = NSRect(
                 x: center - accidentalWidth / 2,
                 y: bounds.height - accidentalHeight,
                 width: accidentalWidth,
                 height: accidentalHeight
             )
-            let key = keyFront(rect, radius: 1.5)
-            // the key leans over the naturals: a soft cast shadow first
+            let key = keyFront(rect, radius: 2)
+            // the sharp leans over the naturals: a heavy cast shadow first
             NSGraphicsContext.current?.saveGraphicsState()
             let shadow = NSShadow()
-            shadow.shadowColor = NSColor.black.withAlphaComponent(0.22)
-            shadow.shadowBlurRadius = 2
-            shadow.shadowOffset = NSSize(width: 0, height: -1)
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.30)
+            shadow.shadowBlurRadius = 3
+            shadow.shadowOffset = NSSize(width: 0, height: -1.5)
             shadow.set()
             Self.ebony.setFill()
             key.fill()
             NSGraphicsContext.current?.restoreGraphicsState()
             if soundingPitches.contains(pitch) {
-                PaperTheme.stamp.withAlphaComponent(0.85).setFill()
+                PaperTheme.stamp.withAlphaComponent(0.88).setFill()
                 key.fill()
             }
-            // light catches the left ridge of every sharp
-            NSColor.white.withAlphaComponent(0.18).setFill()
-            NSRect(x: rect.minX + 0.75, y: rect.minY + 1.5, width: 1, height: rect.height - 3).fill()
-            PaperTheme.hairline.withAlphaComponent(0.35).setStroke()
+            // lacquer: one vertical gloss ridge where the light rolls off
+            if let gloss = NSGradient(colors: [
+                NSColor.white.withAlphaComponent(0.30),
+                NSColor.white.withAlphaComponent(0.04),
+            ]) {
+                gloss.draw(
+                    in: NSRect(
+                        x: rect.minX + 1.2,
+                        y: rect.minY + 2,
+                        width: 1.8,
+                        height: rect.height - 4
+                    ),
+                    angle: -90
+                )
+            }
+            PaperTheme.hairline.withAlphaComponent(0.30).setStroke()
             key.lineWidth = 1
             key.stroke()
         }
     }
 
-    /// The red felt strip across the top of the keys.
-    private func drawFelt() {
-        let felt = NSRect(x: 0, y: bounds.height - Self.feltHeight, width: bounds.width, height: Self.feltHeight)
-        PaperTheme.stamp.withAlphaComponent(0.5).setFill()
-        felt.fill()
-        NSColor(calibratedWhite: 0, alpha: 0.08).setFill()
-        NSRect(x: felt.minX, y: felt.minY - 2, width: felt.width, height: 2).fill()
+    /// The case above the keys: no felt, only the shadow the fallboard casts
+    /// across the top of the bed.
+    private func drawFallboardShadow() {
+        if let shadow = NSGradient(colors: [
+            NSColor.black.withAlphaComponent(0.18),
+            NSColor.black.withAlphaComponent(0.0),
+        ]) {
+            shadow.draw(
+                in: NSRect(x: 0, y: bounds.height - 6, width: bounds.width, height: 6),
+                angle: -90
+            )
+        }
     }
 
     private static func isNatural(_ pitch: Int) -> Bool {
