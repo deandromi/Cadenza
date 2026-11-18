@@ -24,7 +24,7 @@ import moduleconf
 from transkun.Util import makeFrame
 
 REPO = Path(__file__).resolve().parent.parent
-SEGMENTS_T = 174   # frames for one 4 s segment; streaming export retunes this
+SEGMENTS_T = 691   # frames in one 16 s segment at hop 1024 / 44100 Hz (matches make_goldens)
 
 
 def load_model() -> torch.nn.Module:
@@ -170,17 +170,15 @@ def main() -> None:
     # ---- golden data through the eager model ----
     patch_scorer(model)
     warmed = freeze_position_embeddings(model)
-    frames_gold = np.load(REPO / "Fixtures" / "golden" / "frames_probe.npy")
-    features = model.framewiseFeatureExtractor(torch.from_numpy(frames_gold))
+    mel_flat = np.fromfile(REPO / "Fixtures" / "golden" / "mel_gold.f32", dtype=np.float32)
+    features_fixed = torch.from_numpy(mel_flat).reshape(1, SEGMENTS_T, 229, 6).contiguous()
     with torch.no_grad():
         wrapper = BackboneExport(model).eval()
-        S_gold, S_skip_gold, ctx_gold = wrapper(features)
-    np.save(REPO / "Fixtures" / "golden" / "mel_gold.npy", features.detach().numpy())
-    print("mel gold:", tuple(features.shape))
+        S_gold, S_skip_gold, ctx_gold = wrapper(features_fixed)
+    print("mel gold:", tuple(features_fixed.shape))
 
     # ---- trace and convert ----
     bake_position_embeddings(warmed)
-    features_fixed = features.reshape(1, SEGMENTS_T, 229, 6).contiguous()
     traced = torch.jit.trace(wrapper, features_fixed, check_trace=False)
     traced_code = traced.code
     assert "meshgrid" not in traced_code, "traced graph still contains meshgrid"

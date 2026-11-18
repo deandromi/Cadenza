@@ -8,3 +8,6 @@ xcuserdata/
 third_party/transkun/transkun/pretrained/*.pt
 .venv/
 AGENTS.md
+build/
+Fixtures/golden/*.f32
+Fixtures/golden/*.npy
