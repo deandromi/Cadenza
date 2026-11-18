@@ -1,0 +1,181 @@
+[
+  {
+    "name": "windows",
+    "file": "windows.f32",
+    "shape": [
+      6,
+      4096
+    ]
+  },
+  {
+    "name": "freq2mels",
+    "file": "freq2mels.f32",
+    "shape": [
+      2049,
+      229
+    ]
+  },
+  {
+    "name": "velocity_w0",
+    "file": "velocity_w0.f32",
+    "shape": [
+      512,
+      768
+    ]
+  },
+  {
+    "name": "velocity_b0",
+    "file": "velocity_b0.f32",
+    "shape": [
+      512
+    ]
+  },
+  {
+    "name": "velocity_w1",
+    "file": "velocity_w1.f32",
+    "shape": [
+      128,
+      512
+    ]
+  },
+  {
+    "name": "velocity_b1",
+    "file": "velocity_b1.f32",
+    "shape": [
+      128
+    ]
+  },
+  {
+    "name": "refinedOF_w0",
+    "file": "refinedOF_w0.f32",
+    "shape": [
+      512,
+      768
+    ]
+  },
+  {
+    "name": "refinedOF_b0",
+    "file": "refinedOF_b0.f32",
+    "shape": [
+      512
+    ]
+  },
+  {
+    "name": "refinedOF_w1",
+    "file": "refinedOF_w1.f32",
+    "shape": [
+      4,
+      512
+    ]
+  },
+  {
+    "name": "refinedOF_b1",
+    "file": "refinedOF_b1.f32",
+    "shape": [
+      4
+    ]
+  },
+  {
+    "name": "symbols",
+    "value": [
+      -64,
+      -67,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      71,
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78,
+      79,
+      80,
+      81,
+      82,
+      83,
+      84,
+      85,
+      86,
+      87,
+      88,
+      89,
+      90,
+      91,
+      92,
+      93,
+      94,
+      95,
+      96,
+      97,
+      98,
+      99,
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108
+    ],
+    "note": "symbol k drives output channel k of S; negative = sentinel (pedal-like)"
+  },
+  {
+    "name": "mel_front_end",
+    "frames": "[B,1,T,4096] -> normalize over window (mean/std, eps 1e-8) -> per window c in 0..5: rfft(win_c * frame, norm ortho) -> |X|^2 (2049 bins) -> mel[t] = |X|^2 @ freq2mels -> stack channels last -> [T, 229, 6]; log: ((m + 1e-5).ln() - ln(1e-5)) / (-ln(1e-5))",
+    "rfft_ortho": "X[k] = (1/sqrt(4096)) * sum_n x[n] exp(-2*pi*i*k*n/4096 ambivalent sign convention), k = 0..2048; verify against Fixtures/golden",
+    "continuous_bernoulli_mean": "p = sigmoid(logits); p<=0.499 or p>0.501: p/(2p-1) + 1/(log1p(-p) - log(p)); else taylor 0.5 + (1/3 + 16/45 x^2) x with x = p-0.5",
+    "offset_refine": "ofValue = clamp((cbMean - 0.5)/0.99, -0.5, 0.5) applied to outputs 0..1; outputs 2..3 > 0 means presence"
+  }
+]

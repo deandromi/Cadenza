@@ -11,6 +11,7 @@ the traced wrapper is compared op-for-op on the golden mel features, and
 after conversion the CoreML model output is compared on CPU.
 """
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -43,6 +44,35 @@ def load_model() -> torch.nn.Module:
     return model
 
 
+def patch_scorer(model: torch.nn.Module) -> None:
+    """Replace the shipped scorer forward with a converter-friendly one:
+    matmul instead of einsum, identity-broadcast instead of diag_embed.
+    Mathematically identical."""
+    scorer = model.scorer
+    size, expansion = scorer.size, scorer.expansionFactor
+
+    def patched_scorer(ctx):
+        q, k, diag = scorer.map(ctx).split(
+            [size * expansion, size * expansion, 1], dim=-1)
+        q = q / math.sqrt(q.shape[-1])
+        S = torch.matmul(q, k.transpose(-1, -2))          # [i, p, e, b]
+        idx_e = torch.arange(S.shape[-2], device=S.device)
+        idx_b = torch.arange(S.shape[-1], device=S.device)
+        len_eb = (idx_e.unsqueeze(-1) - idx_b.unsqueeze(0)).abs()
+        S = S * len_eb.float()                            # linear length scaling
+        eye = torch.eye(S.shape[-1], device=S.device, dtype=S.dtype)
+        diagM = diag.squeeze(-1).unsqueeze(-2) * eye      # diagonal add
+        S = S + diagM
+        b = diag * 0.0
+        b = b[..., 1:, 0]                                  # [i, p, T-1]
+        S = S.permute(2, 3, 0, 1).contiguous()             # [e, b, i, p]
+        b = b.permute(2, 0, 1).contiguous()
+        scorer.patched_shapes = (tuple(S.shape), tuple(b.shape))
+        return S, b
+
+    scorer.forward = patched_scorer
+
+
 class BackboneExport(torch.nn.Module):
     """mel features -> interval scores + context. Decode stays in Swift."""
 
@@ -62,27 +92,39 @@ class BackboneExport(torch.nn.Module):
         return S, S_skip, ctx
 
 
-def freeze_position_embeddings(model: torch.nn.Module) -> None:
-    """Replace the meshgrid-based position embeddings with cached tensors so
-    no meshgrid op reaches the CoreML graph (converter cannot handle it).
-    Builders keep their learned weights; only the op is bypassed."""
+def freeze_position_embeddings(model: torch.nn.Module) -> dict:
+    """Phase 1: route position-embedding builders through a shape-keyed cache.
+    The eager gold computation warms it; tracing must then hit the cache."""
     backbone = model.backbone
+    warmed: dict = {}
     for name in ("posEmbedBuilder", "posEmbedBuilderAttnTF", "posEmbedBuilderAttnTE"):
         builder = getattr(backbone, name)
         original = builder.forward
         cache: dict = {}
 
-        def patched(*coords, _orig=original, _cache=cache, _name=name):
+        def warm_patched(*coords, _orig=original, _cache=cache):
             key = tuple(c.shape for c in coords)
             if key not in _cache:
-                print(f"[cache miss] {name} shapes {[tuple(c.shape) for c in coords]}")
                 with torch.no_grad():
                     _cache[key] = _orig(*coords)
             return _cache[key]
 
-        builder.forward = patched
-        print(f"[patched] {name}")
+        builder.forward = warm_patched
+        warmed[name] = (builder, cache)
+    print("[phase 1] builders route through cache")
+    return warmed
 
+
+def bake_position_embeddings(warmed: dict) -> None:
+    """Phase 2: replace each builder's forward with a lambda returning the
+    single warmed tensor. Tracing then records it as a graph constant and no
+    meshgrid/proj ops are reachable."""
+    for name, (builder, cache) in warmed.items():
+        if len(cache) != 1:
+            raise AssertionError(f"{name} saw {len(cache)} distinct coord shapes: {list(cache)}; cannot bake")
+        tensor = next(iter(cache.values()))
+        builder.forward = (lambda t: (lambda *a, **k: t))(tensor)
+        print(f"[phase 2] baked {name} shape {tuple(tensor.shape)}")
 
 def save_f32(path: Path, array: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,7 +168,8 @@ def main() -> None:
     })
 
     # ---- golden data through the eager model ----
-    freeze_position_embeddings(model)
+    patch_scorer(model)
+    warmed = freeze_position_embeddings(model)
     frames_gold = np.load(REPO / "Fixtures" / "golden" / "frames_probe.npy")
     features = model.framewiseFeatureExtractor(torch.from_numpy(frames_gold))
     with torch.no_grad():
@@ -136,8 +179,12 @@ def main() -> None:
     print("mel gold:", tuple(features.shape))
 
     # ---- trace and convert ----
+    bake_position_embeddings(warmed)
     features_fixed = features.reshape(1, SEGMENTS_T, 229, 6).contiguous()
     traced = torch.jit.trace(wrapper, features_fixed, check_trace=False)
+    traced_code = traced.code
+    assert "meshgrid" not in traced_code, "traced graph still contains meshgrid"
+    print("traced graph is meshgrid-free")
     with torch.no_grad():
         S_t, S_skip_t, ctx_t = traced(features_fixed)
     print("traced shapes:", tuple(S_t.shape), tuple(S_skip_t.shape), tuple(ctx_t.shape))
@@ -173,12 +220,11 @@ def main() -> None:
     mlmodel.save(str(out_path))
     print("saved", out_path)
 
-    S_ml, S_skip_ml, ctx_ml = [
-        np.asarray(o) for o in mlmodel.predict({"mel": features_fixed.numpy()}).values()
-    ]
-    for name, mine, gold in (("S", S_ml, S_gold), ("S_skip", S_skip_ml, S_skip_gold), ("ctx", ctx_ml, ctx_gold)):
-        d = np.abs(np.asarray(mine) - np.asarray(gold)).max()
-        print(f"coreml vs eager {name}: shape {np.asarray(mine).shape} vs {np.asarray(gold).shape}, max |diff| {d:.3e}")
+    pred = mlmodel.predict({"mel": features_fixed.detach().numpy()})
+    for name, gold in (("S", S_gold), ("S_skip", S_skip_gold), ("ctx", ctx_gold)):
+        mine = np.asarray(pred[name])
+        d = np.abs(mine - np.asarray(gold)).max()
+        print(f"coreml vs eager {name}: shape {mine.shape} vs {np.asarray(gold).shape}, max |diff| {d:.3e}")
 
     manifest_path = tensors_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
