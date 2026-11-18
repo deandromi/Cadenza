@@ -20,17 +20,16 @@ project.yml             XcodeGen spec — the .xcodeproj is generated, never com
 ## Building
 
 ```bash
-swift build                  # all targets, works with Command Line Tools
+swift build                  # all targets
 swift run CadenzaCoreChecks  # assertion checks for CadenzaCore
-xcodegen generate            # regenerate Cadenza.xcodeproj (see note below)
+xcodegen generate            # regenerate Cadenza.xcodeproj
 ```
 
-A full Xcode install is not required to build or run from the CLI; the generated
-project is for optional GUI work. It currently cannot be built anywhere on this
-machine because Xcode is not installed.
+A full Xcode install is not required: `swift build` and the checks work with the
+Command Line Tools alone. The generated Cadenza.xcodeproj exists for optional
+GUI-side work in Xcode (schemes, Instruments, code signing).
 
 ## Committing
 
 Generated files (`*.xcodeproj`, `.build/`, `DerivedData/`) are gitignored. Commit
 `project.yml` and sources only.
->>>>>>> de8225b (README: keep upstream title line + quick description)
