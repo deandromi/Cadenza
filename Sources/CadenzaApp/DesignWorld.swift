@@ -107,9 +107,15 @@ final class HairlineView: NSView {
 }
 
 /// The thin level line for session meta, ink at rest, stamp while a chord
-/// is sounding, breathing with the simulated room level.
+/// is sounding. The level chases its target at display cadence, so the bar
+/// flows instead of stepping from update to update.
 final class LevelLineView: NSView {
-    var fraction: Double = 0
+    /// where the level should settle, set by the session
+    private var target: Double = 0
+    /// the level currently drawn, easing toward the target
+    private var fraction: Double = 0
+    private var timer: Timer?
+
     var sounding = false {
         didSet {
             needsDisplay = true
@@ -129,6 +135,32 @@ final class LevelLineView: NSView {
         NSSize(width: NSView.noIntrinsicMetric, height: 3.0)
     }
 
+    /// Set where the level should go; the bar glides there.
+    func setFractionTarget(_ value: Double) {
+        target = value
+        startTimerIfNeeded()
+    }
+
+    private func startTimerIfNeeded() {
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.ease() }
+        }
+    }
+
+    /// easing per frame at 60 fps: the bar settles in roughly 150 ms
+    private static let easing: Double = 0.12
+
+    private func ease() {
+        fraction += (target - fraction) * Self.easing
+        if abs(target - fraction) < 0.002 {
+            fraction = target
+            timer?.invalidate()
+            timer = nil
+        }
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         (sounding ? PaperTheme.stamp : PaperTheme.ink).withAlphaComponent(0.25).setFill()
         bounds.fill()
@@ -136,7 +168,7 @@ final class LevelLineView: NSView {
         NSBezierPath.fill(NSRect(
             x: 0,
             y: 0,
-            width: bounds.width * fraction,
+            width: bounds.width * CGFloat(fraction),
             height: bounds.height
         ))
     }

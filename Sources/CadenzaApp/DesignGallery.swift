@@ -482,7 +482,7 @@ final class ControlPanelLens: NSView {
         chordLabel.stringValue = chord
         chordLabel.textColor = sounding ? PaperTheme.stamp : PaperTheme.secondaryInk
         countLabel.stringValue = notes
-        levelLine.fraction = level
+        levelLine.setFractionTarget(level)
         levelLine.sounding = sounding
     }
 
@@ -544,38 +544,66 @@ final class KeybedView: NSView {
         drawFelt()
     }
 
+    /// A key front: rounded at the player's edge, square at the fallboard.
+    private func keyFront(_ rect: NSRect, radius: CGFloat) -> NSBezierPath {
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: rect.minX, y: rect.maxY))
+        path.line(to: NSPoint(x: rect.minX, y: rect.minY + radius))
+        path.appendArc(
+            from: NSPoint(x: rect.minX, y: rect.minY),
+            to: NSPoint(x: rect.minX + radius, y: rect.minY),
+            radius: radius
+        )
+        path.line(to: NSPoint(x: rect.maxX - radius, y: rect.minY))
+        path.appendArc(
+            from: NSPoint(x: rect.maxX, y: rect.minY),
+            to: NSPoint(x: rect.maxX, y: rect.minY + radius),
+            radius: radius
+        )
+        path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
+        path.close()
+        return path
+    }
+
     private func drawNaturals(width: CGFloat) {
         let keyHeight = bounds.height
         var index = 0
         for pitch in PianoRange.firstPitch...PianoRange.lastPitch where Self.isNatural(pitch) {
             let rect = NSRect(x: CGFloat(index) * width, y: 0, width: width, height: keyHeight)
+            let key = keyFront(rect, radius: 2.5)
             Self.ivory.setFill()
-            rect.fill()
+            key.fill()
             if soundingPitches.contains(pitch) {
                 PaperTheme.stamp.withAlphaComponent(0.16).setFill()
-                rect.fill()
+                key.fill()
             }
-            // key bevel: a shaded foot gives each key depth
-            Self.ivoryShade.setFill()
-            NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: 3).fill()
+            // the front falls away from the light: shaded lip, darker foot
+            let band = NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: 7)
+            if let gradient = NSGradient(colors: [
+                Self.ivoryShade.withAlphaComponent(0.0),
+                Self.ivoryShade,
+            ]) {
+                gradient.draw(in: band, angle: 90)
+            }
             index += 1
         }
     }
 
     private func drawSeparators(width: CGFloat) {
-        PaperTheme.hairline.withAlphaComponent(0.6).setStroke()
+        PaperTheme.hairline.withAlphaComponent(0.45).setStroke()
         let path = NSBezierPath()
         path.lineWidth = 1
         for index in 1...Self.naturals - 1 {
             let x = CGFloat(index) * width
-            path.move(to: NSPoint(x: x, y: 0))
+            // the seam runs from the felt down to the rounded front
+            path.move(to: NSPoint(x: x, y: 3))
             path.line(to: NSPoint(x: x, y: bounds.height))
         }
         path.stroke()
     }
 
     private func drawAccidentals(width: CGFloat) {
-        let accidentalWidth = width * 0.58
+        let accidentalWidth = width * 0.55
         let accidentalHeight = bounds.height * 0.62
         var naturalsPassed = 0
         for pitch in PianoRange.firstPitch...PianoRange.lastPitch {
@@ -591,14 +619,27 @@ final class KeybedView: NSView {
                 width: accidentalWidth,
                 height: accidentalHeight
             )
+            let key = keyFront(rect, radius: 1.5)
+            // the key leans over the naturals: a soft cast shadow first
+            NSGraphicsContext.current?.saveGraphicsState()
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.22)
+            shadow.shadowBlurRadius = 2
+            shadow.shadowOffset = NSSize(width: 0, height: -1)
+            shadow.set()
             Self.ebony.setFill()
-            rect.fill()
+            key.fill()
+            NSGraphicsContext.current?.restoreGraphicsState()
             if soundingPitches.contains(pitch) {
                 PaperTheme.stamp.withAlphaComponent(0.85).setFill()
-                rect.fill()
+                key.fill()
             }
-            PaperTheme.hairline.withAlphaComponent(0.4).setStroke()
-            NSBezierPath(rect: rect).stroke()
+            // light catches the left ridge of every sharp
+            NSColor.white.withAlphaComponent(0.18).setFill()
+            NSRect(x: rect.minX + 0.75, y: rect.minY + 1.5, width: 1, height: rect.height - 3).fill()
+            PaperTheme.hairline.withAlphaComponent(0.35).setStroke()
+            key.lineWidth = 1
+            key.stroke()
         }
     }
 
