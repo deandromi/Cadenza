@@ -8,8 +8,13 @@ import AppKit
 final class DesignGalleryController: NSObject, NSApplicationDelegate {
     private let clock = DesignSessionClock()
     private var draftHandlers: [(DesignSessionClock.Moment) -> Void] = []
+    /// draft windows must be strongly retained or AppKit releases them
+    private var windows: [NSWindow] = []
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    /// Called directly from main before the run loop starts: the gallery
+    /// owns its launch order, so it does not depend on the
+    /// applicationDidFinishLaunching callback.
+    func openGallery() {
         let practice = PracticeRoomDraft(clock: clock)
         let recital = RecitalDraft(clock: clock)
         let studio = StudioLogDraft(clock: clock)
@@ -24,7 +29,7 @@ final class DesignGalleryController: NSObject, NSApplicationDelegate {
         var offset: CGFloat = 0
         for draft in drafts {
             let window = NSWindow(
-                contentRect: NSRect(x: 120 + offset, y: 120 + offset, width: 960, height: 620),
+                contentRect: NSRect(x: 120 + offset, y: 140 + offset, width: 960, height: 620),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false
@@ -40,9 +45,11 @@ final class DesignGalleryController: NSObject, NSApplicationDelegate {
             draft.view.topAnchor.constraint(equalTo: container.topAnchor).isActive = true
             draft.view.bottomAnchor.constraint(equalTo: container.bottomAnchor).isActive = true
             window.contentView = container
+            windows.append(window)
             window.makeKeyAndOrderFront(nil)
             offset += 44
             print("[designs] window opened: \(draft.title)")
+            fflush(stdout)
         }
 
         clock.onUpdate = { [weak self] moment in
@@ -51,6 +58,7 @@ final class DesignGalleryController: NSObject, NSApplicationDelegate {
         clock.start()
         NSApplication.shared.activate(ignoringOtherApps: true)
         print("[designs] session clock started, gallery running")
+        fflush(stdout)
     }
 
     private func dispatch(_ moment: DesignSessionClock.Moment) {
@@ -242,10 +250,11 @@ final class PracticeRoomDraft: NSView {
             let minute = Int(row.atSecond / 90)
             if minute != lastRuleMinute, lastRuleMinute >= 0 {
                 let rule = HairlineView()
+                rowsStack.addArrangedSubview(rule)
+                // activate only once the rule shares a hierarchy with the clip view
                 rule.widthAnchor.constraint(
                     equalTo: scrollView.contentView.widthAnchor, constant: -1
                 ).isActive = true
-                rowsStack.addArrangedSubview(rule)
             }
             lastRuleMinute = minute
 
@@ -489,14 +498,15 @@ final class StudioLogDraft: NSView {
             line.alignment = .firstBaseline
 
             let rule = HairlineView()
-            rule.widthAnchor.constraint(
-                equalTo: rowsScroll.contentView.widthAnchor, constant: -1
-            ).isActive = true
             let cell = NSStackView(views: [line, rule])
             cell.orientation = .vertical
             cell.alignment = .leading
             cell.spacing = 7
             rowsStack.addArrangedSubview(cell)
+            // activate only once the rule shares a hierarchy with the clip view
+            rule.widthAnchor.constraint(
+                equalTo: rowsScroll.contentView.widthAnchor, constant: -1
+            ).isActive = true
         }
     }
 }
