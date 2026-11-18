@@ -177,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Finds the model assets by walking up from the executable (release app
     /// bundle) or the working directory (swift run).
-    private static func locateAssets() -> (tensors: URL, model: URL)? {
+    nonisolated static func locateAssets() -> (tensors: URL, model: URL)? {
         var roots: [URL] = []
         if let executable = Bundle.main.executableURL {
             roots.append(executable.deletingLastPathComponent())

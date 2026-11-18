@@ -62,6 +62,8 @@ final class AudioTapState: @unchecked Sendable {
     /// absolute sample index (since stream start) of ring[0]
     private var ringStart = 0
     private var rate: Double = 44100
+    /// rms of the most recent tap buffer, read by the level timer on main
+    private var latestLevel: Float = 0
 
     func reset(rate: Double) {
         lock.lock()
@@ -75,6 +77,9 @@ final class AudioTapState: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         ring.append(contentsOf: samples)
+        var sum = 0.0
+        for sample in samples { sum += Double(sample) * Double(sample) }
+        latestLevel = Float(sqrt(sum / Double(max(samples.count, 1))))
         // keep at most a minute; older audio can no longer be needed
         let cap = Int(120 * rate)
         if ring.count > cap {
@@ -82,6 +87,18 @@ final class AudioTapState: @unchecked Sendable {
             ring.removeFirst(drop)
             ringStart += drop
         }
+    }
+
+    func currentLevel() -> Float {
+        lock.lock()
+        defer { lock.unlock() }
+        return latestLevel
+    }
+
+    func receivedSeconds() -> Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return Double(ringStart + ring.count) / rate
     }
 
     func deviceRate() -> Double {
@@ -144,7 +161,7 @@ final class InferenceContext: @unchecked Sendable {
         let at44100: [Float]
         if abs(deviceRate - WindowGeometry.sampleRate) < 1 {
             at44100 = samples
-        } else if let converted = Self.resample(samples, from: deviceRate, to: WindowGeometry.sampleRate) {
+        } else if let converted = Resampler.convert(samples, from: deviceRate, to: WindowGeometry.sampleRate) {
             at44100 = converted
         } else {
             return nil
@@ -153,6 +170,7 @@ final class InferenceContext: @unchecked Sendable {
         let frames = mel.compute(Self.alignToSegment(at44100))
         let t = frames.count / (MelFrontEnd.nMels * MelFrontEnd.nChannels)
         guard t > 1 else { return nil }
+        print("[inference] window \(windowIndex): \(at44100.count) samples at 44100, \(t) frames")
 
         guard let features = try? MLMultiArray(
             shape: [1, t, MelFrontEnd.nMels, MelFrontEnd.nChannels] as [NSNumber],
@@ -225,6 +243,7 @@ final class InferenceContext: @unchecked Sendable {
             if a.offsetSeconds != b.offsetSeconds { return a.offsetSeconds < b.offsetSeconds }
             return a.pitch < b.pitch
         }
+        print("[inference] window \(windowIndex): \(events.count) events decoded")
         return WindowResult(windowIndex: windowIndex, events: events, lastP: lastP)
     }
 
@@ -250,27 +269,7 @@ final class InferenceContext: @unchecked Sendable {
     }
 
     static func resample(_ input: [Float], from: Double, to: Double) -> [Float]? {
-        guard let source = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: from, channels: 1, interleaved: false),
-              let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: to, channels: 1, interleaved: false),
-              let converter = AVAudioConverter(from: source, to: target),
-              let inBuffer = AVAudioPCMBuffer(pcmFormat: source, frameCapacity: AVAudioFrameCount(max(input.count, 1))) else { return nil }
-        inBuffer.frameLength = AVAudioFrameCount(input.count)
-        input.withUnsafeBufferPointer { pointer in
-            inBuffer.floatChannelData![0].update(from: pointer.baseAddress!, count: input.count)
-        }
-        let capacity = AVAudioFrameCount(Double(input.count) * to / from) + 1024
-        guard let outBuffer = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
-        var consumed = false
-        let status = converter.convert(to: outBuffer, error: nil) { _, statusPointer in
-            if consumed {
-                statusPointer.pointee = .noDataNow
-                return nil
-            }
-            consumed = true
-            return inBuffer
-        }
-        guard status == .haveData, let data = outBuffer.floatChannelData?[0] else { return nil }
-        return Array(UnsafeBufferPointer(start: data, count: Int(outBuffer.frameLength)))
+        Resampler.convert(input, from: from, to: to)
     }
 }
 
@@ -303,6 +302,7 @@ final class TranscriptionEngine: ObservableObject {
     private var tapState = AudioTapState()
     private var inference: InferenceContext?
     private var tickTimer: Timer?
+    private var levelTimer: Timer?
     private var processing = false
     private var windowIndex = 0
     private var skippedTicks = 0
@@ -310,6 +310,8 @@ final class TranscriptionEngine: ObservableObject {
     private var history: [NoteEvent] = []
     /// pitch → index into history of that pitch's current sounding event
     private var liveIndex: [Int: Int] = [:]
+    /// when the current capture session began, for the silence watchdog
+    private var captureStarted = Date()
     /// per symbol: end frame of the last interval whose offset was observed
     private var lastP: [Int] = []
     /// CACurrentMediaTime at performance second zero, reset in start()
@@ -329,7 +331,21 @@ final class TranscriptionEngine: ObservableObject {
         }
     }
 
+    /// Asks for microphone access, then begins capture and inference.
     func start(tensorsDir: URL, modelURL: URL) {
+        AVAudioApplication.requestRecordPermission { [weak self] granted in
+            Task { @MainActor in
+                guard let self else { return }
+                if granted {
+                    self.beginCapture(tensorsDir: tensorsDir, modelURL: modelURL)
+                } else {
+                    self.lastError = "Microphone access was denied, allow Cadenza in System Settings under privacy, microphone"
+                }
+            }
+        }
+    }
+
+    private func beginCapture(tensorsDir: URL, modelURL: URL) {
         do {
             if inference == nil {
                 inference = try InferenceContext(tensorsDir: tensorsDir, modelURL: modelURL)
@@ -339,6 +355,7 @@ final class TranscriptionEngine: ObservableObject {
             guard format.sampleRate > 0, format.channelCount > 0 else {
                 throw EngineError.microphoneUnavailable
             }
+            print("[engine] capture: \(format.sampleRate) Hz, \(format.channelCount) channels")
             tapState.reset(rate: format.sampleRate)
             windowIndex = 0
             skippedTicks = 0
@@ -350,21 +367,29 @@ final class TranscriptionEngine: ObservableObject {
             currentChord = nil
             noteCount = 0
             performanceOrigin = CACurrentMediaTime()
-            input.installTap(onBus: 0, bufferSize: 8192, format: format) { [tapState, weak self] buffer, _ in
+            input.installTap(onBus: 0, bufferSize: 8192, format: format) { @Sendable [tapState] buffer, _ in
+                // InstallTap's block is the plain ObjC type, so without
+                // @Sendable this closure literal would inherit the enclosing
+                // @MainActor isolation and trap when AVFoundation calls it
+                // on its realtime queue.
                 guard let channel = buffer.floatChannelData?[0] else { return }
                 let frames = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
                 tapState.append(Array(frames))
-                let rms = sqrt(frames.reduce(0) { $0 + Double($1) * Double($1) } / Double(max(frames.count, 1)))
-                Task { @MainActor in
-                    self?.level = Float(rms)
-                }
             }
             try audioEngine.start()
             tickTimer = Timer.scheduledTimer(withTimeInterval: WindowGeometry.stepWallSeconds, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.tick() }
             }
+            levelTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.level = self.tapState.currentLevel()
+                }
+            }
             isRunning = true
             lastError = nil
+            captureStarted = Date()
+            print("[engine] capture started")
         } catch {
             isRunning = false
             lastError = error.localizedDescription
@@ -374,6 +399,8 @@ final class TranscriptionEngine: ObservableObject {
     func stop() {
         tickTimer?.invalidate()
         tickTimer = nil
+        levelTimer?.invalidate()
+        levelTimer = nil
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         isRunning = false
@@ -383,7 +410,14 @@ final class TranscriptionEngine: ObservableObject {
     /// arrived.
     private func tick() {
         guard isRunning, !processing else { return }
+        let received = tapState.receivedSeconds()
+        if received < 1.0, Date().timeIntervalSince(captureStarted) > 15 {
+            stop()
+            lastError = "Not hearing any input, check the microphone settings"
+            return
+        }
         if let samples = tapState.takeWindow(index: windowIndex) {
+            print("[engine] window \(self.windowIndex) submitted, \(Int(received)) s captured so far")
             submitWindow(index: windowIndex, deviceSamples: samples, deviceRate: tapState.deviceRate())
             windowIndex += 1
             skippedTicks = 0
