@@ -1,15 +1,34 @@
 import AppKit
+import CadenzaCore
+import Combine
+import UniformTypeIdentifiers
 
-/// App shell: chord sheet content with a floating glass toolbar.
+/// App shell: the chord sheet fills the window and a floating glass toolbar
+/// carries the controls.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
-    private var isListening = false
-    private var listeningButton: NSButton?
+    private var sheetView: ChordSheetView?
+    private var startButton: NSButton?
+    private var statusLabel: NSTextField?
     private var glassBar: NSGlassEffectView?
 
+    private let publisher = MIDIPublisher()
+    private let engine = TranscriptionEngine()
+    private var cancellables: Set<AnyCancellable> = []
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let size = NSSize(width: 780, height: 540)
+        publisher.setup()
+        engine.onNoteEvent = { [weak self] event, kind in
+            switch kind {
+            case .struck:
+                self?.publisher.noteStruck(event)
+            case .extended:
+                self?.publisher.noteExtended(event)
+            }
+        }
+
+        let size = NSSize(width: 780, height: 560)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -17,27 +36,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = "Cadenza"
-        window.minSize = size
+        window.minSize = NSSize(width: 560, height: 380)
         window.contentView = makeContent(size: size)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         self.window = window
+
+        engine.$sheet
+            .receive(on: RunLoop.main)
+            .sink { [weak self] sheet in
+                self?.sheetView?.update(sheet: sheet, current: self?.engine.currentChord)
+            }
+            .store(in: &cancellables)
+
+        engine.$lastError
+            .receive(on: RunLoop.main)
+            .sink { [weak self] error in
+                self?.refreshStatus(error: error)
+            }
+            .store(in: &cancellables)
+
+        engine.$noteCount
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.refreshStatus(error: self?.engine.lastError)
+            }
+            .store(in: &cancellables)
+        refreshStatus(error: nil)
     }
 
     private func makeContent(size: NSSize) -> NSView {
         let root = GradientBackgroundView(frame: NSRect(origin: .zero, size: size))
         root.autoresizingMask = [.width, .height]
 
-        let placeholder = NSTextField(labelWithString: "Nothing played yet")
-        placeholder.font = .systemFont(ofSize: 28, weight: .light)
-        placeholder.textColor = .secondaryLabelColor
-        placeholder.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(placeholder)
+        let sheet = ChordSheetView(frame: root.bounds)
+        root.addSubview(sheet)
         NSLayoutConstraint.activate([
-            placeholder.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            placeholder.centerYAnchor.constraint(equalTo: root.centerYAnchor),
+            sheet.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            sheet.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            sheet.topAnchor.constraint(equalTo: root.topAnchor),
+            sheet.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
+        sheetView = sheet
 
         let bar = makeGlassBar()
         bar.translatesAutoresizingMaskIntoConstraints = false
@@ -52,15 +93,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func makeGlassBar() -> NSGlassEffectView {
-        let listeningButton = NSButton(title: "Start listening", target: self, action: #selector(toggleListening))
-        listeningButton.bezelStyle = .rounded
-        self.listeningButton = listeningButton
+        let startButton = NSButton(title: "Start listening", target: self, action: #selector(toggleListening))
+        startButton.bezelStyle = .rounded
+        startButton.keyEquivalent = " "
+        self.startButton = startButton
 
-        let exportButton = NSButton(title: "Export MIDI", target: nil, action: nil)
+        let exportButton = NSButton(title: "Export MIDI", target: self, action: #selector(exportMIDI))
         exportButton.bezelStyle = .rounded
 
-        let stack = NSStackView(views: [listeningButton, exportButton])
-        stack.spacing = 16
+        let status = NSTextField(labelWithString: assetsStatusPlaceholder)
+        status.font = .systemFont(ofSize: 12)
+        status.textColor = .secondaryLabelColor
+        status.lineBreakMode = .byTruncatingTail
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        statusLabel = status
+
+        let stack = NSStackView(views: [startButton, exportButton, status])
+        stack.orientation = .horizontal
+        stack.spacing = 14
         stack.edgeInsets = NSEdgeInsets(top: 10, left: 16, bottom: 10, right: 16)
 
         let glass = NSGlassEffectView()
@@ -70,14 +120,89 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             glass.effectIsInteractive = true
         }
         glass.contentView = stack
-        self.glassBar = glass
+        glassBar = glass
         return glass
     }
 
+    private var assetsStatusPlaceholder: String { "Ready" }
+
+    private func refreshStatus(error: String?) {
+        guard let statusLabel else { return }
+        if let error, !error.isEmpty {
+            statusLabel.stringValue = error
+            statusLabel.textColor = .systemRed
+            glassBar?.tintColor = NSColor.systemRed.withAlphaComponent(0.18)
+        } else if engine.isRunning {
+            statusLabel.stringValue = "Listening, \(engine.noteCount) notes so far"
+            statusLabel.textColor = .secondaryLabelColor
+            glassBar?.tintColor = NSColor.systemGreen.withAlphaComponent(0.12)
+        } else {
+            statusLabel.stringValue = "Ready"
+            statusLabel.textColor = .secondaryLabelColor
+            glassBar?.tintColor = nil
+        }
+    }
+
     @objc private func toggleListening() {
-        isListening.toggle()
-        listeningButton?.title = isListening ? "Stop listening" : "Start listening"
-        glassBar?.tintColor = isListening ? NSColor.systemRed.withAlphaComponent(0.2) : nil
+        if engine.isRunning {
+            engine.stop()
+            publisher.panic()
+            startButton?.title = "Start listening"
+        } else {
+            guard let assets = Self.locateAssets() else {
+                refreshStatus(error: "Model files not found next to the app")
+                return
+            }
+            engine.start(tensorsDir: assets.tensors, modelURL: assets.model)
+            startButton?.title = "Stop listening"
+        }
+        refreshStatus(error: engine.lastError)
+    }
+
+    @objc private func exportMIDI() {
+        guard let window else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.midi]
+        panel.nameFieldStringValue = "Cadenza session"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            do {
+                try MidiFileWriter.write(self.engine.notes, to: url)
+                self.statusLabel?.stringValue = "Saved \(url.lastPathComponent)"
+            } catch {
+                self.refreshStatus(error: error.localizedDescription)
+            }
+        }
+    }
+
+    /// Finds the model assets by walking up from the executable (release app
+    /// bundle) or the working directory (swift run).
+    private static func locateAssets() -> (tensors: URL, model: URL)? {
+        var roots: [URL] = []
+        if let executable = Bundle.main.executableURL {
+            roots.append(executable.deletingLastPathComponent())
+        }
+        roots.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
+        for root in roots {
+            var dir = root
+            for _ in 0..<6 {
+                let tensors = dir.appendingPathComponent("Models/tensors", isDirectory: true)
+                let model = dir.appendingPathComponent("Models/TranskunBackbone.mlpackage", isDirectory: true)
+                let fileManager = FileManager.default
+                if fileManager.fileExists(atPath: tensors.path), fileManager.fileExists(atPath: model.path) {
+                    return (tensors, model)
+                }
+                dir = dir.deletingLastPathComponent()
+            }
+        }
+        return nil
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if engine.isRunning {
+            engine.stop()
+            publisher.panic()
+        }
     }
 }
 
@@ -86,20 +211,17 @@ final class GradientBackgroundView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         wantsLayer = true
-        guard let layer,
-              window?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        else {
-            return
-        }
+        autoresizingMask = [.width, .height]
+        guard let layer else { return }
+        layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        let dark = window?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let gradient = CAGradientLayer()
         gradient.frame = bounds
-        gradient.colors = [
-            NSColor.quaternarySystemFill.cgColor,
-            NSColor.windowBackgroundColor.cgColor,
-        ]
+        gradient.colors = dark
+            ? [NSColor.quaternarySystemFill.cgColor, NSColor.windowBackgroundColor.cgColor]
+            : [NSColor.controlBackgroundColor.cgColor, NSColor.windowBackgroundColor.cgColor]
         gradient.startPoint = CGPoint(x: 0, y: 1)
         gradient.endPoint = CGPoint(x: 1, y: 0)
         layer.addSublayer(gradient)
-        autoresizingMask = [.width, .height]
     }
 }
