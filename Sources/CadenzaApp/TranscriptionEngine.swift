@@ -66,6 +66,9 @@ final class AudioTapState: @unchecked Sendable {
     private var ring: [Float] = []
     /// absolute sample index (since stream start) of ring[0]
     private var ringStart = 0
+    /// CACurrentMediaTime of the first sample ever appended, the wall clock
+    /// of performance second zero
+    private var firstAppendWall: Double?
     private var rate: Double = 44100
     /// rms of the most recent tap buffer, read by the level timer on main
     private var latestLevel: Float = 0
@@ -78,6 +81,7 @@ final class AudioTapState: @unchecked Sendable {
         defer { lock.unlock() }
         ring = []
         ringStart = 0
+        firstAppendWall = nil
         self.rate = rate
         rawAll = []
     }
@@ -99,6 +103,7 @@ final class AudioTapState: @unchecked Sendable {
     func append(_ samples: [Float]) {
         lock.lock()
         defer { lock.unlock() }
+        if firstAppendWall == nil { firstAppendWall = CACurrentMediaTime() }
         ring.append(contentsOf: samples)
         if recordingRaw {
             rawAll.append(contentsOf: samples)
@@ -117,6 +122,14 @@ final class AudioTapState: @unchecked Sendable {
             ring.removeFirst(drop)
             ringStart += drop
         }
+    }
+
+    /// CACurrentMediaTime of the first appended sample, or nil while nothing
+    /// has arrived yet.
+    func contentOrigin() -> Double? {
+        lock.lock()
+        defer { lock.unlock() }
+        return firstAppendWall
     }
 
     func currentLevel() -> Float {
@@ -188,6 +201,7 @@ final class InferenceContext: @unchecked Sendable {
     /// viterbi and refines every interval with the attribute heads. Events
     /// come back sorted by (onset, offset, pitch).
     func run(windowIndex: Int, samples: [Float], deviceRate: Double, forcedStartPos: [Int]) -> WindowResult? {
+        let decodeStart = CACurrentMediaTime()
         let at44100: [Float]
         if abs(deviceRate - WindowGeometry.sampleRate) < 1 {
             at44100 = samples
@@ -273,7 +287,7 @@ final class InferenceContext: @unchecked Sendable {
             if a.offsetSeconds != b.offsetSeconds { return a.offsetSeconds < b.offsetSeconds }
             return a.pitch < b.pitch
         }
-        print("[inference] window \(windowIndex): \(events.count) events decoded")
+        print("[inference] window \(windowIndex): \(events.count) events decoded in \(String(format: "%.2f", CACurrentMediaTime() - decodeStart)) s")
         return WindowResult(windowIndex: windowIndex, events: events, lastP: lastP)
     }
 
@@ -327,9 +341,15 @@ final class TranscriptionEngine: ObservableObject {
     /// re-onsets as `.struck`, pedal-tail prolongations as `.extended`.
     var onNoteEvent: ((NoteEvent, NoteEventKind) -> Void)?
 
-    /// Fired on the main actor when performance time zero is established,
-    /// carrying the wall clock (CACurrentMediaTime) of that moment.
+    /// Fired on the main actor when performance time zero is established:
+    /// the first audio the tap sees, carrying the wall clock
+    /// (CACurrentMediaTime) of that moment.
     var onPerformanceStarted: ((Double) -> Void)?
+
+    /// Fired on the main actor after each window's events are merged,
+    /// carrying how many performance seconds of audio the latest decode
+    /// covered: `windowIndex * step - pad + segment`.
+    var onWindowCovered: ((Double) -> Void)?
 
     private let audioEngine = AVAudioEngine()
     private let inferenceQueue = DispatchQueue(label: "dev.cadenza.transcription", qos: .userInitiated)
@@ -348,7 +368,10 @@ final class TranscriptionEngine: ObservableObject {
     private var captureStarted = Date()
     /// per symbol: end frame of the last interval whose offset was observed
     private var lastP: [Int] = []
-    /// CACurrentMediaTime at performance second zero, reset in start()
+    /// whether the wall clock of performance second zero has been reported
+    private var originDelivered = false
+    /// CACurrentMediaTime at performance second zero, set once the first
+    /// audio arrives
     private var performanceOrigin: Double = 0
 
     enum EngineError: LocalizedError {
@@ -400,9 +423,8 @@ final class TranscriptionEngine: ObservableObject {
             sheet = []
             currentChord = nil
             noteCount = 0
-            performanceOrigin = CACurrentMediaTime()
+            originDelivered = false
             tapState.setRecording(true)
-            onPerformanceStarted?(performanceOrigin)
             input.installTap(onBus: 0, bufferSize: 8192, format: format) { @Sendable [tapState] buffer, _ in
                 // InstallTap's block is the plain ObjC type, so without
                 // @Sendable this closure literal would inherit the enclosing
@@ -413,7 +435,10 @@ final class TranscriptionEngine: ObservableObject {
                 tapState.append(Array(frames))
             }
             try audioEngine.start()
-            tickTimer = Timer.scheduledTimer(withTimeInterval: WindowGeometry.stepWallSeconds, repeats: true) { [weak self] _ in
+            // ticks are one second apart so a window is taken as soon as its
+            // full content has arrived; a full step of tick quantization would
+            // otherwise sit on top of the 16 s window as extra latency
+            tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.tick() }
             }
             levelTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -468,6 +493,11 @@ final class TranscriptionEngine: ObservableObject {
     /// arrived.
     private func tick() {
         guard isRunning, !processing else { return }
+        if !originDelivered, let origin = tapState.contentOrigin() {
+            performanceOrigin = origin
+            originDelivered = true
+            onPerformanceStarted?(origin)
+        }
         let received = tapState.receivedSeconds()
         if received < 1.0, Date().timeIntervalSince(captureStarted) > 15 {
             stop()
@@ -544,6 +574,10 @@ final class TranscriptionEngine: ObservableObject {
 
         notes = history
         recomputeChords()
+
+        let covered = Double(result.windowIndex) * WindowGeometry.stepWallSeconds
+            - WindowGeometry.padSeconds + WindowGeometry.segmentSeconds
+        onWindowCovered?(covered)
     }
 
     private func recomputeChords() {

@@ -32,6 +32,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.publisher.performanceOrigin = origin
         }
 
+        engine.onWindowCovered = { [weak self] covered in
+            self?.publisher.decodingHorizon(coveredSeconds: covered)
+        }
+
         let size = NSSize(width: 780, height: 560)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
