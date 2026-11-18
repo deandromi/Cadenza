@@ -5,6 +5,11 @@ if CommandLine.arguments.contains("--smoke") {
     exit(0)
 }
 
+if CommandLine.arguments.contains("--midi") {
+    SmokeMain.runMidiProbe()
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--probe") {
     SmokeMain.runConverterProbe()
     exit(0)

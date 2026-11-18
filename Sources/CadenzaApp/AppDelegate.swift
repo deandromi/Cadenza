@@ -28,6 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        engine.onPerformanceStarted = { [weak self] origin in
+            self?.publisher.performanceOrigin = origin
+        }
+
         let size = NSSize(width: 780, height: 560)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),

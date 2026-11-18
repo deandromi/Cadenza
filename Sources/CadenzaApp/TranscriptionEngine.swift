@@ -64,6 +64,9 @@ final class AudioTapState: @unchecked Sendable {
     private var rate: Double = 44100
     /// rms of the most recent tap buffer, read by the level timer on main
     private var latestLevel: Float = 0
+    /// full-session mirror of the tap, for offline diagnostics
+    private var rawAll: [Float] = []
+    private var recordingRaw = false
 
     func reset(rate: Double) {
         lock.lock()
@@ -71,12 +74,35 @@ final class AudioTapState: @unchecked Sendable {
         ring = []
         ringStart = 0
         self.rate = rate
+        rawAll = []
+    }
+
+    func setRecording(_ on: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        recordingRaw = on
+        if !on { rawAll = [] }
+    }
+
+    func drainRaw() -> [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+        let copy = rawAll
+        rawAll = []
+        return copy
     }
 
     func append(_ samples: [Float]) {
         lock.lock()
         defer { lock.unlock() }
         ring.append(contentsOf: samples)
+        if recordingRaw {
+            rawAll.append(contentsOf: samples)
+            let cap = Int(300 * rate)
+            if rawAll.count > cap {
+                rawAll.removeFirst(rawAll.count - cap)
+            }
+        }
         var sum = 0.0
         for sample in samples { sum += Double(sample) * Double(sample) }
         latestLevel = Float(sqrt(sum / Double(max(samples.count, 1))))
@@ -297,6 +323,10 @@ final class TranscriptionEngine: ObservableObject {
     /// re-onsets as `.struck`, pedal-tail prolongations as `.extended`.
     var onNoteEvent: ((NoteEvent, NoteEventKind) -> Void)?
 
+    /// Fired on the main actor when performance time zero is established,
+    /// carrying the wall clock (CACurrentMediaTime) of that moment.
+    var onPerformanceStarted: ((Double) -> Void)?
+
     private let audioEngine = AVAudioEngine()
     private let inferenceQueue = DispatchQueue(label: "dev.cadenza.transcription", qos: .userInitiated)
     private var tapState = AudioTapState()
@@ -367,6 +397,8 @@ final class TranscriptionEngine: ObservableObject {
             currentChord = nil
             noteCount = 0
             performanceOrigin = CACurrentMediaTime()
+            tapState.setRecording(true)
+            onPerformanceStarted?(performanceOrigin)
             input.installTap(onBus: 0, bufferSize: 8192, format: format) { @Sendable [tapState] buffer, _ in
                 // InstallTap's block is the plain ObjC type, so without
                 // @Sendable this closure literal would inherit the enclosing
@@ -404,6 +436,28 @@ final class TranscriptionEngine: ObservableObject {
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         isRunning = false
+        dumpSessionRecording()
+    }
+
+    /// Writes the session's raw mic capture (device rate) next to the other
+    /// diagnostics, so a failed session can be replayed offline.
+    private func dumpSessionRecording() {
+        tapState.setRecording(false)
+        let raw = tapState.drainRaw()
+        guard !raw.isEmpty else { return }
+        let stamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "")
+        let url = URL(fileURLWithPath: "/tmp/cadenza_session_\(stamp.prefix(19)).f32")
+        raw.withUnsafeBufferPointer { pointer in
+            let data = Data(bytes: pointer.baseAddress!, count: raw.count * 4)
+            try? data.write(to: url)
+        }
+        print("[engine] session mic capture written to \(url.path), \(raw.count) samples at \(Int(tapState.deviceRate())) Hz")
+    }
+
+    /// audio content captured so far this session, for diagnostics
+    var capturedSeconds: Double {
+        tapState.receivedSeconds()
     }
 
     /// One scheduled step: decode the next window when its full content has
@@ -467,9 +521,7 @@ final class TranscriptionEngine: ObservableObject {
                     // continuation: the sounding note simply lasts longer
                     let newEnd = max(history[index].offset, note.offset)
                     history[index].duration = newEnd - history[index].onset
-                    var tail = history[index]
-                    tail.duration = max(newEnd - performanceAge, 0.05)
-                    onNoteEvent?(tail, .extended)
+                    onNoteEvent?(history[index], .extended)
                 }
             } else if event.hasOnset {
                 history.append(note)

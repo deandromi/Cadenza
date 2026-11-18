@@ -29,9 +29,11 @@ enum SmokeMain {
             print(String(format: "note %@: %d v%d @%.2f", label, event.pitch, event.velocity, event.onset))
         }
         engine.start(tensorsDir: assets.tensors, modelURL: assets.model)
+        let began = Date()
         let timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
             MainActor.assumeIsolated {
-                print(String(format: "capture: level %.4f, notes %d, running %@", engine.level, engine.noteCount, engine.isRunning ? "yes" : "no"))
+                let wall = Date().timeIntervalSince(began)
+                print(String(format: "capture: wall %.1f s, content %.1f s, level %.4f, notes %d, running %@", wall, engine.capturedSeconds, engine.level, engine.noteCount, engine.isRunning ? "yes" : "no"))
                 if let error = engine.lastError { print("error: \(error)") }
             }
         }
@@ -39,6 +41,57 @@ enum SmokeMain {
         timer.invalidate()
         engine.stop()
         print(String(format: "capture smoke done: %d notes", engine.noteCount))
+    }
+
+    /// MIDI file writer check: three notes in, structurally parsed back out.
+    static func runMidiProbe() {
+        var notes: [NoteEvent] = [
+            NoteEvent(pitch: 60, velocity: 39, onset: 0.0, duration: 2.0),
+            NoteEvent(pitch: 64, velocity: 48, onset: 0.5, duration: 1.0),
+            NoteEvent(pitch: 67, velocity: 46, onset: 0.0, duration: 2.5),
+        ]
+        notes.sort { $0.onset < $1.onset }
+        let url = URL(fileURLWithPath: "/tmp/cadenza_smoke.mid")
+        do {
+            try MidiFileWriter.write(notes, to: url)
+            let data = try Data(contentsOf: url)
+            let bytes = [UInt8](data)
+
+            func be16(_ i: Int) -> UInt16 { UInt16(bytes[i]) << 8 | UInt16(bytes[i + 1]) }
+            func be32(_ i: Int) -> UInt32 { UInt32(bytes[i]) << 24 | UInt32(bytes[i + 1]) << 16 | UInt32(bytes[i + 2]) << 8 | UInt32(bytes[i + 3]) }
+
+            guard bytes.count > 14,
+                  String(decoding: bytes[0..<4], as: UTF8.self) == "MThd",
+                  be32(4) == 6,
+                  be16(8) == 0, be16(10) == 1, be16(12) == 480,
+                  String(decoding: bytes[14..<18], as: UTF8.self) == "MTrk",
+                  Int(be32(18)) == bytes.count - 22 else {
+                print("midi probe FAILED: structure invalid")
+                exit(1)
+            }
+            // the track payload must carry the three note-ons and their
+            // note-offs exactly once each
+            let payload = Array(bytes[22...])
+            var on60 = 0, on64 = 0, on67 = 0
+            var off60 = 0
+            for i in 0..<(payload.count - 2) {
+                if payload[i] == 0x90 {
+                    if payload[i + 1] == 60 { on60 += 1 }
+                    if payload[i + 1] == 64 { on64 += 1 }
+                    if payload[i + 1] == 67 { on67 += 1 }
+                } else if payload[i] == 0x80 {
+                    if payload[i + 1] == 60 { off60 += 1 }
+                }
+            }
+            guard on60 == 1, on64 == 1, on67 == 1, off60 == 1 else {
+                print("midi probe FAILED: on/off counts wrong (\(on60), \(on64), \(on67), off60 \(off60))")
+                exit(1)
+            }
+            print("midi probe PASSED: \(bytes.count) bytes, 3 note-ons, 1 note-off found")
+        } catch {
+            print("midi probe FAILED: \(error)")
+            exit(1)
+        }
     }
 
     /// Converter matrix probe: which buffer sizes, directions and layouts

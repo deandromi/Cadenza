@@ -51,9 +51,11 @@ public enum MidiFileWriter {
         // End of track meta event.
         track.append(contentsOf: [0x00, 0xFF, 0x2F, 0x00])
 
+        // Header chunk first, then the track chunk; each chunk is
+        // id + length + payload.
         var bytes: [UInt8] = []
-        bytes.append(contentsOf: chunk(id: "MTrk", payload: track))
         bytes.append(contentsOf: chunk(id: "MThd", payload: headerPayload()))
+        bytes.append(contentsOf: chunk(id: "MTrk", payload: track))
         try Data(bytes).write(to: url)
     }
 
@@ -62,16 +64,18 @@ public enum MidiFileWriter {
         max(0, Int((seconds * ticksPerSecond).rounded()))
     }
 
-    /// Assembles a track-length-prefixed chunk header around a payload.
+    /// Assembles a length-prefixed chunk: id, big-endian payload length,
+    /// then the payload itself.
     private static func chunk(id: String, payload: [UInt8]) -> [UInt8] {
-        var header = Array(id.utf8.prefix(4))
-        header.append(contentsOf: bigEndianBytes(UInt32(payload.count)))
-        return header
+        var bytes = Array(id.utf8.prefix(4))
+        bytes.append(contentsOf: bigEndianBytes(UInt32(payload.count)))
+        bytes.append(contentsOf: payload)
+        return bytes
     }
 
-    /// Format 0, one track, 480 ticks per quarter note.
+    /// Format 0, one track, 480 ticks per quarter note. Six bytes total.
     private static func headerPayload() -> [UInt8] {
-        var payload: [UInt8] = [0x00, 0x00, 0x00, 0x06]
+        var payload: [UInt8] = []
         payload.append(contentsOf: bigEndianBytes(UInt16(0)))
         payload.append(contentsOf: bigEndianBytes(UInt16(1)))
         payload.append(contentsOf: bigEndianBytes(UInt16(ticksPerQuarter)))
