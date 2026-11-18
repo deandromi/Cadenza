@@ -10,6 +10,11 @@ if let index = CommandLine.arguments.firstIndex(of: "--replay"), CommandLine.arg
     exit(0)
 }
 
+if let index = CommandLine.arguments.firstIndex(of: "--replay-stream"), CommandLine.arguments.count > index + 2 {
+    SmokeMain.runReplayStream(path: CommandLine.arguments[index + 1], deviceRate: Double(CommandLine.arguments[index + 2]) ?? 48000)
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--midi") {
     SmokeMain.runMidiProbe()
     exit(0)

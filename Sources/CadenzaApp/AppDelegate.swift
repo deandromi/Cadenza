@@ -20,20 +20,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         publisher.setup()
         engine.onNoteEvent = { [weak self] event, kind in
+            guard let self else { return }
             switch kind {
             case .struck:
-                self?.publisher.noteStruck(event)
+                self.publisher.noteStruck(event)
             case .extended:
-                self?.publisher.noteExtended(event)
+                break
+            case .released:
+                self.publisher.noteReleased(event)
             }
-        }
-
-        engine.onPerformanceStarted = { [weak self] origin in
-            self?.publisher.performanceOrigin = origin
-        }
-
-        engine.onWindowCovered = { [weak self] covered in
-            self?.publisher.decodingHorizon(coveredSeconds: covered)
         }
 
         let size = NSSize(width: 780, height: 560)

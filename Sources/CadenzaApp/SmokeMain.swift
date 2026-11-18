@@ -25,7 +25,11 @@ enum SmokeMain {
         let engine = TranscriptionEngine()
         engine.onNoteEvent = { event, kind in
             let label: String
-            if case .struck = kind { label = "on" } else { label = "extend" }
+            switch kind {
+            case .struck: label = "on"
+            case .extended: label = "extend"
+            case .released: label = "off"
+            }
             print(String(format: "note %@: %d v%d @%.2f", label, event.pitch, event.velocity, event.onset))
         }
         engine.start(tensorsDir: assets.tensors, modelURL: assets.model)
@@ -78,21 +82,12 @@ enum SmokeMain {
         var windowIndex = 0
         var fed = 0  // how many samples of the recording have been fed
 
-        func feed(upTo sampleIndex: Int) {
-            let target = min(sampleIndex, input.count)
-            while fed < target {
-                let end = min(fed + 8192, target)
-                tapState.append(Array(input[fed..<end]))
-                fed = end
-            }
-        }
-
         while true {
             let startSeconds = Double(windowIndex) * WindowGeometry.stepWallSeconds - WindowGeometry.padSeconds
             let endSeconds = startSeconds + WindowGeometry.segmentSeconds
             let endSample = Int((endSeconds * deviceRate).rounded())
             if startSeconds * deviceRate >= Double(input.count) { break }
-            feed(upTo: endSample)
+            Self.feed(tapState, from: input, fed: &fed, upTo: endSample)
             if fed < endSample && fed >= input.count {
                 // recording over: let the engine's zero pad close the window
                 tapState.append([Float](repeating: 0, count: endSample - fed))
@@ -106,8 +101,11 @@ enum SmokeMain {
             } else {
                 forcedStart = lastP.map { max($0 - WindowGeometry.stepFrames, 0) }
             }
-            guard let result = context.run(windowIndex: windowIndex, samples: samples,
-                                           deviceRate: deviceRate, forcedStartPos: forcedStart) else {
+            guard let result = context.run(windowIndex: windowIndex, edgeSeconds: Double(windowIndex) * WindowGeometry.stepWallSeconds
+                                              - WindowGeometry.padSeconds + WindowGeometry.segmentSeconds,
+                                          samples: samples,
+                                          deviceRate: deviceRate,
+                                          forcedStartPos: forcedStart) else {
                 print("replay FAILED: window \(windowIndex) decode error")
                 exit(1)
             }
@@ -138,6 +136,81 @@ enum SmokeMain {
         history.sort { ($0.onset, $0.pitch) < ($1.onset, $1.pitch) }
         print("replay: \(history.count) notes")
         for note in history {
+            print(String(format: "swift note: %d @%.3f-%.3f v%d", note.pitch, note.onset, note.offset, note.velocity))
+        }
+    }
+
+    /// Offline streaming simulation: slides the 16 s window over the
+    /// recording exactly the way the live engine does — warmup edge first,
+    /// then edges pacing themselves at the decode rate, anchors chained per
+    /// symbol — and prints the emission stream ("stream struck/released"
+    /// lines carrying the emission edge) plus the final merged notes in the
+    /// same "swift note" format as runReplay, so the two outputs can be
+    /// diffed to measure flicker, duplicates and timing drift offline.
+    static func runReplayStream(path: String, deviceRate: Double) {
+        guard let assets = AppDelegate.locateAssets() else {
+            print("replay-stream: model assets not found")
+            exit(1)
+        }
+        let data = (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? Data()
+        let input = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        guard !input.isEmpty else {
+            print("replay-stream FAILED: no samples in \(path)")
+            exit(1)
+        }
+        print("replay-stream: \(input.count) samples at \(Int(deviceRate)) Hz")
+
+        let context: InferenceContext
+        do {
+            context = try InferenceContext(tensorsDir: assets.tensors, modelURL: assets.model)
+        } catch {
+            print("replay-stream FAILED: \(error)")
+            exit(1)
+        }
+
+        let tapState = AudioTapState()
+        tapState.reset(rate: deviceRate)
+        var merge = StreamingMerge(symbolCount: WindowGeometry.symbols.count)
+        var fed = 0
+
+        var edge = WindowGeometry.streamingWarmup
+        var index = 0
+        var emissionCount = 0
+        while edge * deviceRate <= Double(input.count) {
+            Self.feed(tapState, from: input, fed: &fed, upTo: Int((edge * deviceRate).rounded()))
+            guard let window = tapState.takeStreamWindow(edgeSeconds: edge) else { break }
+            let forcedStart = merge.forcedStart(for: edge - WindowGeometry.segmentSeconds)
+            let decodeStart = CACurrentMediaTime()
+            guard let result = context.run(windowIndex: index, edgeSeconds: edge, samples: window,
+                                           deviceRate: deviceRate, forcedStartPos: forcedStart) else {
+                print("replay-stream FAILED: window \(index) decode error")
+                exit(1)
+            }
+            let decodeWall = CACurrentMediaTime() - decodeStart
+
+            for emission in merge.absorb(result) {
+                emissionCount += 1
+                let kind: String
+                switch emission.kind {
+                case .struck: kind = "struck"
+                case .extended: kind = "extended"
+                case .released: kind = "released"
+                }
+                let note = emission.event
+                print(String(format: "stream %@: %d @%.3f-%.3f v%d at edge %.2f", kind, note.pitch, note.onset, note.offset, note.velocity, edge))
+            }
+            index += 1
+            edge += WindowGeometry.streamingAdvance(decodeWall: decodeWall)
+        }
+
+        for emission in merge.releaseAll() {
+            let note = emission.event
+            print(String(format: "stream released: %d @%.3f-%.3f v%d at end", note.pitch, note.onset, note.offset, note.velocity))
+        }
+
+        let sortedNotes = merge.notes.sorted { ($0.onset, $0.pitch) < ($1.onset, $1.pitch) }
+        print("replay-stream: \(merge.notes.count) notes, \(emissionCount) emissions")
+        for note in sortedNotes {
             print(String(format: "swift note: %d @%.3f-%.3f v%d", note.pitch, note.onset, note.offset, note.velocity))
         }
     }
@@ -296,7 +369,8 @@ enum SmokeMain {
         }
         print("simulate: window 0 is \(window.count) device samples")
 
-        guard let result = context.run(windowIndex: 0, samples: window, deviceRate: 48000,
+        guard let result = context.run(windowIndex: 0, edgeSeconds: WindowGeometry.segmentSeconds - WindowGeometry.padSeconds,
+                                       samples: window, deviceRate: 48000,
                                        forcedStartPos: Array(repeating: WindowGeometry.padFrames, count: WindowGeometry.symbols.count)) else {
             print("simulate FAILED: no decode result")
             exit(1)
@@ -323,6 +397,17 @@ enum SmokeMain {
             dir = dir.deletingLastPathComponent()
         }
         return relative
+    }
+
+    /// Feeds the tap ring from a recording in tap-sized chunks, the way the
+    /// realtime tap delivers. `fed` tracks how many samples have entered.
+    private static func feed(_ tapState: AudioTapState, from input: [Float], fed: inout Int, upTo sampleIndex: Int) {
+        let target = min(sampleIndex, input.count)
+        while fed < target {
+            let end = min(fed + 8192, target)
+            tapState.append(Array(input[fed..<end]))
+            fed = end
+        }
     }
 
     /// Headless check of the app's own inference path: feeds the golden
@@ -352,7 +437,8 @@ enum SmokeMain {
             let audio = readF32(audioURL)
             print("smoke: \(audio.count) samples from \(audioURL.path)")
 
-            let result = context.run(windowIndex: 0, samples: audio,
+            let result = context.run(windowIndex: 0, edgeSeconds: WindowGeometry.segmentSeconds - WindowGeometry.padSeconds,
+                                     samples: audio,
                                      deviceRate: 44100,
                                      forcedStartPos: Array(repeating: WindowGeometry.padFrames, count: WindowGeometry.symbols.count))
             guard let result else {

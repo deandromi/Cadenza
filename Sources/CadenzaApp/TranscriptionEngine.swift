@@ -25,6 +25,33 @@ enum WindowGeometry {
     /// low register, and they poison chords and MIDI output. Real staccato
     /// notes ring longer.
     static let minimumNoteDuration = 0.055
+
+    /// Real-time streaming: windows always end at the latest received audio
+    /// and slide by this much per decode. Decodes pipeline back to back, so
+    /// when a decode takes longer than this step the next window simply
+    /// covers all the audio that arrived meanwhile. The measured cost of a
+    /// 691-frame decode is about 1.1 to 1.3 s on CPU and no faster on GPU
+    /// or the Neural Engine, so on this machine the effective step is the
+    /// decode time and the step only bounds it from below.
+    static let streamingStep = 0.45
+
+    /// Content required before the first streaming window decodes: an early
+    /// note reaches the trailing edge almost together with the warmup
+    /// silence, and the decode needs some frames past an attack to see it.
+    static let streamingWarmup = 1.0
+
+    /// The ring keeps this much history: a window reaches back segmentSeconds
+    /// behind its trailing edge, and the grid pipeline needs a bit less.
+    static let ringHistorySeconds = 25.0
+
+    /// How far the next window's trailing edge moves after a decode that
+    /// just finished, given it took `decodeWall` seconds: at least a step,
+    /// at least a decode plus a hop so decodes pipeline back to back, and
+    /// never more than one window, or consecutive windows would stop
+    /// overlapping and tear holes in the coverage.
+    static func streamingAdvance(decodeWall: Double) -> Double {
+        min(max(streamingStep, decodeWall + 0.25), segmentSeconds)
+    }
 }
 
 /// One chord sheet row: an onset group with its identified chord.
@@ -49,9 +76,16 @@ struct WindowResult: Sendable {
         /// True unless the interval merely continues from the window start
         /// (a note sounding before this window began, no onset observed).
         var hasOnset: Bool { startFrame > 0 || presenceOnset }
+
+        /// True unless the interval reaches the window's last frame without
+        /// the offset head confirming it (the note likely continues past the
+        /// trailing edge).
+        var hasOffset: Bool { endFrame < WindowGeometry.lastFrameIdx || presenceOffset }
     }
 
     let windowIndex: Int
+    /// content seconds of the window's first frame, edge - segmentSeconds
+    let beginSeconds: Double
     let events: [Event]
     /// per symbol: end frame of the last interval whose offset was observed
     /// in this window, 0 when the symbol never ended here
@@ -66,9 +100,6 @@ final class AudioTapState: @unchecked Sendable {
     private var ring: [Float] = []
     /// absolute sample index (since stream start) of ring[0]
     private var ringStart = 0
-    /// CACurrentMediaTime of the first sample ever appended, the wall clock
-    /// of performance second zero
-    private var firstAppendWall: Double?
     private var rate: Double = 44100
     /// rms of the most recent tap buffer, read by the level timer on main
     private var latestLevel: Float = 0
@@ -81,7 +112,6 @@ final class AudioTapState: @unchecked Sendable {
         defer { lock.unlock() }
         ring = []
         ringStart = 0
-        firstAppendWall = nil
         self.rate = rate
         rawAll = []
     }
@@ -103,7 +133,6 @@ final class AudioTapState: @unchecked Sendable {
     func append(_ samples: [Float]) {
         lock.lock()
         defer { lock.unlock() }
-        if firstAppendWall == nil { firstAppendWall = CACurrentMediaTime() }
         ring.append(contentsOf: samples)
         if recordingRaw {
             rawAll.append(contentsOf: samples)
@@ -115,21 +144,14 @@ final class AudioTapState: @unchecked Sendable {
         var sum = 0.0
         for sample in samples { sum += Double(sample) * Double(sample) }
         latestLevel = Float(sqrt(sum / Double(max(samples.count, 1))))
-        // keep at most a minute; older audio can no longer be needed
-        let cap = Int(120 * rate)
+        // keep what a window could still reach back to; older audio can no
+        // longer be needed
+        let cap = Int(WindowGeometry.ringHistorySeconds * rate)
         if ring.count > cap {
             let drop = ring.count - cap
             ring.removeFirst(drop)
             ringStart += drop
         }
-    }
-
-    /// CACurrentMediaTime of the first appended sample, or nil while nothing
-    /// has arrived yet.
-    func contentOrigin() -> Double? {
-        lock.lock()
-        defer { lock.unlock() }
-        return firstAppendWall
     }
 
     func currentLevel() -> Float {
@@ -179,6 +201,35 @@ final class AudioTapState: @unchecked Sendable {
         }
         return out
     }
+
+    /// Returns the streaming window ending at `edgeSeconds` content time,
+    /// spanning `segmentSeconds` behind it, or nil while the edge has not
+    /// arrived. Missing leading audio (the performance is younger than the
+    /// window) arrives as zeros, which is what the model's leading pad
+    /// semantics expect.
+    func takeStreamWindow(edgeSeconds: Double) -> [Float]? {
+        let startSeconds = edgeSeconds - WindowGeometry.segmentSeconds
+        let startSample = Int((startSeconds * rate).rounded())
+        let endSample = Int((edgeSeconds * rate).rounded())
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard ringStart + ring.count >= endSample else { return nil }
+        var out = [Float](repeating: 0, count: max(endSample - startSample, 0))
+        let from = max(startSample, ringStart)
+        let to = min(endSample, ringStart + ring.count)
+        if to > from {
+            out.replaceSubrange((from - startSample)..<(to - startSample),
+                                with: ring[(from - ringStart)..<(to - ringStart)])
+        }
+        // nothing older than this window's own start can be needed again
+        if startSample > ringStart {
+            let drop = min(startSample - ringStart, ring.count)
+            ring.removeFirst(drop)
+            ringStart += drop
+        }
+        return out
+    }
 }
 
 /// Everything the background inference needs, built once and then only read.
@@ -196,11 +247,11 @@ final class InferenceContext: @unchecked Sendable {
         model = try MLModel(contentsOf: compiled, configuration: configuration)
     }
 
-    /// Decodes one window: aligns the samples to exactly one segment,
-    /// computes mel features, runs the backbone, walks the forced-start
-    /// viterbi and refines every interval with the attribute heads. Events
-    /// come back sorted by (onset, offset, pitch).
-    func run(windowIndex: Int, samples: [Float], deviceRate: Double, forcedStartPos: [Int]) -> WindowResult? {
+    /// Decodes one window ending at `edgeSeconds` content time: resamples to
+    /// exactly one segment, computes mel features, runs the backbone, walks
+    /// the forced-start viterbi and refines every interval with the attribute
+    /// heads. Events come back sorted by (onset, offset, pitch).
+    func run(windowIndex: Int, edgeSeconds: Double, samples: [Float], deviceRate: Double, forcedStartPos: [Int]) -> WindowResult? {
         let decodeStart = CACurrentMediaTime()
         let at44100: [Float]
         if abs(deviceRate - WindowGeometry.sampleRate) < 1 {
@@ -235,7 +286,7 @@ final class InferenceContext: @unchecked Sendable {
         let intervals = SemiCRFDecoder.decode(score: score, skip: skip, frameCount: t,
                                               symbolCount: symbolCount, forcedStartPos: forcedStartPos)
 
-        let beginTime = Double(windowIndex) * WindowGeometry.stepWallSeconds - WindowGeometry.padSeconds
+        let beginTime = edgeSeconds - WindowGeometry.segmentSeconds
         var events: [WindowResult.Event] = []
         var lastP = Array(repeating: 0, count: symbolCount)
         for symbol in 0..<symbolCount {
@@ -288,7 +339,7 @@ final class InferenceContext: @unchecked Sendable {
             return a.pitch < b.pitch
         }
         print("[inference] window \(windowIndex): \(events.count) events decoded in \(String(format: "%.2f", CACurrentMediaTime() - decodeStart)) s")
-        return WindowResult(windowIndex: windowIndex, events: events, lastP: lastP)
+        return WindowResult(windowIndex: windowIndex, beginSeconds: beginTime, events: events, lastP: lastP)
     }
 
     private func copy(_ array: MLMultiArray) -> [Float] {
@@ -323,7 +374,7 @@ final class InferenceContext: @unchecked Sendable {
 /// publishes merged NoteEvents plus identified chords as it goes.
 @MainActor
 final class TranscriptionEngine: ObservableObject {
-    enum NoteEventKind { case struck, extended }
+    enum NoteEventKind { case struck, extended, released }
 
     @Published private(set) var isRunning = false
     @Published private(set) var level: Float = 0
@@ -337,19 +388,10 @@ final class TranscriptionEngine: ObservableObject {
     @Published private(set) var currentChord: Chord?
     @Published private(set) var noteCount = 0
 
-    /// Fired on the main actor for every confirmed event: fresh strikes and
-    /// re-onsets as `.struck`, pedal-tail prolongations as `.extended`.
+    /// Fired on the main actor for every emission from the streaming merge:
+    /// fresh strikes as `.struck`, pedal-tail prolongations as `.extended`,
+    /// releases as `.released` (carrying the note's sounding interval).
     var onNoteEvent: ((NoteEvent, NoteEventKind) -> Void)?
-
-    /// Fired on the main actor when performance time zero is established:
-    /// the first audio the tap sees, carrying the wall clock
-    /// (CACurrentMediaTime) of that moment.
-    var onPerformanceStarted: ((Double) -> Void)?
-
-    /// Fired on the main actor after each window's events are merged,
-    /// carrying how many performance seconds of audio the latest decode
-    /// covered: `windowIndex * step - pad + segment`.
-    var onWindowCovered: ((Double) -> Void)?
 
     private let audioEngine = AVAudioEngine()
     private let inferenceQueue = DispatchQueue(label: "dev.cadenza.transcription", qos: .userInitiated)
@@ -358,21 +400,16 @@ final class TranscriptionEngine: ObservableObject {
     private var tickTimer: Timer?
     private var levelTimer: Timer?
     private var processing = false
+    /// decodes performed this session, for logging only
     private var windowIndex = 0
-    private var skippedTicks = 0
-    /// merged note history, append-ordered by confirmation
-    private var history: [NoteEvent] = []
-    /// pitch → index into history of that pitch's current sounding event
-    private var liveIndex: [Int: Int] = [:]
+    /// content seconds at which the next window's trailing edge sits
+    private var nextEdge = WindowGeometry.streamingWarmup
+    /// wall seconds the most recent decode took, pacing the stream below
+    private var lastDecodeWall = 0.0
+    /// the streaming merge state: anchors, live notes, merged history
+    private var merge = StreamingMerge(symbolCount: WindowGeometry.symbols.count)
     /// when the current capture session began, for the silence watchdog
     private var captureStarted = Date()
-    /// per symbol: end frame of the last interval whose offset was observed
-    private var lastP: [Int] = []
-    /// whether the wall clock of performance second zero has been reported
-    private var originDelivered = false
-    /// CACurrentMediaTime at performance second zero, set once the first
-    /// audio arrives
-    private var performanceOrigin: Double = 0
 
     enum EngineError: LocalizedError {
         case microphoneUnavailable
@@ -415,15 +452,13 @@ final class TranscriptionEngine: ObservableObject {
             print("[engine] capture: \(format.sampleRate) Hz, \(format.channelCount) channels")
             tapState.reset(rate: format.sampleRate)
             windowIndex = 0
-            skippedTicks = 0
-            lastP = Array(repeating: 0, count: WindowGeometry.symbols.count)
-            liveIndex = [:]
-            history = []
+            nextEdge = WindowGeometry.streamingWarmup
+            lastDecodeWall = 0
+            merge = StreamingMerge(symbolCount: WindowGeometry.symbols.count)
             notes = []
             sheet = []
             currentChord = nil
             noteCount = 0
-            originDelivered = false
             tapState.setRecording(true)
             input.installTap(onBus: 0, bufferSize: 8192, format: format) { @Sendable [tapState] buffer, _ in
                 // InstallTap's block is the plain ObjC type, so without
@@ -435,10 +470,9 @@ final class TranscriptionEngine: ObservableObject {
                 tapState.append(Array(frames))
             }
             try audioEngine.start()
-            // ticks are one second apart so a window is taken as soon as its
-            // full content has arrived; a full step of tick quantization would
-            // otherwise sit on top of the 16 s window as extra latency
-            tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            // ticks are fast and cheap: they only submit the next window when
+            // its trailing edge has arrived, so decodes pipeline back to back
+            tickTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.tick() }
             }
             levelTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -489,95 +523,67 @@ final class TranscriptionEngine: ObservableObject {
         tapState.receivedSeconds()
     }
 
-    /// One scheduled step: decode the next window when its full content has
-    /// arrived.
+    /// One scheduled step: submit the next streaming window once its trailing
+    /// edge has arrived. Decodes run back to back, so the stream paces itself
+    /// at the decode rate: a step never shorter than a decode, or windows
+    /// would pile up behind the decoder; when the decode outruns the step,
+    /// the next window simply covers all the audio that arrived meanwhile.
     private func tick() {
         guard isRunning, !processing else { return }
-        if !originDelivered, let origin = tapState.contentOrigin() {
-            performanceOrigin = origin
-            originDelivered = true
-            onPerformanceStarted?(origin)
-        }
         let received = tapState.receivedSeconds()
         if received < 1.0, Date().timeIntervalSince(captureStarted) > 15 {
             stop()
             lastError = "Not hearing any input, check the microphone settings"
             return
         }
-        if let samples = tapState.takeWindow(index: windowIndex) {
-            print("[engine] window \(self.windowIndex) submitted, \(Int(received)) s captured so far")
-            submitWindow(index: windowIndex, deviceSamples: samples, deviceRate: tapState.deviceRate())
-            windowIndex += 1
-            skippedTicks = 0
-        } else {
-            skippedTicks += 1
-        }
+        guard received >= nextEdge else { return }
+        let edge = nextEdge
+        print("[engine] window \(windowIndex) submitted, edge \(String(format: "%.2f", edge)) s, \(Int(received)) s captured so far")
+        submitWindow(index: windowIndex, edge: edge)
+        windowIndex += 1
+        nextEdge = edge + WindowGeometry.streamingAdvance(decodeWall: lastDecodeWall)
     }
 
-    private func submitWindow(index: Int, deviceSamples: [Float], deviceRate: Double) {
+    private func submitWindow(index: Int, edge: Double) {
         guard let inference else { return }
-        processing = true
-        let forcedStart: [Int]
-        if index == 0 {
-            forcedStart = Array(repeating: WindowGeometry.padFrames, count: WindowGeometry.symbols.count)
-        } else {
-            forcedStart = lastP.map { max($0 - WindowGeometry.stepFrames, 0) }
+        guard let deviceSamples = tapState.takeStreamWindow(edgeSeconds: edge) else {
+            nextEdge = min(nextEdge, tapState.receivedSeconds())
+            return
         }
+        processing = true
+        let forcedStart = merge.forcedStart(for: edge - WindowGeometry.segmentSeconds)
+        let deviceRate = tapState.deviceRate()
         inferenceQueue.async { [weak self, inference] in
-            let result = inference.run(windowIndex: index, samples: deviceSamples,
+            let decodeStart = CACurrentMediaTime()
+            let result = inference.run(windowIndex: index, edgeSeconds: edge, samples: deviceSamples,
                                        deviceRate: deviceRate, forcedStartPos: forcedStart)
+            let decodeWall = CACurrentMediaTime() - decodeStart
             Task { @MainActor [weak self] in
                 self?.processing = false
+                self?.lastDecodeWall = decodeWall
                 if let result {
-                    self?.absorb(result)
+                    self?.absorbWindow(result)
                 }
             }
         }
     }
 
-    /// Applies one decoded window: merges each decoded interval with the
-    /// last live note of its pitch (re-onset replaces, continuation
-    /// extends), then reports what is new and recomputes the chord sheet.
-    private func absorb(_ result: WindowResult) {
-        var newCount = 0
-        for event in result.events {
-            var note = NoteEvent(pitch: event.pitch, velocity: event.velocity,
-                                 onset: max(event.onsetSeconds, 0), duration: 0)
-            note.duration = max(event.offsetSeconds, note.onset + 1e-8) - note.onset
-
-            // noise-floor phantoms never become events: the reference
-            // model fires sub-55 ms notes on quiet room tone, real staccato
-            // does not get that short at the piano
-            let isStrikeCandidate = event.hasOnset && note.duration >= WindowGeometry.minimumNoteDuration
-
-            if let index = liveIndex[event.pitch], history.indices.contains(index),
-               note.onset < history[index].offset {
-                if isStrikeCandidate {
-                    // re-onset while still sounding replaces the event
-                    history[index] = note
-                    newCount += 1
-                    onNoteEvent?(note, .struck)
-                } else if !event.hasOnset {
-                    // continuation: the sounding note simply lasts longer
-                    let newEnd = max(history[index].offset, note.offset)
-                    history[index].duration = newEnd - history[index].onset
-                    onNoteEvent?(history[index], .extended)
-                }
-            } else if isStrikeCandidate {
-                history.append(note)
-                liveIndex[event.pitch] = history.count - 1
-                newCount += 1
-                onNoteEvent?(note, .struck)
+    /// Applies one decoded window: the streaming merge extends the history
+    /// and reports what is worth emitting live; the chord sheet recomputes
+    /// over the whole history.
+    private func absorbWindow(_ result: WindowResult) {
+        for emission in merge.absorb(result) {
+            let kind: NoteEventKind
+            switch emission.kind {
+            case .struck: kind = .struck
+            case .extended: kind = .extended
+            case .released: kind = .released
             }
+            onNoteEvent?(emission.event, kind)
         }
-        noteCount += newCount
-
-        notes = history
+        notes = merge.notes
+        noteCount = merge.notes.count
         recomputeChords()
-
-        let covered = Double(result.windowIndex) * WindowGeometry.stepWallSeconds
-            - WindowGeometry.padSeconds + WindowGeometry.segmentSeconds
-        onWindowCovered?(covered)
     }
 
     private func recomputeChords() {
@@ -592,10 +598,5 @@ final class TranscriptionEngine: ObservableObject {
         }
         sheet = entries
         currentChord = entries.last?.chord
-    }
-
-    /// seconds since performance second zero, on the wall clock
-    private var performanceAge: Double {
-        CACurrentMediaTime() - performanceOrigin
     }
 }
