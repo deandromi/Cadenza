@@ -179,7 +179,6 @@ final class LevelLineView: NSView {
 /// renders through a guaranteed regular subview chain.
 @MainActor
 func makeGlassBackdrop(cornerRadius: CGFloat, interactive: Bool) -> NSGlassEffectView {
-    // EXPERIMENT: plain view instead of glass
     let lens = NSGlassEffectView()
     lens.style = .regular
     lens.cornerRadius = cornerRadius

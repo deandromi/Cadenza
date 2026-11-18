@@ -1,15 +1,12 @@
 import AppKit
 
 if CommandLine.arguments.contains("--designs") {
-    print("[designs] branch entered")
     freopen("/tmp/cadenza_designs.log", "a", stdout)
     freopen("/tmp/cadenza_designs.log", "a", stderr)
     setvbuf(stdout, nil, _IONBF, 0)
     let app = NSApplication.shared
-    print("[designs] nsapplication ready")
     let gallery = DesignGalleryController()
     app.delegate = gallery
-    print("[designs] delegate assigned")
     app.setActivationPolicy(.regular)
     // the window must be born inside the run loop, like the main app's:
     // views built before it never join the live layout engine

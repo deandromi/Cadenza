@@ -1,13 +1,22 @@
 import AppKit
+import ScreenCaptureKit
 
 /// The design gallery: one inspectable draft of the practice screen running a
 /// simulated session. Launch with `--designs`; add `--designs-shot` to print
 /// a layout report with pixel probes and exit instead of staying open.
+///
+/// The drafts' building blocks live in PaperChrome.swift, shared with the
+/// real practice screen: this gallery feeds them a simulated transport so the
+/// approved composition stays inspectable while the app moves on.
 @MainActor
 final class DesignGalleryController: NSObject, NSApplicationDelegate {
     private let clock = DesignSessionClock()
     private var window: NSWindow?
     private var draft: KeyboardBloomDraft?
+    private var practiceScreen: PracticeScreenView?
+    /// ink rectangles of whichever screen the gallery is showing; the
+    /// practice variant is the real screen the app ships
+    private var inkRectsProvider: (() -> [(String, NSRect)])?
 
     /// The gallery builds inside applicationDidFinishLaunching, the same
     /// lifecycle the working main app uses: a window built before the run
@@ -17,18 +26,35 @@ final class DesignGalleryController: NSObject, NSApplicationDelegate {
         openGallery()
     }
 
-    /// Cell test: window, frame-driven root, one pinned stack with one
-    /// button. If the button renders, the engine lives and the poison is
-    /// somewhere in the real gallery tree.
     /// Assembles the window and starts the simulated session; called from
-    /// applicationDidFinishLaunching once the run loop owns the app.
+    /// applicationDidFinishLaunching once the run loop owns the app. With
+    /// `--practice` the window shows the real practice screen at rest
+    /// instead, so the live capture report can prove the shipped UI.
     func openGallery() {
         // the gallery is a paper world: it always renders in light mode,
         // whatever the system prefers
         NSApplication.shared.appearance = NSAppearance(named: .aqua)
 
-        let newDraft = KeyboardBloomDraft(clock: clock)
-        draft = newDraft
+        let practiceMode = CommandLine.arguments.contains("--practice")
+        let content: NSView
+        if practiceMode {
+            let screen = PracticeScreenView(transport: PanelTransport(
+                isListening: { false },
+                toggleListening: {},
+                isRecording: { false },
+                toggleRecording: {},
+                exportEnabled: { false },
+                export: {}
+            ))
+            practiceScreen = screen
+            content = screen
+            inkRectsProvider = { [weak screen] in screen?.inkRects() ?? [] }
+        } else {
+            let newDraft = KeyboardBloomDraft(clock: clock)
+            draft = newDraft
+            content = newDraft
+            inkRectsProvider = { [weak newDraft] in newDraft?.inkRects() ?? [] }
+        }
 
         let newWindow = NSWindow(
             contentRect: NSRect(x: 160, y: 120, width: 1080, height: 720),
@@ -36,30 +62,33 @@ final class DesignGalleryController: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        newWindow.title = "Design draft"
+        newWindow.title = practiceMode ? "Practice screen" : "Design draft"
         newWindow.minSize = NSSize(width: 900, height: 620)
+        newWindow.center()
         // the window's content is a frame-driven root with autoresizing,
         // exactly like the working main app: a constraint-pinned content
         // view breaks the deeper layout passes on this OS build
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 1080, height: 720))
         root.autoresizingMask = [.width, .height]
         newWindow.contentView = root
-        root.addSubview(newDraft)
+        root.addSubview(content)
         NSLayoutConstraint.activate([
-            newDraft.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            newDraft.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            newDraft.topAnchor.constraint(equalTo: root.topAnchor),
-            newDraft.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            content.topAnchor.constraint(equalTo: root.topAnchor),
+            content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
         window = newWindow
         window?.makeKeyAndOrderFront(nil)
-        print("[designs] draft window opened")
+        print("[designs] \(practiceMode ? "practice screen" : "draft") window opened")
         fflush(stdout)
 
-        clock.onUpdate = { [weak self] moment in
-            self?.draft?.handle(moment)
+        if !practiceMode {
+            clock.onUpdate = { [weak self] moment in
+                self?.draft?.handle(moment)
+            }
+            clock.start()
         }
-        clock.start()
         NSApplication.shared.activate(ignoringOtherApps: true)
         if CommandLine.arguments.contains("--designs-shot") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
@@ -87,7 +116,8 @@ final class DesignGalleryController: NSObject, NSApplicationDelegate {
     }
 
     /// Layout report plus pixel probes over the captured draft, written to
-    /// the gallery log. Nothing is trusted until the pixels say so.
+    /// the gallery log. Nothing is trusted until the pixels say so: the
+    /// cacheDisplay bitmap proves geometry, the live capture proves ink.
     private func shoot() {
         print("[shot] --- layout report ---")
         if let theWindow = window {
@@ -96,7 +126,12 @@ final class DesignGalleryController: NSObject, NSApplicationDelegate {
                 print("[shot] content view frame \(content.frame)")
             }
         }
-        draft?.reportLayout()
+        if let theDraft = draft {
+            theDraft.reportLayout()
+        }
+        if let practiceScreen {
+            print("[shot] practice screen bounds \(practiceScreen.bounds)")
+        }
         guard let contentView = window?.contentView else {
             print("[shot] no content view")
             fflush(stdout)
@@ -127,15 +162,175 @@ final class DesignGalleryController: NSObject, NSApplicationDelegate {
             )
         }
         print("[shot] paper reference at (60, 640): \(sample(NSPoint(x: 60, y: 640)))")
-        for probe in draftingPanelContentProbes() {
-            print("[shot] probe \(probe.label) at \(Int(probe.point.x)),\(Int(probe.point.y)): \(sample(probe.point))")
+        if let theDraft = draft {
+            for probe in draftingPanelContentProbes() {
+                print("[shot] probe \(probe.label) at \(Int(probe.point.x)),\(Int(probe.point.y)): \(sample(probe.point))")
+            }
+            for probe in theDraft.pixelProbes() {
+                print("[shot] probe \(probe.label) at \(Int(probe.point.x)),\(Int(probe.point.y)): \(sample(probe.point))")
+            }
         }
-        for probe in draft?.pixelProbes() ?? [] {
-            print("[shot] probe \(probe.label) at \(Int(probe.point.x)),\(Int(probe.point.y)): \(sample(probe.point))")
+        for (name, rect) in inkRectsProvider?() ?? [] {
+            print("[shot] ink \(name) rect \(rect), darkest \(darkestPixel(in: rect, bitmap: bitmap))")
         }
-        print("[shot] --- end ---")
-        fflush(stdout)
-        exit(0)
+        liveCaptureReport()
+    }
+
+    /// Scans a rect in view coordinates for the darkest pixel, reporting
+    /// its luminance: text ink reads near 0.2, empty paper near 0.95.
+    private func darkestPixel(in rect: NSRect, bitmap: NSBitmapImageRep) -> String {
+        let minX = max(0, Int(rect.minX))
+        let maxX = min(Int(bitmap.pixelsWide) - 1, Int(rect.maxX))
+        let minY = max(0, bitmap.pixelsHigh - 1 - Int(rect.maxY))
+        let maxY = min(Int(bitmap.pixelsHigh) - 1, bitmap.pixelsHigh - 1 - Int(rect.minY))
+        guard minX <= maxX, minY <= maxY else { return "out of bounds" }
+        var darkest = 1.0
+        for x in minX...maxX {
+            for y in minY...maxY {
+                guard let color = bitmap.colorAt(x: x, y: y) else { continue }
+                let luminance = 0.299 * color.redComponent
+                    + 0.587 * color.greenComponent
+                    + 0.114 * color.blueComponent
+                darkest = min(darkest, luminance)
+            }
+        }
+        return String(format: "%.3f", darkest)
+    }
+
+    /// Captures this app's own window through the window server and scans
+    /// the ink rectangles there. The cacheDisplay bitmap above never paints
+    /// text fields into its pixels, so only the live compositor proves the
+    /// panel's ink and the glass lenses actually reach the screen. The
+    /// ScreenCaptureKit calls carry only values, so nothing main-actor
+    /// crosses a boundary; the whole shot exits when the scan is done.
+    private func liveCaptureReport() {
+        let windowNumber = window?.windowNumber ?? 0
+        var regions: [(String, NSRect)] = [
+            ("paper reference", NSRect(x: 320, y: 640, width: 60, height: 20))
+        ]
+        regions.append(contentsOf: inkRectsProvider?() ?? [])
+        // the capture is taken of the window alone, at native backing scale,
+        // so glyph strokes land as real pixels instead of smear
+        let frame = window?.frame ?? .zero
+        let backing = Double(window?.screen?.backingScaleFactor ?? 2)
+        Task { [windowNumber, regions, frame, backing] in
+            guard let content = try? await SCShareableContent.currentProcess else {
+                print("[shot] live capture listing failed")
+                exitShot()
+                return
+            }
+            guard let own = content.windows.first(where: { $0.windowID == windowNumber }) else {
+                print("[shot] live capture: own window missing from the window list")
+                exitShot()
+                return
+            }
+            let filter = SCContentFilter(desktopIndependentWindow: own)
+            let configuration = SCStreamConfiguration()
+            configuration.sourceRect = CGRect(
+                x: 0, y: 0, width: frame.width, height: frame.height
+            )
+            configuration.width = Int(frame.width * backing)
+            configuration.height = Int(frame.height * backing)
+            configuration.scalesToFit = true
+            guard let image = try? await SCScreenshotManager.captureImage(
+                contentFilter: filter,
+                configuration: configuration
+            ) else {
+                print("[shot] live capture image failed")
+                exitShot()
+                return
+            }
+            scanLiveFrame(image, regions: regions, windowFrame: frame)
+            exitShot()
+        }
+    }
+}
+
+/// Ends the shot from whatever queue the capture landed on, once every
+/// report line is printed.
+private func exitShot() {
+    print("[shot] --- end ---")
+    fflush(stdout)
+    exit(0)
+}
+
+/// Scans the live compositor image for the darkest pixel inside each
+/// rectangle: ink reads near 0.2, empty paper near 0.95. The capture holds
+/// the window alone, captured at backing scale, in top-left order: 32
+/// points of title bar above the 720-point content, the view rectangles
+/// bottom-up inside that content.
+private func scanLiveFrame(
+    _ image: CGImage,
+    regions: [(String, NSRect)],
+    windowFrame: NSRect
+) {
+    let width = image.width
+    let height = image.height
+    guard width > 0, windowFrame.width > 0 else { return }
+    guard let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width * 4,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        print("[shot] live capture context failed")
+        return
+    }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    guard let data = context.data else {
+        print("[shot] live capture buffer missing")
+        return
+    }
+    let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+
+    func luminance(column: Int, row: Int) -> Double {
+        let offset = (row * width + column) * 4
+        let red = Double(pixels[offset]) / 255.0
+        let green = Double(pixels[offset + 1]) / 255.0
+        let blue = Double(pixels[offset + 2]) / 255.0
+        return 0.299 * red + 0.587 * green + 0.114 * blue
+    }
+
+    // pixels per point between the window and the capture
+    let scale = Double(width) / windowFrame.width
+
+    print("[shot] live capture \(width)x\(height) at scale \(String(format: "%.2f", scale))")
+
+    func rowRange(of rect: NSRect) -> ClosedRange<Int> {
+        let top = (32.0 + 720.0 - rect.maxY) * scale
+        let bottom = (32.0 + 720.0 - rect.minY) * scale
+        let clampedTop = max(0, Int(top))
+        let clampedBottom = min(height - 1, Int(bottom))
+        return clampedTop...max(clampedTop, clampedBottom)
+    }
+
+    func columnRange(of rect: NSRect) -> ClosedRange<Int> {
+        let left = rect.minX * scale
+        let right = rect.maxX * scale
+        let clampedLeft = max(0, Int(left))
+        let clampedRight = min(width - 1, Int(right))
+        return clampedLeft...max(clampedLeft, clampedRight)
+    }
+
+    for (name, rect) in regions {
+        var darkest = 1.0
+        outer: for column in columnRange(of: rect) {
+            for row in rowRange(of: rect) {
+                darkest = min(darkest, luminance(column: column, row: row))
+                if darkest < 0.05 { break outer }
+            }
+        }
+        print(String(format: "[shot] live ink %@ darkest %.3f", name, darkest))
+    }
+    let pngURL = URL(fileURLWithPath: "/tmp/cadenza_live.png") as CFURL
+    if let destination = CGImageDestinationCreateWithURL(pngURL, "public.png" as CFString, 1, nil) {
+        CGImageDestinationAddImage(destination, image, nil)
+        if CGImageDestinationFinalize(destination) {
+            print("[shot] live png written to /tmp/cadenza_live.png")
+        }
     }
 }
 
@@ -148,7 +343,7 @@ final class KeyboardBloomDraft: NSView {
     private let clock: DesignSessionClock
     private let keybed = KeybedView()
     private let bloom = NoteBloomView()
-    private let panel: ControlPanelLens
+    private var panel: ControlPanelLens!
     private let menuLens = MenuLens()
     private let wordmark = makeInkLabel(
         "Cadenza",
@@ -156,13 +351,25 @@ final class KeyboardBloomDraft: NSView {
         color: PaperTheme.ink
     )
     private var wasSounding = false
+    private var recording = false
 
     init(clock: DesignSessionClock) {
         self.clock = clock
-        panel = ControlPanelLens(clock: clock)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
+
+        // the transport closures capture self, so the panel waits for the
+        // run of super.init
+        panel = ControlPanelLens(transport: PanelTransport(
+            isListening: { [weak clock] in clock?.isRunning ?? false },
+            toggleListening: { [weak self] in self?.toggleClock() },
+            isRecording: { [weak self] in self?.recording ?? false },
+            toggleRecording: { [weak self] in self?.recording.toggle() },
+            exportEnabled: { false },
+            export: {}
+        ))
+        panel.syncTransport()
 
         let paper = PaperView()
         paper.translatesAutoresizingMaskIntoConstraints = false
@@ -224,6 +431,17 @@ final class KeyboardBloomDraft: NSView {
         fatalError("init(coder:) is not supported")
     }
 
+    /// The simulated transport's listen toggle: pauses the clock and settles
+    /// whatever was sounding, the way a stopped session should come to rest.
+    private func toggleClock() {
+        clock.toggleRunning()
+        if !clock.isRunning {
+            wasSounding = false
+            keybed.soundingPitches = []
+            bloom.releaseAll()
+        }
+    }
+
     func handle(_ moment: DesignSessionClock.Moment) {
         keybed.soundingPitches = moment.sounding ? Set(moment.pitches) : []
         if moment.sounding, !wasSounding {
@@ -279,752 +497,12 @@ final class KeyboardBloomDraft: NSView {
             )),
         ]
     }
-}
 
-/// The wordmark's terminal dot: the stamp speaking once, quietly.
-final class StampDot: NSView {
-    init() {
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        PaperTheme.stamp.setFill()
-        NSBezierPath(ovalIn: bounds).fill()
-    }
-}
-
-/// Top-right glass pill opening the menu of future sections, shown disabled
-/// until those sections exist. The lens is pure backdrop; the pill renders
-/// through the regular subview chain on top of it.
-final class MenuLens: NSView {
-    private let menuButton = NSButton(title: "Menu", target: nil, action: nil)
-    private var pill: NSStackView?
-    private var backdrop: NSView?
-
-    init() {
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        menuButton.isBordered = false
-        menuButton.font = .systemFont(ofSize: 13, weight: .medium)
-        menuButton.contentTintColor = PaperTheme.ink
-        menuButton.target = self
-        menuButton.action = #selector(openMenu)
-        // views never mutate before super.init on this OS build: doing so
-        // orphans them from the live layout engine
-        let newPill = padForLens(menuButton, horizontal: 18, vertical: 12)
-        let newBackdrop = NSView()
-        // on this OS build, pinning a view never auto-disables its
-        // autoresizing mask: do it by hand or the view stays at zero
-        newPill.translatesAutoresizingMaskIntoConstraints = false
-        newBackdrop.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(newBackdrop)
-        addSubview(newPill)
-        pill = newPill
-        backdrop = newBackdrop
-        if let pill, let backdrop {
-            NSLayoutConstraint.activate([
-                backdrop.leadingAnchor.constraint(equalTo: leadingAnchor),
-                backdrop.trailingAnchor.constraint(equalTo: trailingAnchor),
-                backdrop.topAnchor.constraint(equalTo: topAnchor),
-                backdrop.bottomAnchor.constraint(equalTo: bottomAnchor),
-                pill.leadingAnchor.constraint(equalTo: leadingAnchor),
-                pill.trailingAnchor.constraint(equalTo: trailingAnchor),
-                pill.topAnchor.constraint(equalTo: topAnchor),
-                pill.bottomAnchor.constraint(equalTo: bottomAnchor),
-            ])
-        }
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override var intrinsicContentSize: NSSize {
-        pill?.fittingSize ?? fittingSize
-    }
-
-    @objc private func openMenu() {
-        let menu = NSMenu()
-        for title in ["Sheet music", "Sessions", "MIDI routing", "Settings"] {
-            menu.addItem(withTitle: title, action: nil, keyEquivalent: "").isEnabled = false
-        }
-        // items stay disabled: the sections are future work, the menu shows
-        // where they will live
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: menuButton.bounds.minY - 8), in: menuButton)
-    }
-}
-
-/// The control panel: the session's numbers, the chord being heard, the
-/// breathing level line, and the transport, gathered in one glass lens. The
-/// lens is pure backdrop; the rows render through the regular subview chain
-/// on top of it, so the panel can never collapse into nothing.
-final class ControlPanelLens: NSView {
-    private let clock: DesignSessionClock
-    private let rows = NSStackView()
-    private let timeLabel = makeInkLabel(
-        "0:47",
-        font: .monospacedDigitSystemFont(ofSize: 19, weight: .regular),
-        color: PaperTheme.ink
-    )
-    private let chordLabel = makeInkLabel(
-        "C",
-        font: PaperTheme.displaySerif(24),
-        color: PaperTheme.secondaryInk
-    )
-    private let countLabel = makeInkLabel(
-        "10 notes",
-        font: .monospacedDigitSystemFont(ofSize: 12, weight: .regular),
-        color: PaperTheme.secondaryInk
-    )
-    private let levelLine = LevelLineView()
-    private let listenButton = NSButton(title: "Listen", target: nil, action: nil)
-    private let recordButton = NSButton(title: "Record", target: nil, action: nil)
-    private let exportButton = NSButton(title: "Export", target: nil, action: nil)
-    private let backdrop: NSView
-    private var recording = false
-
-    init(clock: DesignSessionClock) {
-        self.clock = clock
-        backdrop = NSView()
-
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-
-        // views and their relationships are built only after super.init on
-        // this OS build: mutation before it orphans subtrees from the live
-        // layout engine
-        for button in [listenButton, recordButton, exportButton] {
-            button.isBordered = false
-            button.font = .systemFont(ofSize: 13, weight: .medium)
-            button.contentTintColor = PaperTheme.ink
-        }
-        exportButton.isEnabled = false
-
-        // on this OS build, pinning a view never auto-disables its
-        // autoresizing mask: do it by hand or the view stays at zero
-        rows.translatesAutoresizingMaskIntoConstraints = false
-        backdrop.translatesAutoresizingMaskIntoConstraints = false
-
-        rows.orientation = .vertical
-        rows.alignment = .leading
-        rows.spacing = 12
-        rows.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
-        let divider = HairlineView()
-        let buttons = NSStackView(views: [listenButton, recordButton, exportButton])
-        buttons.orientation = .horizontal
-        buttons.spacing = 20
-        addSubview(backdrop)
-        addSubview(rows)
-        rows.addArrangedSubview(Self.captionedRow("Session", timeLabel))
-        rows.addArrangedSubview(Self.captionedRow("Hearing", chordLabel))
-        rows.addArrangedSubview(Self.captionedRow("Notes so far", countLabel))
-        rows.addArrangedSubview(Self.captionedRow("Level", levelLine))
-        rows.addArrangedSubview(divider)
-        rows.addArrangedSubview(buttons)
-        NSLayoutConstraint.activate([
-            backdrop.leadingAnchor.constraint(equalTo: leadingAnchor),
-            backdrop.trailingAnchor.constraint(equalTo: trailingAnchor),
-            backdrop.topAnchor.constraint(equalTo: topAnchor),
-            backdrop.bottomAnchor.constraint(equalTo: bottomAnchor),
-            rows.leadingAnchor.constraint(equalTo: leadingAnchor),
-            rows.trailingAnchor.constraint(equalTo: trailingAnchor),
-            rows.topAnchor.constraint(equalTo: topAnchor),
-            rows.bottomAnchor.constraint(equalTo: bottomAnchor),
-            levelLine.widthAnchor.constraint(equalToConstant: 216),
-            divider.widthAnchor.constraint(equalToConstant: 216),
-        ])
-
-        listenButton.target = self
-        listenButton.action = #selector(toggleListening)
-        recordButton.target = self
-        recordButton.action = #selector(toggleRecording)
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    /// Caption over value, the panel's rhythm.
-    private static func captionedRow(_ caption: String, _ value: NSView) -> NSStackView {
-        let label = makeInkLabel(
-            caption,
-            font: .systemFont(ofSize: 11, weight: .medium),
-            color: PaperTheme.secondaryInk
-        )
-        let stack = NSStackView(views: [label, value])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 2
-        return stack
-    }
-
-    /// The panel lives by its content: the rows are a direct subview, so
-    /// their fitting size is the panel's intrinsic size.
-    override var intrinsicContentSize: NSSize {
-        rows.fittingSize
-    }
-
-    func reportLayout(prefix: String) {
-        print("\(prefix)panel rows frame \(rows.frame)")
-        for case let row as NSStackView in rows.arrangedSubviews {
-            print("\(prefix)panel row \(row.frame)")
-        }
-        print("\(prefix)panel time label \(timeLabel.frame)")
-    }
-
-    func setSession(time: String, chord: String, notes: String, level: Double, sounding: Bool) {
-        timeLabel.stringValue = time
-        chordLabel.stringValue = chord
-        chordLabel.textColor = sounding ? PaperTheme.stamp : PaperTheme.secondaryInk
-        countLabel.stringValue = notes
-        levelLine.setFractionTarget(level)
-        levelLine.sounding = sounding
-    }
-
-    @objc private func toggleListening() {
-        clock.toggleRunning()
-        listenButton.title = clock.isRunning ? "Stop" : "Listen"
-    }
-
-    @objc private func toggleRecording() {
-        recording.toggle()
-        recordButton.contentTintColor = recording ? PaperTheme.stamp : PaperTheme.ink
-    }
-}
-
-/// The 88-key bed along the bottom: warm ivory naturals, warm ink sharps,
-/// the stamp carrying whichever pitches sound right now, red felt across the
-/// top the way a real piano wears it.
-final class KeybedView: NSView {
-    private static let naturals = 52
-
-    /// the dark bed the keys sit in; it shows through every seam
-    private static let keybed = NSColor(name: "cadenzaKeybed") { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedWhite: 0.04, alpha: 1.0)
-            : NSColor(calibratedRed: 0.129, green: 0.122, blue: 0.114, alpha: 1.0)
-    }
-
-    /// where each sharp really sits relative to its boundary, in fractions
-    /// of a natural's width, the way a piano's action is actually laid out
-    private static let accidentalOffsets: [Int: CGFloat] = [
-        1: -0.09,
-        3: 0.09,
-        6: -0.11,
-        8: 0.0,
-        10: 0.11,
-    ]
-
-    private static let ivory = NSColor(name: "cadenzaKeyIvory") { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedWhite: 0.22, alpha: 1.0)
-            : NSColor(calibratedRed: 0.988, green: 0.98, blue: 0.961, alpha: 1.0)
-    }
-
-    private static let ivoryShade = NSColor(name: "cadenzaKeyIvoryShade") { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedWhite: 0.16, alpha: 1.0)
-            : NSColor(calibratedRed: 0.918, green: 0.898, blue: 0.867, alpha: 1.0)
-    }
-
-    private static let ebony = NSColor(name: "cadenzaKeyEbony") { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedWhite: 0.06, alpha: 1.0)
-            : NSColor(calibratedRed: 0.243, green: 0.231, blue: 0.220, alpha: 1.0)
-    }
-
-    /// pitches sounding right now; stamp-tinted keys follow
-    var soundingPitches: Set<Int> = [] {
-        didSet { needsDisplay = true }
-    }
-
-    init() {
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let naturalWidth = bounds.width / CGFloat(Self.naturals)
-        Self.keybed.setFill()
-        bounds.fill()
-        drawNaturals(width: naturalWidth)
-        drawAccidentals(width: naturalWidth)
-        drawFallboardShadow()
-    }
-
-    /// A key front: rounded at the player's edge, square at the fallboard.
-    private func keyFront(_ rect: NSRect, radius: CGFloat) -> NSBezierPath {
-        let path = NSBezierPath()
-        path.move(to: NSPoint(x: rect.minX, y: rect.maxY))
-        path.line(to: NSPoint(x: rect.minX, y: rect.minY + radius))
-        path.appendArc(
-            from: NSPoint(x: rect.minX, y: rect.minY),
-            to: NSPoint(x: rect.minX + radius, y: rect.minY),
-            radius: radius
-        )
-        path.line(to: NSPoint(x: rect.maxX - radius, y: rect.minY))
-        path.appendArc(
-            from: NSPoint(x: rect.maxX, y: rect.minY),
-            to: NSPoint(x: rect.maxX, y: rect.minY + radius),
-            radius: radius
-        )
-        path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
-        path.close()
-        return path
-    }
-
-    private func drawNaturals(width: CGFloat) {
-        let keyHeight = bounds.height
-        // the seam: dark bed showing between ivory blocks
-        let seam: CGFloat = 0.8
-        var index = 0
-        for pitch in PianoRange.firstPitch...PianoRange.lastPitch where Self.isNatural(pitch) {
-            let rect = NSRect(
-                x: CGFloat(index) * width + seam,
-                y: 0,
-                width: width - seam * 2,
-                height: keyHeight
-            )
-            let key = keyFront(rect, radius: 2.5)
-            Self.ivory.setFill()
-            key.fill()
-            if soundingPitches.contains(pitch) {
-                PaperTheme.stamp.withAlphaComponent(0.14).setFill()
-                key.fill()
-            }
-            // the front face dips out of the light: shade washing up from
-            // the foot, breaking at a crisp seam line
-            let lip = NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: 9)
-            if let gradient = NSGradient(colors: [
-                Self.ivoryShade,
-                Self.ivoryShade.withAlphaComponent(0.0),
-            ]) {
-                gradient.draw(in: lip, angle: 90)
-            }
-            Self.ivoryShade.withAlphaComponent(0.55).setFill()
-            NSRect(x: rect.minX, y: lip.maxY, width: rect.width, height: 1).fill()
-            index += 1
-        }
-    }
-
-    private func drawAccidentals(width: CGFloat) {
-        let accidentalWidth = width * 0.55
-        let accidentalHeight = bounds.height * 0.62
-        var naturalsPassed = 0
-        for pitch in PianoRange.firstPitch...PianoRange.lastPitch {
-            if Self.isNatural(pitch) {
-                naturalsPassed += 1
-                continue
-            }
-            // the sharp leans the way a real action does, never dead-center
-            let drift = Self.accidentalOffsets[pitch % 12] ?? 0
-            let center = CGFloat(naturalsPassed) * width + drift * width
-            let rect = NSRect(
-                x: center - accidentalWidth / 2,
-                y: bounds.height - accidentalHeight,
-                width: accidentalWidth,
-                height: accidentalHeight
-            )
-            let key = keyFront(rect, radius: 2)
-            // the sharp leans over the naturals: a heavy cast shadow first
-            NSGraphicsContext.current?.saveGraphicsState()
-            let shadow = NSShadow()
-            shadow.shadowColor = NSColor.black.withAlphaComponent(0.30)
-            shadow.shadowBlurRadius = 3
-            shadow.shadowOffset = NSSize(width: 0, height: -1.5)
-            shadow.set()
-            Self.ebony.setFill()
-            key.fill()
-            NSGraphicsContext.current?.restoreGraphicsState()
-            if soundingPitches.contains(pitch) {
-                PaperTheme.stamp.withAlphaComponent(0.88).setFill()
-                key.fill()
-            }
-            // lacquer: one vertical gloss ridge where the light rolls off
-            if let gloss = NSGradient(colors: [
-                NSColor.white.withAlphaComponent(0.30),
-                NSColor.white.withAlphaComponent(0.04),
-            ]) {
-                gloss.draw(
-                    in: NSRect(
-                        x: rect.minX + 1.2,
-                        y: rect.minY + 2,
-                        width: 1.8,
-                        height: rect.height - 4
-                    ),
-                    angle: -90
-                )
-            }
-            PaperTheme.hairline.withAlphaComponent(0.30).setStroke()
-            key.lineWidth = 1
-            key.stroke()
-        }
-    }
-
-    /// The case above the keys: no felt, only the shadow the fallboard casts
-    /// across the top of the bed.
-    private func drawFallboardShadow() {
-        if let shadow = NSGradient(colors: [
-            NSColor.black.withAlphaComponent(0.18),
-            NSColor.black.withAlphaComponent(0.0),
-        ]) {
-            shadow.draw(
-                in: NSRect(x: 0, y: bounds.height - 6, width: bounds.width, height: 6),
-                angle: -90
-            )
-        }
-    }
-
-    private static func isNatural(_ pitch: Int) -> Bool {
-        [0, 2, 4, 5, 7, 9, 11].contains(pitch % 12)
-    }
-}
-
-/// One blooming musical note, hand-drawn: tilted ellipse head with a light
-/// inner sheen, tapered stem, and for single notes a full curved flag; bass
-/// voices come as beamed pairs. Tinted stamp while sounding, warm ink once
-/// released, resting on a whisper of shadow.
-final class NoteGlyphView: NSView {
-    enum Phase {
-        case sounding
-        case released
-    }
-
-    enum Shape {
-        case single
-        case beamedPair
-    }
-
-    let shape: Shape
-    var phase: Phase = .sounding {
-        didSet { needsDisplay = true }
-    }
-
-    init(shape: Shape, height: CGFloat, rotation: CGFloat) {
-        self.shape = shape
-        let width = height * (shape == .beamedPair ? 0.98 : 0.72)
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: height))
-        frameRotation = rotation
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let ink: NSColor = phase == .sounding ? PaperTheme.stamp : PaperTheme.ink
-        let sheen = NSColor.white.withAlphaComponent(0.30)
-        NSGraphicsContext.current?.saveGraphicsState()
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.12)
-        shadow.shadowBlurRadius = 6
-        shadow.shadowOffset = NSSize(width: 0, height: -2)
-        shadow.set()
-
-        switch shape {
-        case .single:
-            drawSingleNote(in: bounds, ink: ink, sheen: sheen)
-        case .beamedPair:
-            drawBeamedPair(in: bounds, ink: ink, sheen: sheen)
-        }
-        NSGraphicsContext.current?.restoreGraphicsState()
-    }
-
-    /// Head as a tilted ellipse, engraved with a hint of light.
-    private func head(center: NSPoint, unit: CGFloat) -> NSBezierPath {
-        tiltedEllipse(
-            center: center,
-            radiusX: 0.145 * unit,
-            radiusY: 0.088 * unit,
-            tilt: -22
-        )
-    }
-
-    private func drawSingleNote(in bounds: NSRect, ink: NSColor, sheen: NSColor) {
-        let unit = bounds.height
-        ink.setFill()
-        head(center: NSPoint(x: 0.23 * unit, y: 0.225 * unit), unit: unit).fill()
-        sheen.setFill()
-        tiltedEllipse(
-            center: NSPoint(x: 0.21 * unit, y: 0.245 * unit),
-            radiusX: 0.07 * unit,
-            radiusY: 0.04 * unit,
-            tilt: -22
-        ).fill()
-        taperedStem(
-            bottomX: 0.331 * unit,
-            fromY: 0.20 * unit,
-            toY: 0.94 * unit,
-            widthAtBottom: 0.038 * unit,
-            widthAtTop: 0.030 * unit,
-            ink: ink
-        )
-        drawFlag(unit: unit, ink: ink)
-    }
-
-    /// The classic eighth-note flag, two sweeping cubic curves.
-    private func drawFlag(unit: CGFloat, ink: NSColor) {
-        let path = NSBezierPath()
-        path.move(to: NSPoint(x: 0.365 * unit, y: 0.94 * unit))
-        path.curve(
-            to: NSPoint(x: 0.548 * unit, y: 0.818 * unit),
-            controlPoint1: NSPoint(x: 0.46 * unit, y: 0.925 * unit),
-            controlPoint2: NSPoint(x: 0.535 * unit, y: 0.885 * unit)
-        )
-        path.curve(
-            to: NSPoint(x: 0.503 * unit, y: 0.657 * unit),
-            controlPoint1: NSPoint(x: 0.558 * unit, y: 0.77 * unit),
-            controlPoint2: NSPoint(x: 0.535 * unit, y: 0.715 * unit)
-        )
-        path.curve(
-            to: NSPoint(x: 0.447 * unit, y: 0.662 * unit),
-            controlPoint1: NSPoint(x: 0.487 * unit, y: 0.64 * unit),
-            controlPoint2: NSPoint(x: 0.462 * unit, y: 0.648 * unit)
-        )
-        path.curve(
-            to: NSPoint(x: 0.393 * unit, y: 0.762 * unit),
-            controlPoint1: NSPoint(x: 0.428 * unit, y: 0.68 * unit),
-            controlPoint2: NSPoint(x: 0.404 * unit, y: 0.728 * unit)
-        )
-        path.line(to: NSPoint(x: 0.365 * unit, y: 0.772 * unit))
-        path.line(to: NSPoint(x: 0.365 * unit, y: 0.94 * unit))
-        path.close()
-        ink.setFill()
-        path.fill()
-    }
-
-    private func drawBeamedPair(in bounds: NSRect, ink: NSColor, sheen: NSColor) {
-        let unit = bounds.height
-        ink.setFill()
-        head(center: NSPoint(x: 0.16 * unit, y: 0.315 * unit), unit: unit).fill()
-        head(center: NSPoint(x: 0.60 * unit, y: 0.225 * unit), unit: unit).fill()
-        sheen.setFill()
-        tiltedEllipse(
-            center: NSPoint(x: 0.14 * unit, y: 0.335 * unit),
-            radiusX: 0.07 * unit,
-            radiusY: 0.04 * unit,
-            tilt: -22
-        ).fill()
-        tiltedEllipse(
-            center: NSPoint(x: 0.58 * unit, y: 0.245 * unit),
-            radiusX: 0.07 * unit,
-            radiusY: 0.04 * unit,
-            tilt: -22
-        ).fill()
-
-        stemQuad(x: 0.261 * unit, fromY: 0.29 * unit, toY: 0.90 * unit, width: 0.034 * unit, ink: ink)
-        stemQuad(x: 0.70 * unit, fromY: 0.205 * unit, toY: 0.855 * unit, width: 0.034 * unit, ink: ink)
-
-        // the beam slants gently down toward the second head
-        let beam = NSBezierPath()
-        beam.move(to: NSPoint(x: 0.261 * unit, y: 0.90 * unit))
-        beam.line(to: NSPoint(x: 0.734 * unit, y: 0.855 * unit))
-        beam.line(to: NSPoint(x: 0.734 * unit, y: 0.79 * unit))
-        beam.line(to: NSPoint(x: 0.261 * unit, y: 0.835 * unit))
-        beam.close()
-        ink.setFill()
-        beam.fill()
-    }
-
-    private func stemQuad(x: CGFloat, fromY: CGFloat, toY: CGFloat, width: CGFloat, ink: NSColor) {
-        let path = NSBezierPath()
-        path.move(to: NSPoint(x: x, y: fromY))
-        path.line(to: NSPoint(x: x, y: toY))
-        path.line(to: NSPoint(x: x + width, y: toY))
-        path.line(to: NSPoint(x: x + width, y: fromY))
-        path.close()
-        ink.setFill()
-        path.fill()
-    }
-
-    private func taperedStem(
-        bottomX: CGFloat,
-        fromY: CGFloat,
-        toY: CGFloat,
-        widthAtBottom: CGFloat,
-        widthAtTop: CGFloat,
-        ink: NSColor
-    ) {
-        let path = NSBezierPath()
-        path.move(to: NSPoint(x: bottomX, y: fromY))
-        path.line(to: NSPoint(x: bottomX, y: toY))
-        path.line(to: NSPoint(x: bottomX + widthAtTop, y: toY))
-        path.line(to: NSPoint(x: bottomX + widthAtBottom, y: fromY))
-        path.close()
-        ink.setFill()
-        path.fill()
-    }
-
-    private func tiltedEllipse(
-        center: NSPoint,
-        radiusX: CGFloat,
-        radiusY: CGFloat,
-        tilt: CGFloat
-    ) -> NSBezierPath {
-        let path = NSBezierPath(ovalIn: NSRect(
-            x: center.x - radiusX,
-            y: center.y - radiusY,
-            width: radiusX * 2,
-            height: radiusY * 2
-        ))
-        var transform = AffineTransform(translationByX: center.x, byY: center.y)
-        transform.rotate(byDegrees: tilt)
-        transform.translate(x: -center.x, y: -center.y)
-        path.transform(using: transform)
-        return path
-    }
-}
-
-/// Where playing becomes visible: large musical notes falling into the field
-/// in a soft cascade, placed the way notation places them so they never
-/// crowd, drifting up gently while the chord holds, then dissolving out of
-/// the paper. Bass left, treble right, faint staff lines wash underneath.
-final class NoteBloomView: NSView {
-    private struct Petal {
-        let glyph: NoteGlyphView
-        let x: CGFloat
-        let yBase: CGFloat
-        let spawnAt: Double
-        var releaseAt: Double?
-    }
-
-    private static let maxPetals = 18
-    private static let tickInterval = 1.0 / 30.0
-    private static let appearOver = 0.7
-    private static let fadeOver = 2.6
-    private static let cascadeStep = 0.12
-    private static let riseWhileHeld = 6.0
-    private static let riseAfterRelease = 9.0
-
-    private var petals: [Petal] = []
-    private var timer: Timer?
-    private var elapsed = 0.0
-
-    init() {
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        // the staff wash: hairlines the notes sit among, barely-there
-        let wash = PaperTheme.ink.withAlphaComponent(0.045)
-        wash.setFill()
-        let lines = 9
-        let gap = bounds.height / CGFloat(lines + 1)
-        for index in 1...lines {
-            NSRect(x: 0, y: CGFloat(index) * gap, width: bounds.width, height: 1).fill()
-        }
-    }
-
-    /// Spawns one note per pitch of a freshly struck chord, cascading.
-    func strike(pitches: [Int], serial: Int) {
-        startTimerIfNeeded()
-        for (offset, pitch) in pitches.enumerated() {
-            let glyph = NoteGlyphView(
-                shape: pitch < 60 ? .beamedPair : .single,
-                height: Self.glyphHeight(pitch, in: bounds.height),
-                rotation: Self.rotation(pitch, serial: serial)
-            )
-            glyph.alphaValue = 0
-            addSubview(glyph)
-            petals.append(Petal(
-                glyph: glyph,
-                x: Self.glyphX(pitch, serial: serial, in: bounds.width),
-                yBase: Self.glyphY(pitch, in: bounds.height),
-                spawnAt: elapsed + Double(offset) * Self.cascadeStep,
-                releaseAt: nil
-            ))
-        }
-        while petals.count > Self.maxPetals {
-            petals.removeFirst().glyph.removeFromSuperview()
-        }
-        tick()
-    }
-
-    /// Releases every blooming note: back to ink, then into the fade.
-    func releaseAll() {
-        for index in petals.indices where petals[index].releaseAt == nil {
-            petals[index].releaseAt = elapsed
-            petals[index].glyph.phase = .released
-        }
-    }
-
-    private func startTimerIfNeeded() {
-        guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
-        }
-    }
-
-    private func tick() {
-        elapsed += Self.tickInterval
-        var expired: [Int] = []
-        for (index, petal) in petals.enumerated() {
-            let age = elapsed - petal.spawnAt
-            let appear = Self.smoothstep(min(1, max(0, age / Self.appearOver)))
-            let fade: Double
-            if let releaseAt = petal.releaseAt {
-                fade = 1 - min(1, (elapsed - releaseAt) / Self.fadeOver)
-            } else {
-                fade = 1
-            }
-            let driftAfterRelease = petal.releaseAt.map {
-                Self.riseAfterRelease * (elapsed - $0)
-            } ?? 0
-            let rise = Self.riseWhileHeld * max(0, age) + driftAfterRelease
-
-            petal.glyph.alphaValue = CGFloat(0.98 * appear * fade)
-            petal.glyph.setFrameOrigin(NSPoint(
-                x: petal.x - petal.glyph.bounds.width / 2,
-                y: petal.yBase + CGFloat(rise)
-            ))
-            if fade <= 0 { expired.append(index) }
-        }
-        for index in expired.reversed() {
-            petals.remove(at: index).glyph.removeFromSuperview()
-        }
-    }
-
-    private static func smoothstep(_ p: Double) -> Double {
-        p * p * (3 - 2 * p)
-    }
-
-    /// Notes run from a sixth to a third of the field, by pitch.
-    private static func glyphHeight(_ pitch: Int, in height: CGFloat) -> CGFloat {
-        let variance = Double((pitch * 13) % 7) * 0.022
-        return CGFloat(Double(height) * (0.16 + variance))
-    }
-
-    /// Pitch mirrored across the field the way the keybed lays it out, using
-    /// nearly the full width, each strike slightly reseeded.
-    private static func glyphX(_ pitch: Int, serial: Int, in width: CGFloat) -> CGFloat {
-        let fraction = Double(pitch - PianoRange.firstPitch)
-            / Double(PianoRange.lastPitch - PianoRange.firstPitch)
-        let jitter = Double((pitch * 53 + serial * 97) % 33 - 16)
-        return CGFloat(Double(width) * (0.09 + 0.78 * fraction) + jitter)
-    }
-
-    /// Notation logic: high pitches bloom high, low pitches near the keys.
-    private static func glyphY(_ pitch: Int, in height: CGFloat) -> CGFloat {
-        let fraction = Double(pitch - PianoRange.firstPitch)
-            / Double(PianoRange.lastPitch - PianoRange.firstPitch)
-        return CGFloat(Double(height) * (0.10 + 0.42 * fraction))
-    }
-
-    private static func rotation(_ pitch: Int, serial: Int) -> CGFloat {
-        CGFloat((pitch * 29 + serial * 11) % 13 - 6)
+    /// Live ink rectangles in draft coordinates: the panel's labels and
+    /// buttons, plus the wordmark, straight from their laid-out frames.
+    /// The shot scans these for the darkest pixel so ink presence is
+    /// proven from real geometry, not from hand-picked points.
+    func inkRects() -> [(String, NSRect)] {
+        paperInkRects(panel: panel, wordmark: wordmark, in: self)
     }
 }
