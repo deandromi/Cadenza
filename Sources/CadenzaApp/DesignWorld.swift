@@ -142,6 +142,21 @@ final class LevelLineView: NSView {
     }
 }
 
+/// A glass lens as pure backdrop material, no content hosting: the caller
+/// pins it behind ordinary AppKit views sized to the same frame, so content
+/// renders through a guaranteed regular subview chain.
+@MainActor
+func makeGlassBackdrop(cornerRadius: CGFloat, interactive: Bool) -> NSGlassEffectView {
+    // EXPERIMENT: plain view instead of glass
+    let lens = NSGlassEffectView()
+    lens.style = .regular
+    lens.cornerRadius = cornerRadius
+    if #available(macOS 27.0, *) {
+        lens.effectIsInteractive = interactive
+    }
+    return lens
+}
+
 /// Where one glass lens is padded around a bare control.
 @MainActor
 func padForLens(

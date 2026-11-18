@@ -11,8 +11,8 @@ if CommandLine.arguments.contains("--designs") {
     app.delegate = gallery
     print("[designs] delegate assigned")
     app.setActivationPolicy(.regular)
-    gallery.openGallery()
-    print("[designs] gallery opening, entering run loop")
+    // the window must be born inside the run loop, like the main app's:
+    // views built before it never join the live layout engine
     app.run()
     exit(0)
 }
