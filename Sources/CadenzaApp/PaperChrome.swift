@@ -2,12 +2,11 @@ import AppKit
 
 /// What the control panel asks of its owner. Closures keep the panel
 /// ignorant of engines and clocks: the gallery feeds it a simulated
-/// transport, the app the real one.
+/// transport, the app the real one. Listening is recording — the one
+/// action starts and stops the session that export hands over.
 struct PanelTransport {
     var isListening: () -> Bool
     var toggleListening: () -> Void
-    var isRecording: () -> Bool
-    var toggleRecording: () -> Void
     var exportEnabled: () -> Bool
     var export: () -> Void
 }
@@ -131,7 +130,6 @@ final class ControlPanelLens: NSView {
     )
     private let levelLine = LevelLineView()
     private let listenButton = NSButton(title: "Listen", target: nil, action: nil)
-    private let recordButton = NSButton(title: "Record", target: nil, action: nil)
     private let exportButton = NSButton(title: "Export", target: nil, action: nil)
     private let backdrop: NSGlassEffectView
 
@@ -145,7 +143,7 @@ final class ControlPanelLens: NSView {
         // views and their relationships are built only after super.init on
         // this OS build: mutation before it orphans subtrees from the live
         // layout engine
-        for button in [listenButton, recordButton, exportButton] {
+        for button in [listenButton, exportButton] {
             button.isBordered = false
             button.font = .systemFont(ofSize: 13, weight: .medium)
             button.contentTintColor = PaperTheme.ink
@@ -161,7 +159,7 @@ final class ControlPanelLens: NSView {
         rows.spacing = 12
         rows.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
         let divider = HairlineView()
-        let buttons = NSStackView(views: [listenButton, recordButton, exportButton])
+        let buttons = NSStackView(views: [listenButton, exportButton])
         buttons.orientation = .horizontal
         buttons.spacing = 20
         addSubview(backdrop)
@@ -187,8 +185,6 @@ final class ControlPanelLens: NSView {
 
         listenButton.target = self
         listenButton.action = #selector(listenTapped)
-        recordButton.target = self
-        recordButton.action = #selector(recordTapped)
         exportButton.target = self
         exportButton.action = #selector(exportTapped)
         syncTransport()
@@ -219,10 +215,12 @@ final class ControlPanelLens: NSView {
     }
 
     /// Rereads the transport after the owner's state changed out from
-    /// under the buttons.
+    /// under the button: the session's title is Stop while it runs, and
+    /// the stamp tint carries that running state.
     func syncTransport() {
-        listenButton.title = transport.isListening() ? "Stop" : "Listen"
-        recordButton.contentTintColor = transport.isRecording() ? PaperTheme.stamp : PaperTheme.ink
+        let listening = transport.isListening()
+        listenButton.title = listening ? "Stop" : "Listen"
+        listenButton.contentTintColor = listening ? PaperTheme.stamp : PaperTheme.ink
         exportButton.isEnabled = transport.exportEnabled()
     }
 
@@ -257,18 +255,12 @@ final class ControlPanelLens: NSView {
             ("panel chord", inLens(chordLabel)),
             ("panel count", inLens(countLabel)),
             ("listen button", inLens(listenButton)),
-            ("record button", inLens(recordButton)),
             ("export button", inLens(exportButton)),
         ]
     }
 
     @objc private func listenTapped() {
         transport.toggleListening()
-        syncTransport()
-    }
-
-    @objc private func recordTapped() {
-        transport.toggleRecording()
         syncTransport()
     }
 

@@ -41,8 +41,6 @@ final class DesignGalleryController: NSObject, NSApplicationDelegate {
             let screen = PracticeScreenView(transport: PanelTransport(
                 isListening: { false },
                 toggleListening: {},
-                isRecording: { false },
-                toggleRecording: {},
                 exportEnabled: { false },
                 export: {}
             ))
@@ -351,7 +349,6 @@ final class KeyboardBloomDraft: NSView {
         color: PaperTheme.ink
     )
     private var wasSounding = false
-    private var recording = false
 
     init(clock: DesignSessionClock) {
         self.clock = clock
@@ -364,8 +361,6 @@ final class KeyboardBloomDraft: NSView {
         panel = ControlPanelLens(transport: PanelTransport(
             isListening: { [weak clock] in clock?.isRunning ?? false },
             toggleListening: { [weak self] in self?.toggleClock() },
-            isRecording: { [weak self] in self?.recording ?? false },
-            toggleRecording: { [weak self] in self?.recording.toggle() },
             exportEnabled: { false },
             export: {}
         ))
@@ -443,6 +438,7 @@ final class KeyboardBloomDraft: NSView {
     }
 
     func handle(_ moment: DesignSessionClock.Moment) {
+        panel.syncTransport()
         keybed.soundingPitches = moment.sounding ? Set(moment.pitches) : []
         if moment.sounding, !wasSounding {
             bloom.strike(pitches: moment.pitches, serial: moment.noteCount)

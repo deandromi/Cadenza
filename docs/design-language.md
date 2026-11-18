@@ -75,8 +75,9 @@ What makes chrome Liquid Glass rather than frosting:
 
 The lenses on the practice screen:
 
-1. Transport, bottom center. Compact pill: listen and record actions,
-   sentence case. Interactive glass. Tints stamp while recording.
+1. Transport, bottom center. Compact pill: one listen action that starts
+   and stops the session, sentence case. Interactive glass. Tints stamp
+   while the session runs.
 2. Session meta, top right. Clear glass, never interactive: level, duration,
    note count. At rest it is nearly invisible; the level line inside it
    breathes with what the room is doing, so the glass is live rather than

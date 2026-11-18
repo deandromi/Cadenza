@@ -14,11 +14,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let engine = TranscriptionEngine()
     private var cancellables: Set<AnyCancellable> = []
 
-    /// a take in progress: the index in the session's notes where record
-    /// was pressed, nil while no take is marked
-    private var takeStartIndex: Int?
-    private var isRecording = false
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         // the practice screen is a paper world: it renders in light mode,
         // the way the approved drafts read (the theme keeps its dark
@@ -102,8 +97,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         PanelTransport(
             isListening: { [weak self] in self?.engine.isRunning ?? false },
             toggleListening: { [weak self] in self?.toggleListening() },
-            isRecording: { [weak self] in self?.isRecording ?? false },
-            toggleRecording: { [weak self] in self?.toggleRecording() },
             exportEnabled: { [weak self] in !(self?.engine.notes.isEmpty ?? true) },
             export: { [weak self] in self?.exportMIDI() }
         )
@@ -111,11 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: transport actions
 
+    /// One action: it starts the session that listens, plays out as MIDI,
+    /// and is what export hands over, and it stops that session again.
     private func toggleListening() {
         if engine.isRunning {
             engine.stop()
             publisher.panic()
-            settleTake()
             screen?.sessionStopped()
             screen?.syncTransport()
         } else {
@@ -124,29 +118,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             engine.start(tensorsDir: assets.tensors, modelURL: assets.model)
-            takeStartIndex = nil
             screen?.sessionStarted()
             screen?.syncTransport()
         }
         present(error: engine.lastError)
-    }
-
-    /// Record marks a take: notes heard from this moment are what export
-    /// hands over, instead of the whole session. Without a take marked,
-    /// export writes everything heard this session, as it always has.
-    private func toggleRecording() {
-        guard engine.isRunning else {
-            screen?.setStatus("Listen first", error: true)
-            return
-        }
-        isRecording.toggle()
-        if isRecording {
-            takeStartIndex = engine.notes.count
-            screen?.setStatus("Recording", error: false)
-        } else {
-            screen?.setStatus("", error: false)
-        }
-        screen?.syncTransport()
     }
 
     private func exportMIDI() {
@@ -156,9 +131,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.nameFieldStringValue = "Cadenza session"
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            let notes = self.takeNotes()
             do {
-                try MidiFileWriter.write(notes, to: url)
+                try MidiFileWriter.write(self.engine.notes, to: url)
                 self.screen?.setStatus("Saved \(url.lastPathComponent)", error: false)
             } catch {
                 self.present(error: error.localizedDescription)
@@ -166,26 +140,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The take if one is marked, otherwise the whole session.
-    private func takeNotes() -> [NoteEvent] {
-        guard let start = takeStartIndex, start < engine.notes.count else {
-            return engine.notes
-        }
-        return Array(engine.notes[start...])
-    }
-
-    /// A stopped session ends any take in progress.
-    private func settleTake() {
-        isRecording = false
-        takeStartIndex = nil
-        screen?.setStatus("", error: false)
-    }
-
     private func present(error: String?) {
         if let error, !error.isEmpty {
             screen?.setStatus(error, error: true)
         } else {
-            screen?.setStatus(isRecording ? "Recording" : "", error: false)
+            screen?.setStatus("", error: false)
         }
     }
 
