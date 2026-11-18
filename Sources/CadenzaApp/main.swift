@@ -1,5 +1,15 @@
 import AppKit
 
+if CommandLine.arguments.contains("--designs") {
+    freopen("/tmp/cadenza_designs.log", "a", stdout)
+    freopen("/tmp/cadenza_designs.log", "a", stderr)
+    let app = NSApplication.shared
+    let gallery = DesignGalleryController()
+    app.delegate = gallery
+    app.setActivationPolicy(.regular)
+    app.run()
+}
+
 if CommandLine.arguments.contains("--smoke") {
     SmokeMain.run(audioPath: nil)
     exit(0)
