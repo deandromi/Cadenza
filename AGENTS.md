@@ -11,7 +11,10 @@ exposes a CoreMIDI virtual source that other apps can play.
 ## Language and platform
 
 - Swift 6, strict concurrency (`Swift.Sendable` everywhere data crosses a boundary).
-- SwiftUI for all UI, targeting macOS 26+ so Liquid Glass APIs are native.
+- AppKit for all UI, targeting macOS 26+ so the native glass views are available.
+  (SwiftUI is intentionally not used: this machine has no full Xcode install and its
+  SwiftUI macros do not compile under Command Line Tools. AppKit does. If a full Xcode
+  install ever lands, do not switch stacks mid-project without asking.)
 - CadenzaCore must stay free of AppKit/SwiftUI/AVFoundation imports: pure Swift types,
   deterministic and unit-testable. Audio (AVAudioEngine), ML (CoreML) and MIDI
   (CoreMIDI) live behind protocols that CadenzaCore defines and the app layer injects.
@@ -30,10 +33,10 @@ Keep copy short and human. No exclamation marks, no emoji anywhere in the UI.
 
 The app is Liquid Glass inspired. Rules:
 
-- Use the native materials, never fake them: `.glassEffect()` and
-  `glassEffectContainer` for floating layers,`.regularMaterial` and thinner materials
-  for large surfaces. No hand-rolled blur stacks, gradient overlays, or stacked
-  shadows pretending to be glass.
+- Use the native materials, never fake them: `NSGlassEffectView` (regular and clear
+  styles, `effectIsInteractive` for controls) inside `NSGlassEffectContainerView` when
+  several lenses sit near each other. No hand-rolled blur stacks, gradient overlays,
+  or stacked shadows pretending to be glass.
 - Chrome floats on content, it does not tile the window: toolbars and floating
   controls are glass lenses over the chord sheet; the content area is the star.
 - Prefer translucency over opaque filled cards. If a card is opaque "just in case",
@@ -60,10 +63,7 @@ audio in -> transcription engine -> NoteEvent stream -> MIDI endpoint + chord en
 
 ## Verification
 
-`CadenzaCoreChecks` is the source of truth: `swift run CadenzaCoreChecks` must pass
-before a change to CadenzaCore is done. It is a plain assertion-based executable so it
-runs under Xcode Command Line Tools, which cannot run XCTest or Swift Testing targets.
-Convert it to a proper `testTarget` once a full Xcode install is available here.
-Changes to the app target are compile-checked with `swift build` only under a full Xcode
-toolchain (SwiftUI macros need it); `swift build` on Command Line Tools is expected to
-fail for CadenzaApp and is not a regression signal.
+`CadenzaCoreChecks` is the source of truth for logic: `swift run CadenzaCoreChecks`
+must pass before a change to CadenzaCore is done. It is a plain assertion-based
+executable because Command Line Tools cannot run XCTest or Swift Testing targets.
+`swift build` must pass for every target including CadenzaApp.
