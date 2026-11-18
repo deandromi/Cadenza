@@ -56,6 +56,13 @@ enum PaperTheme {
     }
 }
 
+/// The keybed and the blooms share one piano range: A0 through C8, the
+/// full instrument the model hears.
+enum PianoRange {
+    static let firstPitch = 21
+    static let lastPitch = 108
+}
+
 /// A line field with the paper world's defaults.
 @MainActor
 func makeInkLabel(_ text: String, font: NSFont, color: NSColor) -> NSTextField {
@@ -99,26 +106,6 @@ final class HairlineView: NSView {
     }
 }
 
-/// The paper fade over a scroll region's top edge, the family's signature
-/// dissolve: paper into clear, never a blur.
-final class TopFadeView: NSView {
-    init() {
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard let gradient = NSGradient(
-            colors: [PaperTheme.paper, PaperTheme.paper.withAlphaComponent(0.0)]
-        ) else { return }
-        gradient.draw(in: bounds, angle: -90)
-    }
-}
-
 /// The thin level line for session meta, ink at rest, stamp while a chord
 /// is sounding, breathing with the simulated room level.
 final class LevelLineView: NSView {
@@ -155,6 +142,21 @@ final class LevelLineView: NSView {
     }
 }
 
+/// Where one glass lens is padded around a bare control.
+@MainActor
+func padForLens(
+    _ view: NSView,
+    horizontal: CGFloat,
+    vertical: CGFloat
+) -> NSStackView {
+    let stack = NSStackView(views: [view])
+    stack.orientation = .horizontal
+    stack.edgeInsets = NSEdgeInsets(
+        top: vertical, left: horizontal, bottom: vertical, right: horizontal
+    )
+    return stack
+}
+
 /// One glass lens: NSGlassEffectView with the language's defaults, hosted in
 /// an NSGlassEffectContainerView by the caller.
 @MainActor
@@ -174,16 +176,9 @@ func makeLens(
     return lens
 }
 
-/// A batch of chord history a draft displays.
-struct SessionRow: Sendable {
-    let atSecond: Double
-    let symbol: String
-}
-
-/// Drives the drafts with a plausible live session: chords land every few
-/// seconds and sound, the level breathes, history grows, and the drafts
-/// react identically so layouts can be compared on the same data. Listen
-/// on the transport toggles it, record tints the transport stamp.
+/// Drives the draft with a plausible live session: chords land every few
+/// seconds and sound, the level breathes, and every view reacts to the
+/// same moments. Listen on the panel toggles it, record tints the panel.
 @MainActor
 final class DesignSessionClock {
     struct Moment {
@@ -191,14 +186,31 @@ final class DesignSessionClock {
         let symbol: String
         let sounding: Bool
         let level: Double
-        let rowCount: Int
+        let noteCount: Int
+        /// MIDI pitches of the voicing behind the current chord
+        let pitches: [Int]
     }
 
     static let chorus: [String] = [
         "C", "Am7", "Fmaj7", "G", "Em7", "Dm7", "Cmaj7", "G7", "F", "C",
     ]
 
-    private(set) var rows: [SessionRow] = []
+    /// Piano voicings for the chorus, the keys that sound per chord.
+    static let voicings: [String: [Int]] = [
+        "C": [48, 60, 64, 67, 72],
+        "Am7": [45, 57, 60, 64, 67],
+        "Fmaj7": [41, 53, 57, 60, 64],
+        "G": [43, 55, 59, 62, 67],
+        "Em7": [40, 52, 55, 59, 62],
+        "Dm7": [38, 50, 53, 57, 60],
+        "Cmaj7": [48, 60, 64, 67, 71],
+        "G7": [43, 55, 59, 62, 65],
+        "F": [41, 53, 57, 60, 65],
+    ]
+
+    /// notes already struck when the gallery opens, so drafts open
+    /// mid-session
+    private(set) var noteCount = 10
     private var timer: Timer?
     private var seconds: Double = 47
     private var index = 2
@@ -213,10 +225,6 @@ final class DesignSessionClock {
     var symbol: String { Self.chorus[index] }
 
     init() {
-        // seed some history so every draft opens mid-session
-        for _ in 0..<10 {
-            appendRow()
-        }
         nextStrike = seconds + 1.2
         soundingUntil = seconds + 1.5
     }
@@ -241,7 +249,7 @@ final class DesignSessionClock {
         seconds += 0.1
         if seconds >= nextStrike {
             index = (index + 1) % Self.chorus.count
-            appendRow()
+            noteCount += 1
             soundingUntil = seconds + 1.15
             nextStrike = seconds + 2.9 + Double((index % 3)) * 0.5
         }
@@ -251,19 +259,19 @@ final class DesignSessionClock {
             symbol: symbol,
             sounding: sounding,
             level: max(0.1, min(1, level)),
-            rowCount: rows.count
+            noteCount: noteCount,
+            pitches: Self.voicings[symbol] ?? []
         ))
-    }
-
-    private func appendRow() {
-        rows.append(SessionRow(atSecond: seconds, symbol: Self.chorus[index]))
-        if rows.count > 32 {
-            rows.removeFirst(rows.count - 32)
-        }
     }
 }
 
 func sessionTimeString(_ seconds: Double) -> String {
     let total = Int(max(seconds, 0).rounded())
     return String(format: "%d:%02d", total / 60, total % 60)
+}
+
+/// Spelled note name for a MIDI pitch, octave numbered: C#4.
+func noteName(_ pitch: Int) -> String {
+    let letters = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+    return letters[pitch % 12] + String(pitch / 12 - 1)
 }
