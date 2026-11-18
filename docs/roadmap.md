@@ -39,6 +39,32 @@ CadenzaCore where they are testable from recorded MIDI with no audio stack,
 notation layout is deterministic and unit-testable, and the renderer only
 draws what the layout produces.
 
+## Ideas parked
+
+Three directions agreed on, waiting for their turn. None of them starts
+until the sheet generator is done.
+
+- Harmony analysis: roman numerals in the detected key, secondary
+  dominants, modulations. Pure CadenzaCore work, layered directly on the
+  chord engine once that engine's output has survived real use.
+- Repertoire library: named sessions that keep their chord sheet, MIDI,
+  MusicXML and the raw audio, so older recordings can be re-transcribed
+  when the model improves — the `--replay` tooling already proves the
+  capture format for this.
+- MIDI routing controls: transpose, velocity curve, hand split onto two
+  channels, sustain passthrough. Cheap, and it makes the virtual keyboard
+  genuinely usable next to other apps.
+
+## Where the sheet generator stands
+
+- Framing logic (tempo, key, meter), quantization, the score model and a
+  MusicXML writer live in CadenzaCore, all testable from recorded note
+  events with no audio stack. `--score` replays a captured session and
+  engraves it offline.
+- Still open: the score renderer in the app (ink-on-paper staff window
+  hanging off the Sheet music menu item), and the choices step the
+  roadmap's flow describes.
+
 ## Small levers, in rough order
 
 - A level meter on the session meta lens, wired to the existing tap state.

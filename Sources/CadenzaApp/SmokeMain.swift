@@ -52,7 +52,7 @@ enum SmokeMain {
     /// note for note against the Python reference on the exact same audio.
     /// - replay <file.f32> <deviceRate>: run() on every window with the same
     //    forced-start bookkeeping and the same merge rules as absorb().
-    static func runReplay(path: String, deviceRate: Double) {
+    static func replayNotes(path: String, deviceRate: Double) -> [NoteEvent] {
         guard let assets = AppDelegate.locateAssets() else {
             print("replay: model assets not found")
             exit(1)
@@ -134,9 +134,55 @@ enum SmokeMain {
         }
 
         history.sort { ($0.onset, $0.pitch) < ($1.onset, $1.pitch) }
+        return history
+    }
+
+    /// Prints the merged notes a replay produced, the format the reference
+    /// tools diff against.
+    static func runReplay(path: String, deviceRate: Double) {
+        let history = replayNotes(path: path, deviceRate: deviceRate)
         print("replay: \(history.count) notes")
         for note in history {
             print(String(format: "swift note: %d @%.3f-%.3f v%d", note.pitch, note.onset, note.offset, note.velocity))
+        }
+    }
+
+    /// Engraves a captured session offline: the replay's merged notes go to
+    /// the engraver with the same chord inference the live sheet uses, and
+    /// the resulting MusicXML lands in /tmp so the sheet generator can be
+    /// judged on real performances before any UI exists.
+    /// - score <file.f32> <deviceRate>
+    static func runScore(path: String, deviceRate: Double) {
+        let notes = replayNotes(path: path, deviceRate: deviceRate)
+        guard !notes.isEmpty else {
+            print("score: nothing to engrave")
+            exit(1)
+        }
+        let grouped = assignOnsetGroups(notes)
+        var chords: [(seconds: Double, symbol: String)] = []
+        var lastSymbol = ""
+        let chordsByGroup = Dictionary(grouping: grouped, by: { $0.onsetGroup })
+        for groupId in chordsByGroup.keys.sorted() {
+            guard let chord = Chord.identify(in: grouped, group: groupId) else { continue }
+            guard chord.symbol != lastSymbol else { continue }
+            let onset = chordsByGroup[groupId]?.map(\.onset).min() ?? 0
+            chords.append((onset, chord.symbol))
+            lastSymbol = chord.symbol
+        }
+        guard let score = Engraver.engrave(notes: notes, chords: chords) else {
+            print("score: engraving failed")
+            exit(1)
+        }
+        let time = score.framing.timeSignature
+        let chordList = score.chords.map(\.symbol).joined(separator: ", ")
+        print("score: \(Int(score.framing.beatsPerMinute.rounded())) bpm, \(time.beatsPerMeasure)/\(time.beatUnit), \(score.framing.key.name), \(score.measures.count) measures, chords: \(chordList)")
+        let xml = MusicXML.write(score)
+        do {
+            try xml.write(toFile: "/tmp/cadenza_score.musicxml", atomically: true, encoding: .utf8)
+            print("score: musicxml written to /tmp/cadenza_score.musicxml")
+        } catch {
+            print("score FAILED: \(error)")
+            exit(1)
         }
     }
 

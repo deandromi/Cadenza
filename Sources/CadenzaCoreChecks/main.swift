@@ -214,6 +214,115 @@ do {
     }
 }
 
+// MARK: Engraver (sheet music core)
+
+do {
+    // a metronome at 120 bpm: one strike per quarter second
+    let click = (0..<48).map { i in
+        NoteEvent(pitch: 60, velocity: 88, onset: Double(i) * 0.5, duration: 0.25)
+    }
+    let tempo = Engraver.inferTempo(click)
+    expect(abs(tempo - 120) < 4, "tempo reads the click near 120 bpm")
+
+    // key: a C major run
+    let runPitches = [60, 64, 67, 72, 67, 64, 59, 62, 65, 60]
+    let run = runPitches.enumerated().map { i, p in
+        NoteEvent(pitch: p, velocity: 80, onset: Double(i) * 0.5, duration: 0.4)
+    }
+    let key = Engraver.inferKey(run)
+    expect(key.name == "C major", "key reads C major")
+    expect(key.fifths == 0, "C major signature has no accidentals")
+
+    // key: A minor
+    let minorPitches = [57, 60, 64, 69, 64, 60, 55, 52, 57]
+    let minor = minorPitches.enumerated().map { i, p in
+        NoteEvent(pitch: p, velocity: 80, onset: Double(i) * 0.5, duration: 0.4)
+    }
+    let aMinor = Engraver.inferKey(minor)
+    expect(aMinor.name == "A minor", "key reads A minor")
+    expect(aMinor.fifths == 0, "A minor signature has no accidentals")
+
+    // meter: accented every four quarters reads 4/4
+    let four = (0..<32).map { i in
+        NoteEvent(
+            pitch: i % 4 == 0 ? 60 : 72,
+            velocity: i % 4 == 0 ? 110 : 70,
+            onset: Double(i) * 0.5,
+            duration: 0.3
+        )
+    }
+    let fourMeter = Engraver.inferTimeSignature(four, tempo: 120)
+    expect(
+        fourMeter == TimeSignature(beatsPerMeasure: 4, beatUnit: 4),
+        "meter reads 4/4 from accents every fourth quarter"
+    )
+
+    // meter: accented every three quarters reads 3/4
+    let waltz = (0..<30).map { i in
+        NoteEvent(
+            pitch: i % 3 == 0 ? 60 : 72,
+            velocity: i % 3 == 0 ? 110 : 70,
+            onset: Double(i) * 0.5,
+            duration: 0.3
+        )
+    }
+    let threeMeter = Engraver.inferTimeSignature(waltz, tempo: 120)
+    expect(
+        threeMeter == TimeSignature(beatsPerMeasure: 3, beatUnit: 4),
+        "meter reads 3/4 from waltz accents"
+    )
+}
+
+do {
+    // a C major session: a chord on every downbeat, soft single notes
+    // between, a chord symbol on beat one, and one quarter past the last
+    // full bar so the rest filler has to speak
+    var session: [NoteEvent] = []
+    for i in 0..<13 {
+        let onset = Double(i) * 0.5
+        if i % 4 == 0 {
+            for pitch in [48, 60, 64, 67] {
+                session.append(NoteEvent(
+                    pitch: pitch,
+                    velocity: 100,
+                    onset: onset + Double(pitch % 4) * 0.01,
+                    duration: 0.45
+                ))
+            }
+        } else {
+            session.append(NoteEvent(pitch: 64, velocity: 70, onset: onset, duration: 0.2))
+        }
+    }
+    let maybeScore = Engraver.engrave(notes: session, chords: [(0.0, "C")])
+    expect(maybeScore != nil, "engrave returns a score")
+    if let scored = maybeScore {
+        expect(
+            scored.framing.timeSignature == TimeSignature(beatsPerMeasure: 4, beatUnit: 4),
+            "chords every fourth quarter frame as 4/4"
+        )
+        expect(scored.framing.key.name == "C major", "engraved key is C major")
+        expect(scored.measures.count == 4, "thirteen quarters cut into four measures")
+        expect(
+            scored.measures.first?.notes.count == 7,
+            "a full measure carries its chord and three singles"
+        )
+        expect(scored.measures.last?.notes.count == 4, "the last measure carries only its chord")
+        let firstNote = scored.measures.first?.notes.first
+        expect(firstNote?.onsetTick == scored.measures.first?.startTick, "first note lands on its downbeat")
+        expect(firstNote?.durationTicks == 480, "a 0.45 s note at 120 bpm engraves as a quarter")
+
+        let xml = MusicXML.write(scored)
+        expect(xml.contains("<divisions>120</divisions>"), "musicxml writes the division count")
+        expect(xml.contains("<fifths>0</fifths>"), "musicxml writes the key signature")
+        expect(xml.contains("<beats>4</beats>"), "musicxml writes the meter numerator")
+        expect(xml.contains("<chord/>"), "stacked notes carry the chord mark")
+        expect(xml.contains("<words>C</words>"), "the chord symbol rides above the staff")
+        expect(xml.contains("<rest/>"), "the empty measure tail fills as rest")
+        expect(xml.contains("<type>quarter</type>"), "a quarter is labeled a quarter")
+        expect(XMLParser(data: Data(xml.utf8)).parse(), "the musicxml document parses")
+    }
+}
+
 if failures == 0 {
     print("all \(checks) checks passed")
 } else {
