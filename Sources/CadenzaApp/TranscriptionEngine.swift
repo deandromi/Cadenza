@@ -20,6 +20,11 @@ enum WindowGeometry {
     static let frameDuration = Double(hopSize) / sampleRate
     static let stepWallSeconds = Double(stepSamples) / sampleRate
     static let symbols: [Int] = [-64, -67] + Array(21...108)
+    /// Notes shorter than this are dropped at merge time: on room-tone
+    /// recordings the reference model fires phantoms of 47 to 52 ms in the
+    /// low register, and they poison chords and MIDI output. Real staccato
+    /// notes ring longer.
+    static let minimumNoteDuration = 0.055
 }
 
 /// One chord sheet row: an onset group with its identified chord.
@@ -81,7 +86,6 @@ final class AudioTapState: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         recordingRaw = on
-        if !on { rawAll = [] }
     }
 
     func drainRaw() -> [Float] {
@@ -442,8 +446,8 @@ final class TranscriptionEngine: ObservableObject {
     /// Writes the session's raw mic capture (device rate) next to the other
     /// diagnostics, so a failed session can be replayed offline.
     private func dumpSessionRecording() {
-        tapState.setRecording(false)
         let raw = tapState.drainRaw()
+        tapState.setRecording(false)
         guard !raw.isEmpty else { return }
         let stamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "")
@@ -511,19 +515,25 @@ final class TranscriptionEngine: ObservableObject {
                                  onset: max(event.onsetSeconds, 0), duration: 0)
             note.duration = max(event.offsetSeconds, note.onset + 1e-8) - note.onset
 
+            // noise-floor phantoms never become events: the reference
+            // model fires sub-55 ms notes on quiet room tone, real staccato
+            // does not get that short at the piano
+            let isStrikeCandidate = event.hasOnset && note.duration >= WindowGeometry.minimumNoteDuration
+
             if let index = liveIndex[event.pitch], history.indices.contains(index),
                note.onset < history[index].offset {
-                if event.hasOnset {
+                if isStrikeCandidate {
+                    // re-onset while still sounding replaces the event
                     history[index] = note
                     newCount += 1
                     onNoteEvent?(note, .struck)
-                } else {
+                } else if !event.hasOnset {
                     // continuation: the sounding note simply lasts longer
                     let newEnd = max(history[index].offset, note.offset)
                     history[index].duration = newEnd - history[index].onset
                     onNoteEvent?(history[index], .extended)
                 }
-            } else if event.hasOnset {
+            } else if isStrikeCandidate {
                 history.append(note)
                 liveIndex[event.pitch] = history.count - 1
                 newCount += 1

@@ -43,6 +43,105 @@ enum SmokeMain {
         print(String(format: "capture smoke done: %d notes", engine.noteCount))
     }
 
+    /// Offline replay of a recorded session through the engine's own
+    /// windowing and merge logic, so a misbehaving session can be compared
+    /// note for note against the Python reference on the exact same audio.
+    /// - replay <file.f32> <deviceRate>: run() on every window with the same
+    //    forced-start bookkeeping and the same merge rules as absorb().
+    static func runReplay(path: String, deviceRate: Double) {
+        guard let assets = AppDelegate.locateAssets() else {
+            print("replay: model assets not found")
+            exit(1)
+        }
+        let data = (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? Data()
+        let input = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        guard !input.isEmpty else {
+            print("replay FAILED: no samples in \(path)")
+            exit(1)
+        }
+        print("replay: \(input.count) samples at \(Int(deviceRate)) Hz")
+
+        let context: InferenceContext
+        do {
+            context = try InferenceContext(tensorsDir: assets.tensors, modelURL: assets.model)
+        } catch {
+            print("replay FAILED: \(error)")
+            exit(1)
+        }
+
+        let tapState = AudioTapState()
+        tapState.reset(rate: deviceRate)
+
+        var lastP = Array(repeating: 0, count: WindowGeometry.symbols.count)
+        var history: [NoteEvent] = []
+        var liveIndex: [Int: Int] = [:]
+        var windowIndex = 0
+        var fed = 0  // how many samples of the recording have been fed
+
+        func feed(upTo sampleIndex: Int) {
+            let target = min(sampleIndex, input.count)
+            while fed < target {
+                let end = min(fed + 8192, target)
+                tapState.append(Array(input[fed..<end]))
+                fed = end
+            }
+        }
+
+        while true {
+            let startSeconds = Double(windowIndex) * WindowGeometry.stepWallSeconds - WindowGeometry.padSeconds
+            let endSeconds = startSeconds + WindowGeometry.segmentSeconds
+            let endSample = Int((endSeconds * deviceRate).rounded())
+            if startSeconds * deviceRate >= Double(input.count) { break }
+            feed(upTo: endSample)
+            if fed < endSample && fed >= input.count {
+                // recording over: let the engine's zero pad close the window
+                tapState.append([Float](repeating: 0, count: endSample - fed))
+                fed = endSample
+            }
+            guard let samples = tapState.takeWindow(index: windowIndex) else { break }
+
+            let forcedStart: [Int]
+            if windowIndex == 0 {
+                forcedStart = Array(repeating: WindowGeometry.padFrames, count: WindowGeometry.symbols.count)
+            } else {
+                forcedStart = lastP.map { max($0 - WindowGeometry.stepFrames, 0) }
+            }
+            guard let result = context.run(windowIndex: windowIndex, samples: samples,
+                                           deviceRate: deviceRate, forcedStartPos: forcedStart) else {
+                print("replay FAILED: window \(windowIndex) decode error")
+                exit(1)
+            }
+            lastP = result.lastP
+            print("replay: window \(windowIndex) decoded \(result.events.count) events")
+
+            for event in result.events {
+                var note = NoteEvent(pitch: event.pitch, velocity: event.velocity,
+                                     onset: max(event.onsetSeconds, 0), duration: 0)
+                note.duration = max(event.offsetSeconds, note.onset + 1e-8) - note.onset
+                let isStrikeCandidate = event.hasOnset && note.duration >= WindowGeometry.minimumNoteDuration
+                if let index = liveIndex[event.pitch], history.indices.contains(index),
+                   note.onset < history[index].offset {
+                    if isStrikeCandidate {
+                        history[index] = note
+                    } else if !event.hasOnset {
+                        let newEnd = max(history[index].offset, note.offset)
+                        history[index].duration = newEnd - history[index].onset
+                    }
+                } else if isStrikeCandidate {
+                    history.append(note)
+                    liveIndex[event.pitch] = history.count - 1
+                }
+            }
+            windowIndex += 1
+        }
+
+        history.sort { ($0.onset, $0.pitch) < ($1.onset, $1.pitch) }
+        print("replay: \(history.count) notes")
+        for note in history {
+            print(String(format: "swift note: %d @%.3f-%.3f v%d", note.pitch, note.onset, note.offset, note.velocity))
+        }
+    }
+
     /// MIDI file writer check: three notes in, structurally parsed back out.
     static func runMidiProbe() {
         var notes: [NoteEvent] = [

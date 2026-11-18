@@ -5,6 +5,11 @@ if CommandLine.arguments.contains("--smoke") {
     exit(0)
 }
 
+if let index = CommandLine.arguments.firstIndex(of: "--replay"), CommandLine.arguments.count > index + 2 {
+    SmokeMain.runReplay(path: CommandLine.arguments[index + 1], deviceRate: Double(CommandLine.arguments[index + 2]) ?? 48000)
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--midi") {
     SmokeMain.runMidiProbe()
     exit(0)
