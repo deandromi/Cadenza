@@ -5,3 +5,5 @@ xcuserdata/
 *.xcuserstate
 .DS_Store
 *.mlmodelc/
+third_party/transkun/transkun/pretrained/*.pt
+.venv/
