@@ -153,11 +153,9 @@ final class PracticeScreenView: NSView {
 
     /// The panel itself moves: docked at the right edge when collapsed,
     /// centered and wide when unfolded. The glass lens is never animated —
-    /// a pixel snapshot of it travels from the dock to the center (a plain
-    /// CALayer, which cannot glitch), the real lens is laid out in its final
-    /// geometry hidden underneath, and on arrival the snapshot is removed
-    /// and the glass fades in. Same panel, one fluid move, zero material
-    /// resampling mid-flight.
+    /// a snapshot image of it (a plain NSImageView on top, which cannot
+    /// glitch) travels from the dock to the center while the real lens is
+    /// laid out hidden in its final geometry, then revealed on arrival.
     func showExpandedPanel(_ show: Bool, animated: Bool = true) {
         guard show != panelIsUnfolded, !panelMorphing else { return }
         panelIsUnfolded = show
@@ -174,20 +172,17 @@ final class PracticeScreenView: NSView {
         func setTap(_ unfold: Bool) {
             panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(unfold) }
         }
-        func snapshot() -> CALayer? {
+        func snapshotImage() -> NSImage? {
+            let scale = window?.backingScaleFactor ?? 2
             let rep = NSBitmapImageRep(
-                bitmapDataPlanes: nil, pixelsWide: Int(panel.bounds.width * 2),
-                pixelsHigh: Int(panel.bounds.height * 2),
+                bitmapDataPlanes: nil, pixelsWide: Int(panel.bounds.width * scale),
+                pixelsHigh: Int(panel.bounds.height * scale),
                 bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                 colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
             panel.cacheDisplay(in: panel.bounds, to: rep)
             let image = NSImage(size: panel.bounds.size)
             image.addRepresentation(rep)
-            let layer = CALayer()
-            layer.contents = image
-            layer.contentsGravity = .resize
-            layer.frame = panel.frame
-            return layer
+            return image
         }
 
         if !animated {
@@ -198,32 +193,32 @@ final class PracticeScreenView: NSView {
         }
 
         let fromFrame = panel.frame
-        let snapshot = snapshot()
+        let image = snapshotImage()
         swapGeometry()
         let toFrame = panel.frame
-        guard let snapshot, toFrame != fromFrame else {
+        guard let image, toFrame != fromFrame else {
             panelMorphing = false
             setTap(!show)
             return
         }
 
         panel.isHidden = true
-        layer?.addSublayer(snapshot)
-        let animation = CABasicAnimation(keyPath: "frame")
-        animation.fromValue = NSValue(rect: fromFrame)
-        animation.toValue = NSValue(rect: toFrame)
-        animation.duration = 0.42
-        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        animation.isRemovedOnCompletion = false
-        snapshot.add(animation, forKey: "morph")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in
+        let snapshot = NSImageView(frame: fromFrame)
+        snapshot.image = image
+        snapshot.wantsLayer = true
+        addSubview(snapshot)
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.42
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.allowsImplicitAnimation = true
+            snapshot.frame = toFrame
+        }, completionHandler: { [weak self] in
             guard let self else { return }
-            snapshot.removeAllAnimations()
-            snapshot.removeFromSuperlayer()
+            snapshot.removeFromSuperview()
             panel.isHidden = false
             panelMorphing = false
             setTap(!show)
-        }
+        })
     }
 
     func setNoteCount(_ count: Int) {
