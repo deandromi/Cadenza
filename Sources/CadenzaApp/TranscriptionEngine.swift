@@ -325,16 +325,17 @@ final class InferenceContext: @unchecked Sendable {
         model = try MLModel(contentsOf: compiled, configuration: configuration)
     }
 
-    /// The compute-unit choice for the backbone. The CPU beats the
-    /// accelerators for this model's dense per-frame convolutions on this
-    /// machine, but the choice stays measurable: set
-    /// CADENZA_COMPUTE_UNITS to cpuOnly, cpuAndGPU, cpuAndNe or all.
+    /// The compute-unit choice for the backbone, measured with the replay
+    /// harness on this machine: gpu median 0,73 s per window versus 1,02 s
+    /// cpuOnly, and the neural engine is slower still and returns phantom
+    /// onsets in bulk. GPU is the default; CADENZA_COMPUTE_UNITS overrides
+    /// (cpuOnly, cpuAndNE, all).
     static var computeUnits: MLComputeUnits {
         switch ProcessInfo.processInfo.environment["CADENZA_COMPUTE_UNITS"] {
-        case "cpuAndGPU": return .cpuAndGPU
+        case "cpuOnly": return .cpuOnly
         case "cpuAndNE": return .cpuAndNeuralEngine
         case "all": return .all
-        default: return .cpuOnly
+        default: return .cpuAndGPU
         }
     }
 
@@ -603,7 +604,9 @@ final class TranscriptionEngine: ObservableObject {
             noteCount = 0
             tapState.setRecording(true)
             input.removeTap(onBus: 0)
-            input.installTap(onBus: 0, bufferSize: 8192, format: format) { @Sendable [tapState] buffer, _ in
+            // 4096 frames: the tap chunk bounds how long the ring waits for
+            // its trailing edge; smaller buffers only add callback overhead
+            input.installTap(onBus: 0, bufferSize: 4096, format: format) { @Sendable [tapState] buffer, _ in
                 // InstallTap's block is the plain ObjC type, so without
                 // @Sendable this closure literal would inherit the enclosing
                 // @MainActor isolation and trap when AVFoundation calls it
@@ -615,7 +618,9 @@ final class TranscriptionEngine: ObservableObject {
             try audioEngine.start()
             // ticks are fast and cheap: they only submit the next window when
             // its trailing edge has arrived, so decodes pipeline back to back
-            tickTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            // 100 ms: the tick only submits the next window when its trailing
+            // edge has arrived, so tighter pacing trims the submission tail
+            tickTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.tick() }
             }
             levelTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
