@@ -22,6 +22,8 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon.icns</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Cadenza uses the microphone to transcribe the piano you play.</string>
 </dict>

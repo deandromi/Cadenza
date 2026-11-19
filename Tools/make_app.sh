@@ -8,7 +8,7 @@ set -euo pipefail
 
 # Single place to bump the bundle version. Both version keys in the Info.plist
 # template carry the ${CADENZA_VERSION} placeholder.
-version="0.1.0"
+version="1.0.0"
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 build_dir="${repo_root}/build"
@@ -64,6 +64,7 @@ printf 'APPL????' > "${app_dir}/Contents/PkgInfo"
 mkdir -p "${app_dir}/Contents/Resources"
 cp "${repo_root}/Resources/Bravura.otf" "${app_dir}/Contents/Resources/Bravura.otf"
 cp "${repo_root}/Resources/Bravura-OFL.txt" "${app_dir}/Contents/Resources/Bravura-OFL.txt"
+cp "${repo_root}/Resources/AppIcon.icns" "${app_dir}/Contents/Resources/AppIcon.icns"
 
 echo "Signing build/Cadenza.app (ad-hoc)"
 codesign --force -s - "${app_dir}"
