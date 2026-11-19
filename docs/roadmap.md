@@ -23,13 +23,16 @@ conversion close to real time with near-perfect note capture.
     register. See the eval notes in the `--synth-midi` commit.
   - Dense synthetic polyphony costs more: median 4–6 s latency on those
     same pieces.
-- Path to the target: a smaller or hybrid model tier for the sub-second
-  window, pedal-aware training/eval data (sustain extents are already
-  captured in note durations), and a standing eval harness
+- Path to the target: a smaller or hybrid model tier behind a **sub-second
+  mode toggle** in the UI, pedal-aware training/eval data (sustain extents
+  are already captured in note durations), and a standing eval harness
   (`--synth-midi`/`--replay-stream` + offline matching) that reports
   precision/recall/F1 per piece on every model change. Latency below one
   second needs that different model tier and would repeat the same
   verification path the current backbone went through.
+- **Pedal notation on the sheet**: sustain and silencer pedals engraved as
+  real pedal lines (Ped./release marks) on the staff, not just folded into
+  note durations.
 
 ## Where it stands
 
@@ -68,6 +71,20 @@ conversion close to real time with near-perfect note capture.
   to the session history automatically — unless it is empty (no recording,
   no MIDI, no sheet), in which case it is discarded.
 
+## Sessions: import, playback tools and statistics
+
+- **MIDI import**: open a .mid file in Cadenza — play it back through the
+  virtual source, watch it on the keybed and endless measure, engrave it to
+  a sheet, or use it as a play-along reference.
+- **Audio export**: the raw recording exports as .wav (and .mp3), per
+  session, from the session's export popover.
+- **A-B loop**: select a passage in a session and loop it, with tempo
+  scaling (50–75%) for slow practice.
+- **Play-along with yourself**: play along with your own recording and get
+  a timing-accuracy score against it.
+- **Session statistics**: practice time, notes played per day/week, and
+  accuracy per session in a simple overview.
+
 ## Settings (new section, not built yet)
 
 - **Keep recorded audio** (opt-out): when off, a session's audio recording is
@@ -78,6 +95,16 @@ conversion close to real time with near-perfect note capture.
   - `.mid` — always, written automatically at session end
   - `.pdf` — the engraved sheet, once sheet export lands
   - `.wav` — the audio recording, unless the keep-audio preference is off
+- **Input device and channel** — which microphone or audio-interface input
+  to use, plus an **input gain** control with a test tone.
+- **Tuning reference** — A4 calibration (e.g. 442 Hz) so transcription
+  follows the piano's actual pitch.
+
+## Practice tools
+
+- **Metronome with count-in** — standalone, with adjustable meter and click.
+- **Transport shortcuts** — keyboard shortcuts for the panel's named
+  functions: play/pause, stop, new session, export.
 
 ## Sheet music generation
 
@@ -143,10 +170,34 @@ rendered to PNG (`/tmp/pdf2png.swift`, CGPDFDocument) and read visually.
 
 ## Learning section (future)
 
-Chord and melody learning — jazz chords included — as the third main
-functionality alongside recording and the sheet music generator/editor.
-Cadenza should become a feasible free alternative to paid music-learning
-applications. None of it starts until the sheet generator is done.
+Chord and melody learning as the third main functionality alongside
+recording and the sheet music generator/editor. Cadenza should become a
+feasible free alternative to paid music-learning applications. None of it
+starts until the sheet generator is done.
+
+The concrete trainers:
+
+- **Chord trainer, jazz chords included** — shows a chord name (maj7, m7b5,
+  alt, ...), you play it, the app checks the pitch set.
+- **Ear training** — interval and chord-quality recognition with a score.
+- **Scale and arpeggio trainer** — with metronome and rising tempo.
+- **Sight-reading trainer** — a random measure is shown, you play it, the
+  app scores notes and timing.
+- **Auto-lessons from your own mistakes** — after each session the app
+  finds where you stumbled (timing, wrong notes, missed chords) and
+  generates a personalized drill of exactly those passages.
+- **Piano spellcheck — suggestions only** — likely mis-hits are flagged as
+  *suggestions* in the live view; the MIDI stream and the sheet are never
+  silently altered, the played note always stands.
+
+## Theory-based suggestions (no AI)
+
+Cadenza should be able to **propose melodies and chords without any AI**,
+purely from professional music theory, based on what was played in a
+session: cadence suggestions, voice-leading continuations, diatonic chord
+progressions in the detected key, motif development. Pure CadenzaCore
+work — deterministic, testable from recorded note events, no model
+involved — layered on top of the harmony analysis below.
 
 ## Landing page (future)
 
