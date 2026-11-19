@@ -55,6 +55,16 @@ if let index = CommandLine.arguments.firstIndex(of: "--replay-stream"), CommandL
     exit(0)
 }
 
+if let index = CommandLine.arguments.firstIndex(of: "--synth-midi"), CommandLine.arguments.count > index + 2 {
+    SmokeMain.runSynthMidi(
+        path: CommandLine.arguments[index + 1],
+        out: CommandLine.arguments[index + 2],
+        rate: CommandLine.arguments.count > index + 3 ? Double(CommandLine.arguments[index + 3]) ?? 48000 : 48000,
+        maxSeconds: CommandLine.arguments.count > index + 4 ? Double(CommandLine.arguments[index + 4]) : nil
+    )
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--midi") {
     SmokeMain.runMidiProbe()
     exit(0)

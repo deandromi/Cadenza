@@ -386,6 +386,54 @@ enum SmokeMain {
         }
     }
 
+    /// Synthesizes a MIDI file into a raw f32 mono capture at the given rate:
+    /// each note becomes a piano-ish tone (six decaying harmonics), which is
+    /// the cleanest audio the engine can ever see — the "at its best" case.
+    /// Prints every ground-truth note as "gt note:" lines for offline
+    /// precision/recall matching against --replay-stream output.
+    /// Usage: --synth-midi <file.mid> <out.f32> [rate] [maxSeconds]
+    static func runSynthMidi(path: String, out: String, rate: Double, maxSeconds: Double?) {
+        guard let file = try? MidiReader.read(url: URL(fileURLWithPath: path)) else {
+            print("synth-midi FAILED: cannot read \(path)")
+            exit(1)
+        }
+        let limit = maxSeconds ?? .infinity
+        let notes = file.notes.filter { $0.onset < limit }
+        let tail = 2.0
+        let total = min(notes.map { $0.onset + $0.duration }.max() ?? 0, limit) + tail
+        let count = Int(total * rate)
+        var buffer = [Float](repeating: 0, count: count)
+        for note in notes {
+            let freq = 440.0 * pow(2.0, (Double(note.pitch) - 69.0) / 12.0)
+            let amp = Double(note.velocity) / 127.0 * 0.4
+            let start = Int(note.onset * rate)
+            let end = min(count, Int((note.onset + note.duration) * rate))
+            let dur = max(0.05, note.duration)
+            let tau = min(1.8, max(0.25, dur * 0.6))
+            var phase = 0.0
+            let step = 2.0 * Double.pi * freq / rate
+            for i in start..<end {
+                let t = Double(i - start) / rate
+                var s = 0.0
+                for k in 1...6 {
+                    s += sin(Double(k) * phase) / Double(k)
+                }
+                let env = exp(-t / tau) * min(1.0, t / 0.005 + 0.05)
+                buffer[i] += Float(amp * env * s * 0.22)
+                phase += step
+            }
+            print(String(format: "gt note: %d @%.3f-%.3f v%d", note.pitch, note.onset, note.onset + note.duration, note.velocity))
+        }
+        let data = Data(bytes: buffer, count: buffer.count * MemoryLayout<Float>.size)
+        do {
+            try data.write(to: URL(fileURLWithPath: out))
+            print("synth-midi: \(notes.count) notes -> \(out) (\(count) samples at \(Int(rate)) Hz)")
+        } catch {
+            print("synth-midi FAILED: \(error)")
+            exit(1)
+        }
+    }
+
     /// MIDI file writer check: three notes in, structurally parsed back out.
     static func runMidiProbe() {
         var notes: [NoteEvent] = [
