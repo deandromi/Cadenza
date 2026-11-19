@@ -735,6 +735,61 @@ enum SmokeMain {
         }
     }
 
+    /// Renders the whole practice screen offscreen - paper, panel, keybed
+    /// and the endless measure - exactly as the app composes it, seeded with
+    /// synthetic notes: --screen-shot. The live screen can only be judged
+    /// in the running app, so this is how its composition is inspected.
+    static func runScreenShot() {
+        MainActor.assumeIsolated {
+            NSApplication.shared.appearance = NSAppearance(named: .aqua)
+            MusicFont.register()
+            let size = NSSize(width: 1080, height: 660)
+            let screen = PracticeScreenView(
+                transport: PanelTransport(
+                    isListening: { true },
+                    toggleListening: {},
+                    exportEnabled: { true },
+                    export: {}
+                ),
+                onSheetMusic: {}
+            )
+            screen.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
+            screen.setChord("F Maj 7")
+            screen.setNoteCount(12)
+            screen.sessionStarted()
+            for (pitch, age) in [(48, 8.6), (55, 8.5), (72, 6.4), (76, 6.3),
+                                 (61, 4.4), (66, 4.3), (70, 2.2), (84, 0.9),
+                                 (93, 0.9), (30, 0.4)] {
+                screen.noteStruck(NoteEvent(pitch: pitch, velocity: 80, onset: 0, duration: 0.5))
+            }
+            screen.noteReleased(NoteEvent(pitch: 66, velocity: 80, onset: 0, duration: 0.5))
+            screen.syncTransport()
+
+            let scale: CGFloat = 2
+            let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            if let ctx = NSGraphicsContext.current {
+                PaperTheme.paper.setFill()
+                NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh).fill()
+                ctx.cgContext.translateBy(x: 0, y: CGFloat(rep.pixelsHigh))
+                ctx.cgContext.scaleBy(x: scale, y: -scale)
+                screen.draw(NSRect(x: 0, y: 0, width: size.width, height: size.height))
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            if let cg = rep.cgImage,
+               let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: "/tmp/cadenza_screen.png") as CFURL, UTType.png.identifier as CFString, 1, nil) {
+                CGImageDestinationAddImage(dest, cg, nil)
+                CGImageDestinationFinalize(dest)
+                print("screen-shot: wrote /tmp/cadenza_screen.png")
+            }
+        }
+    }
+
     private static func readF32(_ url: URL) -> [Float] {
         guard let data = try? Data(contentsOf: url) else { return [] }
         return data.withUnsafeBytes { buffer in

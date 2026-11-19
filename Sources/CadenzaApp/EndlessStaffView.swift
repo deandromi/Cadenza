@@ -46,6 +46,10 @@ final class EndlessStaffView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        // pinned by constraints in the practice screen: without this the
+        // autoresizing mask fights the layout engine and drags the window
+        // frame down with it
+        translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
     }
 
