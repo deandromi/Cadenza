@@ -13,11 +13,13 @@ final class PracticeScreenView: NSView {
     private let keybed = KeybedView()
     private let staffLens: StaffLensView
     private let panel: ControlPanelLens
-    private let transport: PanelTransport
-    private var panelSessions: [SessionRecord] = []
-    private var panelPlaying: SessionRecord?
-    /// the big centered glass panel, present while expanded
-    private var expandedPanel: ExpandedSessionPanel?
+    /// the panel's two geometries: docked narrow at the right edge, or
+    /// centered and wide with its details unfolded
+    private var panelDockWidth: NSLayoutConstraint?
+    private var panelDockTrailing: NSLayoutConstraint?
+    private var panelCenterX: NSLayoutConstraint?
+    private var panelUnfoldedWidth: NSLayoutConstraint?
+    private var panelIsUnfolded = false
     private let menuLens: MenuLens
     private let wordmark = makeInkLabel(
         "Cadenza",
@@ -42,7 +44,6 @@ final class PracticeScreenView: NSView {
     private var clockTimer: Timer?
 
     init(transport: PanelTransport, onSheetMusic: (() -> Void)? = nil, onSettings: (() -> Void)? = nil) {
-        self.transport = transport
         panel = ControlPanelLens(transport: transport)
         menuLens = MenuLens(onSheetMusic: onSheetMusic, onSettings: onSettings)
         // the measure opens the engraved sheet: same door as the menu
@@ -74,7 +75,7 @@ final class PracticeScreenView: NSView {
 
         addSubview(panel)
         addSubview(menuLens)
-        panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(true) }
+        panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(!(self?.panelIsUnfolded ?? true)) }
 
         NSLayoutConstraint.activate([
             keybed.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -111,12 +112,16 @@ final class PracticeScreenView: NSView {
             menuLens.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -28),
             menuLens.topAnchor.constraint(equalTo: topAnchor, constant: 20),
 
-            panel.widthAnchor.constraint(equalToConstant: 240),
             // the panel is only as tall as its rows: the lens wraps the
             // content instead of stretching blank air around it
-            panel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -30),
             panel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+        panelDockWidth = panel.widthAnchor.constraint(equalToConstant: 240)
+        panelDockTrailing = panel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -30)
+        panelCenterX = panel.centerXAnchor.constraint(equalTo: centerXAnchor)
+        panelUnfoldedWidth = panel.widthAnchor.constraint(equalToConstant: 520)
+        panelDockWidth?.isActive = true
+        panelDockTrailing?.isActive = true
         refresh()
     }
 
@@ -143,44 +148,38 @@ final class PracticeScreenView: NSView {
     }
 
     func setSessions(_ sessions: [SessionRecord], playing: SessionRecord?) {
-        panelSessions = sessions
-        panelPlaying = playing
         panel.setSessions(sessions, playing: playing)
-        expandedPanel?.setSessions(sessions, playing: playing)
     }
 
-    /// Opens the big centered glass panel, animated growing out of the dock
-    /// panel, or closes it back into it. The overlay mirrors the dock panel's
-    /// content so the two never disagree.
+    /// The panel itself moves: docked at the right edge when collapsed,
+    /// centered and wide when unfolded, its per-session actions appearing as
+    /// it travels — one liquid glass morph, no second view.
     func showExpandedPanel(_ show: Bool, animated: Bool = true) {
-        if show {
-            guard expandedPanel == nil else { return }
-            let overlay = ExpandedSessionPanel(transport: transport) { [weak self] in
-                self?.showExpandedPanel(false)
-            }
-            overlay.setSessions(panelSessions, playing: panelPlaying)
-            expandedPanel = overlay
-            addSubview(overlay)
-            NSLayoutConstraint.activate([
-                overlay.leadingAnchor.constraint(equalTo: leadingAnchor),
-                overlay.trailingAnchor.constraint(equalTo: trailingAnchor),
-                overlay.topAnchor.constraint(equalTo: topAnchor),
-                overlay.bottomAnchor.constraint(equalTo: bottomAnchor),
-            ])
-            // the overlay's bounds only exist after a layout pass
+        guard show != panelIsUnfolded else { return }
+        panelIsUnfolded = show
+        func apply() {
+            panelDockWidth?.isActive = !show
+            panelDockTrailing?.isActive = !show
+            panelCenterX?.isActive = show
+            panelUnfoldedWidth?.isActive = show
+            panel.setExpanded(show)
             layoutSubtreeIfNeeded()
-            overlay.layoutTarget(in: overlay.bounds)
-            let start = convert(panel.frame, from: panel.superview)
-            overlay.animateOpen(from: start, animated: animated)
-            overlay.syncTransport()
-            refresh()
-        } else {
-            guard let overlay = expandedPanel else { return }
-            expandedPanel = nil
-            let end = convert(panel.frame, from: panel.superview)
-            overlay.animateClose(to: end, animated: animated) {
-                overlay.removeFromSuperview()
+        }
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.42
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                context.allowsImplicitAnimation = true
+                apply()
             }
+        } else {
+            apply()
+        }
+        // a click while unfolded folds it back into the dock
+        if show {
+            panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(false) }
+        } else {
+            panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(true) }
         }
     }
 
@@ -198,7 +197,6 @@ final class PracticeScreenView: NSView {
 
     func syncTransport() {
         panel.syncTransport()
-        expandedPanel?.syncTransport()
     }
 
     /// Listening began: the session clock runs.
@@ -235,12 +233,6 @@ final class PracticeScreenView: NSView {
     /// The panel reads the whole session state each time any of it moves.
     private func refresh() {
         panel.setSession(
-            time: sessionTimeString(sessionSeconds),
-            notes: "\(noteCount) notes",
-            level: levelTarget,
-            sounding: !soundingPitches.isEmpty
-        )
-        expandedPanel?.setSession(
             time: sessionTimeString(sessionSeconds),
             notes: "\(noteCount) notes",
             level: levelTarget,
