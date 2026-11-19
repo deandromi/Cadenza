@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Resources/logo.png" alt="Cadenza" width="320">
+</p>
+
 # Cadenza
 An application that listens to you play piano and makes a chord scheme in real time and acts as a midi input for applications.
 
