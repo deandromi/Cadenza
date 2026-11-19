@@ -85,11 +85,10 @@ final class PracticeScreenView: NSView {
             keybed.heightAnchor.constraint(equalToConstant: 118),
 
             staffLens.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 36),
-            // the measure runs the full available width: an inequality here
-            // let the layout collapse the lens to a sliver, so the trailing
-            // edge is pinned by equality, with a floor the window cannot
-            // squeeze past
-            staffLens.trailingAnchor.constraint(equalTo: panel.leadingAnchor, constant: -48),
+            // the measure keeps its own width, independent of the panel's
+            // dock/center morph: tying it to the panel made the staff jump
+            // when the panel moved
+            staffLens.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -300),
             staffLens.widthAnchor.constraint(greaterThanOrEqualToConstant: 420),
             staffLens.topAnchor.constraint(equalTo: wordmark.bottomAnchor, constant: 14),
             staffLens.bottomAnchor.constraint(equalTo: keybed.topAnchor, constant: -34),
@@ -153,18 +152,16 @@ final class PracticeScreenView: NSView {
     }
 
     /// The panel itself moves: docked at the right edge when collapsed,
-    /// centered and wide when unfolded. The morph is a compositor transform,
-    /// the way Apple's own glass morphs work — the lens is laid out in its
-    /// final geometry at once and its layer is squeezed onto the dock
-    /// footprint, then animates its transform to identity: the glass
-    /// travels and unfolds with no per-subview relayout to glitch.
+    /// centered and wide when unfolded. The glass lens is never animated —
+    /// a pixel snapshot of it travels from the dock to the center (a plain
+    /// CALayer, which cannot glitch), the real lens is laid out in its final
+    /// geometry hidden underneath, and on arrival the snapshot is removed
+    /// and the glass fades in. Same panel, one fluid move, zero material
+    /// resampling mid-flight.
     func showExpandedPanel(_ show: Bool, animated: Bool = true) {
         guard show != panelIsUnfolded, !panelMorphing else { return }
-        let dockFrame = panel.frame
-        let dockCenter = CGPoint(x: dockFrame.midX, y: dockFrame.midY)
-        panelMorphing = true
         panelIsUnfolded = show
-        panel.wantsLayer = true
+        panelMorphing = true
 
         func swapGeometry() {
             panelDockWidth?.isActive = !show
@@ -177,6 +174,21 @@ final class PracticeScreenView: NSView {
         func setTap(_ unfold: Bool) {
             panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(unfold) }
         }
+        func snapshot() -> CALayer? {
+            let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: Int(panel.bounds.width * 2),
+                pixelsHigh: Int(panel.bounds.height * 2),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            panel.cacheDisplay(in: panel.bounds, to: rep)
+            let image = NSImage(size: panel.bounds.size)
+            image.addRepresentation(rep)
+            let layer = CALayer()
+            layer.contents = image
+            layer.contentsGravity = .resize
+            layer.frame = panel.frame
+            return layer
+        }
 
         if !animated {
             swapGeometry()
@@ -185,38 +197,30 @@ final class PracticeScreenView: NSView {
             return
         }
 
+        let fromFrame = panel.frame
+        let snapshot = snapshot()
         swapGeometry()
-        let bigFrame = panel.frame
-        guard bigFrame.width > 1, dockFrame.width > 0 else {
+        let toFrame = panel.frame
+        guard let snapshot, toFrame != fromFrame else {
             panelMorphing = false
             setTap(!show)
             return
         }
-        // the squeeze that maps the unfolded lens exactly onto the dock lens
-        let sx = dockFrame.width / bigFrame.width
-        let sy = dockFrame.height / bigFrame.height
-        let tx = dockCenter.x - bigFrame.midX * sx
-        let ty = dockCenter.y - bigFrame.midY * sy
-        let squeeze = CATransform3DConcat(
-            CATransform3DMakeTranslation(tx, ty, 0),
-            CATransform3DMakeScale(sx, sy, 1)
-        )
-        let animation = CABasicAnimation(keyPath: "transform")
-        animation.fromValue = NSValue(caTransform3D: show ? squeeze : CATransform3DIdentity)
-        animation.toValue = NSValue(caTransform3D: show ? CATransform3DIdentity : squeeze)
+
+        panel.isHidden = true
+        layer?.addSublayer(snapshot)
+        let animation = CABasicAnimation(keyPath: "frame")
+        animation.fromValue = NSValue(rect: fromFrame)
+        animation.toValue = NSValue(rect: toFrame)
         animation.duration = 0.42
         animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         animation.isRemovedOnCompletion = false
-        panel.layer?.transform = squeeze
-        panel.layer?.add(animation, forKey: show ? "unfold" : "fold")
+        snapshot.add(animation, forKey: "morph")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in
             guard let self else { return }
-            panel.layer?.removeAllAnimations()
-            if !show {
-                swapGeometry()
-                layoutSubtreeIfNeeded()
-            }
-            panel.layer?.transform = CATransform3DIdentity
+            snapshot.removeAllAnimations()
+            snapshot.removeFromSuperlayer()
+            panel.isHidden = false
             panelMorphing = false
             setTap(!show)
         }
