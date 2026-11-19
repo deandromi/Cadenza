@@ -152,14 +152,17 @@ final class PracticeScreenView: NSView {
     }
 
     /// The panel itself moves: docked at the right edge when collapsed,
-    /// centered and wide when unfolded. The glass lens is never animated —
-    /// a snapshot image of it (a plain NSImageView on top, which cannot
-    /// glitch) travels from the dock to the center while the real lens is
-    /// laid out hidden in its final geometry, then revealed on arrival.
+    /// centered and wide when unfolded. The morph is a single compositor
+    /// animation on the real lens — a pure translation from the dock
+    /// position plus a fade — the same thing as dragging a glass window,
+    /// which the material handles cleanly. No scaling, no stretching, no
+    /// subview rebuilds mid-flight: the lens is laid out in its final
+    /// geometry at once (hidden), then slides/fades into place.
     func showExpandedPanel(_ show: Bool, animated: Bool = true) {
         guard show != panelIsUnfolded, !panelMorphing else { return }
         panelIsUnfolded = show
         panelMorphing = true
+        panel.wantsLayer = true
 
         func swapGeometry() {
             panelDockWidth?.isActive = !show
@@ -172,17 +175,12 @@ final class PracticeScreenView: NSView {
         func setTap(_ unfold: Bool) {
             panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(unfold) }
         }
-        func snapshotImage() -> NSImage? {
-            let scale = window?.backingScaleFactor ?? 2
-            let rep = NSBitmapImageRep(
-                bitmapDataPlanes: nil, pixelsWide: Int(panel.bounds.width * scale),
-                pixelsHigh: Int(panel.bounds.height * scale),
-                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-            panel.cacheDisplay(in: panel.bounds, to: rep)
-            let image = NSImage(size: panel.bounds.size)
-            image.addRepresentation(rep)
-            return image
+        /// layer-space translation (y is up in layer coordinates) that puts
+        /// the lens's final center on its dock center
+        func dockDelta(from fromFrame: NSRect, to toFrame: NSRect) -> CATransform3D {
+            let dx = fromFrame.midX - toFrame.midX
+            let dy = fromFrame.midY - toFrame.midY
+            return CATransform3DMakeTranslation(dx, -dy, 0)
         }
 
         if !animated {
@@ -193,32 +191,65 @@ final class PracticeScreenView: NSView {
         }
 
         let fromFrame = panel.frame
-        let image = snapshotImage()
-        swapGeometry()
-        let toFrame = panel.frame
-        guard let image, toFrame != fromFrame else {
-            panelMorphing = false
-            setTap(!show)
-            return
+        if show {
+            swapGeometry()
+            let toFrame = panel.frame
+            let start = dockDelta(from: fromFrame, to: toFrame)
+            panel.alphaValue = 0
+            panel.layer?.transform = start
+            let move = CABasicAnimation(keyPath: "transform")
+            move.fromValue = NSValue(caTransform3D: start)
+            move.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+            move.duration = 0.34
+            move.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0
+            fade.toValue = 1
+            fade.duration = 0.26
+            fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.layer?.add(move, forKey: "move")
+            panel.layer?.add(fade, forKey: "fade")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.34) { [weak self] in
+                guard let self else { return }
+                panel.layer?.removeAllAnimations()
+                panel.layer?.transform = CATransform3DIdentity
+                panel.alphaValue = 1
+                panelMorphing = false
+                setTap(false)
+            }
+        } else {
+            let toFrame = NSRect(
+                x: bounds.width - 30 - fromFrame.width,
+                y: (bounds.height - fromFrame.height) / 2,
+                width: fromFrame.width,
+                height: fromFrame.height
+            )
+            let target = dockDelta(from: toFrame, to: fromFrame)
+            let move = CABasicAnimation(keyPath: "transform")
+            move.fromValue = NSValue(caTransform3D: CATransform3DIdentity)
+            move.toValue = NSValue(caTransform3D: target)
+            move.duration = 0.3
+            move.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 1
+            fade.toValue = 0
+            fade.duration = 0.3
+            move.isRemovedOnCompletion = false
+            fade.isRemovedOnCompletion = false
+            panel.layer?.add(move, forKey: "move")
+            panel.layer?.add(fade, forKey: "fade")
+            panel.layer?.transform = target
+            panel.alphaValue = 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self else { return }
+                panel.layer?.removeAllAnimations()
+                swapGeometry()
+                panel.layer?.transform = CATransform3DIdentity
+                panel.alphaValue = 1
+                panelMorphing = false
+                setTap(true)
+            }
         }
-
-        panel.isHidden = true
-        let snapshot = NSImageView(frame: fromFrame)
-        snapshot.image = image
-        snapshot.wantsLayer = true
-        addSubview(snapshot)
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.42
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            context.allowsImplicitAnimation = true
-            snapshot.frame = toFrame
-        }, completionHandler: { [weak self] in
-            guard let self else { return }
-            snapshot.removeFromSuperview()
-            panel.isHidden = false
-            panelMorphing = false
-            setTap(!show)
-        })
     }
 
     func setNoteCount(_ count: Int) {

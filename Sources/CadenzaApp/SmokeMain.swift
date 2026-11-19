@@ -787,6 +787,61 @@ enum SmokeMain {
     /// and the endless measure - exactly as the app composes it, seeded with
     /// synthetic notes: --screen-shot. The live screen can only be judged
     /// in the running app, so this is how its composition is inspected.
+    /// Captures frames during the panel's unfold morph, to inspect the
+    /// animation geometry offscreen: --morph-shot
+    static func runMorphShot() {
+        MainActor.assumeIsolated {
+            NSApplication.shared.appearance = NSAppearance(named: .aqua)
+            MusicFont.register()
+            let size = NSSize(width: 1080, height: 660)
+            let screen = PracticeScreenView(
+                transport: PanelTransport(
+                    isListening: { true },
+                    toggleListening: {},
+                    exportEnabled: { true },
+                    export: {}
+                ),
+                onSheetMusic: {}
+            )
+            screen.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
+            screen.setSessions([
+                SessionRecord(id: UUID(), name: nil, folderName: "Session 1", startedAt: Date().addingTimeInterval(-3600), durationSeconds: 96, noteCount: 214, hasAudio: true),
+                SessionRecord(id: UUID(), name: nil, folderName: "Session 2", startedAt: Date().addingTimeInterval(-7200), durationSeconds: 41, noteCount: 88, hasAudio: false),
+            ], playing: nil)
+            screen.setNoteCount(12)
+            screen.sessionStarted()
+            screen.syncTransport()
+            screen.layoutSubtreeIfNeeded()
+            let scale: CGFloat = 1
+            func snap(_ name: String) {
+                MainActor.assumeIsolated {
+                    screen.layoutSubtreeIfNeeded()
+                    let rep = NSBitmapImageRep(
+                        bitmapDataPlanes: nil,
+                        pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+                        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+                    rep.size = size
+                    screen.cacheDisplay(in: screen.bounds, to: rep)
+                    if let cg = rep.cgImage,
+                       let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: "/tmp/morph_\(name).png") as CFURL, UTType.png.identifier as CFString, 1, nil) {
+                        CGImageDestinationAddImage(dest, cg, nil)
+                        CGImageDestinationFinalize(dest)
+                    }
+                    print("morph-shot: \(name)")
+                }
+            }
+            snap("0_start")
+            screen.showExpandedPanel(true, animated: true)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+            snap("1_mid")
+            RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+            snap("2_mid2")
+            RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+            snap("3_end")
+        }
+    }
+
     static func runScreenShot() {
         MainActor.assumeIsolated {
             NSApplication.shared.appearance = NSAppearance(named: .aqua)

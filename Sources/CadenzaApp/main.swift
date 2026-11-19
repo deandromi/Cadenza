@@ -42,6 +42,10 @@ if let index = CommandLine.arguments.firstIndex(of: "--replay"), CommandLine.arg
     exit(0)
 }
 
+if CommandLine.arguments.contains("--morph-shot") {
+    SmokeMain.runMorphShot()
+    exit(0)
+}
 if CommandLine.arguments.contains("--screen-shot") {
     SmokeMain.runScreenShot()
     exit(0)
