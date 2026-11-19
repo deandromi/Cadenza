@@ -323,6 +323,85 @@ do {
     }
 }
 
+// MARK: MidiReader
+
+/// Builds a tiny standard MIDI file in memory: format 0, 480 ppqn, one
+/// track carrying the given events as (deltaTicks, bytes).
+func syntheticMidi(events: [(Int, [UInt8])], division: Int = 480) -> Data {
+    var data = Data()
+    data.append(contentsOf: Array("MThd".utf8))
+    data.append(contentsOf: [0, 0, 0, 6])
+    data.append(contentsOf: [0, 0])          // format 0
+    data.append(contentsOf: [0, 1])          // one track
+    var div = UInt16(division).bigEndian
+    data.append(contentsOf: withUnsafeBytes(of: &div) { Array($0) })
+    var track = Data()
+    for (delta, bytes) in events {
+        // VLQ encode the delta
+        var value = delta
+        var buffer = [UInt8]()
+        buffer.append(UInt8(value & 0x7F))
+        value >>= 7
+        while value > 0 {
+            buffer.append(UInt8((value & 0x7F) | 0x80))
+            value >>= 7
+        }
+        track.append(contentsOf: buffer.reversed())
+        track.append(contentsOf: bytes)
+    }
+    data.append(contentsOf: Array("MTrk".utf8))
+    var length = UInt32(track.count).bigEndian
+    data.append(contentsOf: withUnsafeBytes(of: &length) { Array($0) })
+    data.append(track)
+    return data
+}
+
+midiParse1: do {
+    // 4/4, D major (two sharps), 120 bpm; one C4 quarter at 120 bpm is 0.5 s
+    let midi = syntheticMidi(events: [
+        (0, [0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08]),   // time 4/4
+        (0, [0xFF, 0x59, 0x02, 0x02, 0x00]),               // key: 2 sharps, major
+        (0, [0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20]),         // 500000 us/qn = 120 bpm
+        (0, [0x90, 60, 64]),                              // C4 on
+        (480, [60, 0]),                                   // running status off
+        (0, [0xFF, 0x2F, 0x00]),                          // end of track
+    ])
+    let file = try? MidiReader.read(midi)
+    expect(file != nil, "synthetic midi parses")
+    guard let file else { break midiParse1 }
+    expect(file.ticksPerQuarter == 480, "midi reader keeps the division")
+    expect(file.notes.count == 1, "one note parsed")
+    if let note = file.notes.first {
+        expect(note.pitch == 60 && note.velocity == 64, "note pitch and velocity")
+        expect(abs(note.onset) < 1e-9, "note onset at zero")
+        expect(abs(note.duration - 0.5) < 1e-9, "480 ticks at 120 bpm is half a second")
+    }
+    expect(file.timeSignatures.first?.signature == TimeSignature(beatsPerMeasure: 4, beatUnit: 4), "midi meta reads 4/4")
+    expect(file.keySignatures.first?.key.name == "D major", "midi meta reads D major")
+    expect(file.keySignatures.first?.key.fifths == 2, "D major has two sharps")
+    expect(abs(file.initialTempo - 120) < 0.01, "midi meta reads 120 bpm")
+}
+
+midiParse2: do {
+    // a tempo change mid-note: on at 0, halve tempo at 240 ticks, off at
+    // 480: duration is 0.25 s at 120 bpm plus 0.5 s at 60 bpm = 0.75 s
+    let midi = syntheticMidi(events: [
+        (0, [0x90, 60, 100]),
+        (240, [0xFF, 0x51, 0x03, 0x0F, 0x42, 0x40]),       // 1000000 us/qn = 60 bpm
+        (240, [0x80, 60, 0]),                              // explicit status: meta cancelled running status
+        (0, [0xFF, 0x2F, 0x00]),
+    ])
+    let file = try? MidiReader.read(midi)
+    expect(file != nil, "tempo-change midi parses")
+    guard let file else { break midiParse2 }
+    if let note = file.notes.first {
+        expect(abs(note.duration - 0.75) < 1e-9, "tempo change mid-note stretches the duration")
+    } else {
+        expect(false, "tempo-change midi parsed a note")
+    }
+    expect(file.tempoChanges.count == 1 && abs(file.tempoChanges[0].bpm - 60) < 0.01, "tempo change recorded")
+}
+
 if failures == 0 {
     print("all \(checks) checks passed")
 } else {

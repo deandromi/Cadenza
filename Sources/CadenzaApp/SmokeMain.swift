@@ -186,6 +186,113 @@ enum SmokeMain {
         }
     }
 
+    /// Feeds a published MIDI file to the sheet generator and compares the
+    /// engraver's framing against the file's own tempo, meter and key meta
+    /// events — the ground truth a published score always carries — plus
+    /// the quantization deviation per note. Writes the engraved document to
+    /// /tmp/cadenza_midiscore.musicxml and sketches the first measures as
+    /// text for eyeballing against the reference PDF.
+    /// - midiscore <file.mid>
+    static func runMidiScore(path: String) {
+        guard let file = try? MidiReader.read(url: URL(fileURLWithPath: path)) else {
+            print("midiscore: cannot read \(path)")
+            exit(1)
+        }
+        print("midiscore: \(file.notes.count) notes at \(file.ticksPerQuarter) ppqn")
+
+        let metaTempo = file.initialTempo
+        let metaMeter = file.timeSignatures.first?.signature
+        let metaKey = file.keySignatures.first?.key
+        let meterText = metaMeter.map { "\($0.beatsPerMeasure)/\($0.beatUnit)" } ?? "?"
+        print("midiscore meta: \(Int(metaTempo.rounded())) bpm, \(meterText), \(metaKey?.name ?? "?")")
+
+        let grouped = assignOnsetGroups(file.notes)
+        var chords: [(seconds: Double, symbol: String)] = []
+        var lastSymbol = ""
+        let chordsByGroup = Dictionary(grouping: grouped, by: { $0.onsetGroup })
+        for groupId in chordsByGroup.keys.sorted() {
+            guard let chord = Chord.identify(in: grouped, group: groupId) else { continue }
+            guard chord.symbol != lastSymbol else { continue }
+            let onset = chordsByGroup[groupId]?.map(\.onset).min() ?? 0
+            chords.append((onset, chord.symbol))
+            lastSymbol = chord.symbol
+        }
+
+        guard let score = Engraver.engrave(notes: file.notes, chords: chords) else {
+            print("midiscore: nothing to engrave")
+            exit(1)
+        }
+        let framing = score.framing
+        let engravedMeter = "\(framing.timeSignature.beatsPerMeasure)/\(framing.timeSignature.beatUnit)"
+        print("midiscore engraved: \(Int(framing.beatsPerMinute.rounded())) bpm, \(engravedMeter), \(framing.key.name), \(score.measures.count) measures")
+        print("midiscore framing delta: tempo \(String(format: "%.1f", framing.beatsPerMinute - metaTempo)) bpm, meter \(engravedMeter == meterText ? "match" : "MISMATCH (meta \(meterText))"), key \(framing.key.name == metaKey?.name ? "match" : "MISMATCH (meta \(metaKey?.name ?? "?"))")")
+        Engraver.meterDebug = true
+        for candidate in Engraver.scoreMeterCandidates(file.notes, tempo: framing.beatsPerMinute) {
+            print(String(format: "midiscore meter candidate %d/%d score %.3f", candidate.signature.beatsPerMeasure, candidate.signature.beatUnit, candidate.score))
+        }
+        Engraver.meterDebug = false
+        for bpm in Engraver.tempoCandidates(file.notes) {
+            let top = Engraver.scoreMeterCandidates(file.notes, tempo: bpm).first
+            print(String(format: "midiscore tempo candidate %.0f bpm -> best meter %d/%d score %.3f", bpm, top?.signature.beatsPerMeasure ?? 0, top?.signature.beatUnit ?? 0, top?.score ?? 0))
+        }
+
+        // pitch-class evidence for the key call: top classes by sounding
+        // time, and the root of the final chord when one is identifiable
+        var histogram = Array(repeating: 0.0, count: 12)
+        for note in file.notes { histogram[note.pitchClass] += note.duration }
+        let top = histogram.enumerated().sorted { $0.element > $1.element }.prefix(5)
+        let letters = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]
+        print("midiscore pitch classes: " + top.map { "\(letters[$0.offset]):\(Int($0.element))s" }.joined(separator: " "))
+        if let lastGroup = grouped.last?.onsetGroup,
+           let finalChord = Chord.identify(in: grouped, group: lastGroup) {
+            print("midiscore final chord root: \(finalChord.root)")
+        }
+        // cadence evidence: pitch classes of the first and last onset groups
+        let groupIds = Array(Set(grouped.map(\.onsetGroup))).sorted()
+        for gid in (groupIds.prefix(2) + groupIds.suffix(3)) {
+            let members = grouped.filter { $0.onsetGroup == gid }
+            let onset = members.map(\.onset).min() ?? 0
+            let names = Set(members.map { letters[$0.pitchClass] }).sorted()
+            print(String(format: "midiscore group @%.1fs: %@", onset, names.joined(separator: " ")))
+        }
+
+        // quantization deviation: the tick the engraver wrote versus the
+        // ideal tick at the engraved tempo, both relative to the first note
+        let quarterSeconds = 60.0 / framing.beatsPerMinute
+        let firstOnset = file.notes.map(\.onset).min() ?? 0
+        let engravedNotes = score.measures.flatMap(\.notes).sorted { ($0.onsetTick, $0.pitch) < ($1.onsetTick, $1.pitch) }
+        let midiSorted = file.notes.sorted { ($0.onset, $0.pitch) < ($1.onset, $1.pitch) }
+        var deviations: [Double] = []
+        for (a, b) in zip(midiSorted, engravedNotes) {
+            let ideal = (a.onset - firstOnset) / quarterSeconds * Double(scoreTicksPerQuarter)
+            deviations.append(abs(Double(b.onsetTick) - ideal))
+        }
+        if let maxDev = deviations.max(), let mean = deviations.isEmpty ? nil : deviations.reduce(0, +) / Double(deviations.count) {
+            let sixteenth = scoreTicksPerQuarter / 4
+            let within = Double(deviations.filter { $0 <= Double(sixteenth) / 2 }.count) / Double(deviations.count)
+            print(String(format: "midiscore quantization: mean %.1f ticks, max %.1f ticks, %.0f%% within a sixteenth", mean, maxDev, within * 100))
+        }
+
+        // text sketch of the first measures for eyeballing against the PDF
+        for measure in score.measures.prefix(6) {
+            let notes = measure.notes.map { "\(noteName($0.pitch)):\($0.durationTicks)" }.joined(separator: " ")
+            let chordsHere = score.chords
+                .filter { $0.onsetTick >= measure.startTick && $0.onsetTick < measure.startTick + framing.timeSignature.ticksPerMeasure }
+                .map(\.symbol)
+                .joined(separator: ",")
+            print("measure \(measure.index + 1)\(chordsHere.isEmpty ? "" : " [\(chordsHere)]"): \(notes)")
+        }
+
+        let xml = MusicXML.write(score)
+        do {
+            try xml.write(toFile: "/tmp/cadenza_midiscore.musicxml", atomically: true, encoding: .utf8)
+            print("midiscore: musicxml written to /tmp/cadenza_midiscore.musicxml")
+        } catch {
+            print("midiscore FAILED: \(error)")
+            exit(1)
+        }
+    }
+
     /// Offline streaming simulation: slides the 16 s window over the
     /// recording exactly the way the live engine does — warmup edge first,
     /// then edges pacing themselves at the decode rate, anchors chained per

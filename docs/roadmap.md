@@ -61,9 +61,34 @@ until the sheet generator is done.
   MusicXML writer live in CadenzaCore, all testable from recorded note
   events with no audio stack. `--score` replays a captured session and
   engraves it offline.
+- `--midiscore <file.mid>` reads a standard MIDI file, engraves it, and
+  prints the framing next to the file's own meta events — used to compare
+  the engraver against published sheet music (see "MIDI vs published PDF"
+  below).
 - Still open: the score renderer in the app (ink-on-paper staff window
   hanging off the Sheet music menu item), and the choices step the
   roadmap's flow describes.
+
+## MIDI vs published PDF (research, two MuseScore files)
+
+Both files came with their MIDI meta and the published PDF; the PDFs were
+rendered to PNG (`/tmp/pdf2png.swift`, CGPDFDocument) and read visually.
+
+| | meta (MIDI) | PDF (published) | engraver output |
+|---|---|---|---|
+| Je te veux (Satie) | 172 bpm, 3/4, C major | 3/4, no key signature (C major), "Modéré" | 172 bpm, C major, 4/4 by a near-tie (3/4 ranked #2, 0.150 vs 0.153) |
+| Hey Bulldog (Beatles) | 104 bpm, 4/4, B major | quarter = 104, 4/4, 5 sharps (B major) | 104 bpm, 4/4, B major — exact match |
+
+- Quantization is healthy on both: every onset lands within one sixteenth
+  of the engraved grid (bulldog mean 0.8 ticks, Satie mean 42 of 480).
+- Tempo octaves are decided by the heaviest inter-onset cluster inside
+  50-190 bpm; faster clusters are subdivisions. This nailed both files.
+- Key uses Krumhansl-Schmuckler plus an out-of-scale penalty and a
+  first/last-chord cadence bias; both files read the published key.
+- Meter is the honest weak spot: 4/4 vs 3/4 in a waltz is a near-tie from
+  note data alone, so `scoreMeterCandidates` returns the ranked list and
+  the choices step lets the user pick — that step is load-bearing, not
+  cosmetic.
 
 ## Small levers, in rough order
 

@@ -27,6 +27,11 @@ if let index = CommandLine.arguments.firstIndex(of: "--score"), CommandLine.argu
     exit(0)
 }
 
+if let index = CommandLine.arguments.firstIndex(of: "--midiscore"), CommandLine.arguments.count > index + 1 {
+    SmokeMain.runMidiScore(path: CommandLine.arguments[index + 1])
+    exit(0)
+}
+
 if let index = CommandLine.arguments.firstIndex(of: "--replay"), CommandLine.arguments.count > index + 2 {
     SmokeMain.runReplay(path: CommandLine.arguments[index + 1], deviceRate: Double(CommandLine.arguments[index + 2]) ?? 48000)
     exit(0)

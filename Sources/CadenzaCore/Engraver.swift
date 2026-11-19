@@ -21,47 +21,88 @@ public enum Engraver {
 
     // MARK: tempo
 
-    /// Average tempo in quarter notes per minute, from inter-onset
-    /// intervals of the grouped onsets. The dominant interval cluster wins
-    /// — arpeggios contribute their half and dotted variants, but repeated
-    /// beats outnumber them — then the winner is folded into a musical
-    /// range so an eighth-note run does not report double tempo.
-    public static func inferTempo(_ notes: [NoteEvent]) -> Double {
-        let onsets = strokeOnsetTimes(notes)
-        guard onsets.count >= 3 else { return 120 }
+    /// Distinct inter-onset clusters of the grouped onsets, each with the
+    /// combined velocity of the gaps that fall into it: (period seconds,
+    /// weight). Busy passages make subdivision intervals outnumber beat
+    /// intervals, so weight, not count, carries the evidence.
+    private static func onsetClusters(_ notes: [NoteEvent]) -> [(period: Double, weight: Double)] {
+        let grouped = groupedForInference(notes)
+        let strikes = grouped
+            .reduce(into: [Int: (onset: Double, velocity: Int)]()) { map, note in
+                let current = map[note.onsetGroup]
+                map[note.onsetGroup] = (
+                    onset: min(current?.onset ?? .infinity, note.onset),
+                    velocity: max(current?.velocity ?? 0, note.velocity)
+                )
+            }
+            .values
+            .sorted { $0.onset < $1.onset }
+        guard strikes.count >= 3 else { return [(0.5, 1)] }
 
-        // inter-onset intervals, ignoring pause gaps: silence carries no
-        // pulse information
-        let gaps: [Double] = zip(onsets, onsets.dropFirst())
-            .map { $1 - $0 }
-            .filter { $0 >= 0.1 && $0 <= 2.0 }
-        guard !gaps.isEmpty else { return 120 }
-
-        // the cluster that the most intervals sit within 20 ms of its
-        // center is the beat
-        var bestCount = 0
-        var bestInterval = gaps[0]
-        for center in gaps {
-            let count = gaps.filter { abs($0 - center) < 0.02 }.count
-            if count > bestCount {
-                bestCount = count
-                bestInterval = center
+        // inter-onset intervals with the louder strike's velocity as
+        // weight; pause gaps carry no pulse information
+        var gaps: [(interval: Double, weight: Double)] = []
+        for pair in zip(strikes, strikes.dropFirst()) {
+            let interval = pair.1.onset - pair.0.onset
+            if interval >= 0.1 && interval <= 2.0 {
+                gaps.append((interval, Double(max(pair.0.velocity, pair.1.velocity))))
             }
         }
 
-        // a beat shorter than a 240 BPM sixteenth is really a subdivision
-        var beat = bestInterval
-        while beat < 0.25 { beat *= 2 }
-        while beat > 1.5 { beat /= 2 }
-        return min(220, max(40, 60.0 / beat))
+        var clusters: [(period: Double, weight: Double)] = []
+        for gap in gaps {
+            let tolerance = max(0.02, 0.03 * gap.interval)
+            if let index = clusters.firstIndex(where: { abs($0.period - gap.interval) < tolerance }) {
+                clusters[index].weight += gap.weight
+            } else {
+                clusters.append((gap.interval, gap.weight))
+            }
+        }
+        return clusters
+    }
+
+    /// Candidate tempi in bpm: the onset clusters clamped into a musical
+    /// range, ascending. Subdivision and bar-level octaves survive on
+    /// purpose so the choices step can offer them.
+    public static func tempoCandidates(_ notes: [NoteEvent]) -> [Double] {
+        let candidates = onsetClusters(notes)
+            .map { min(240, max(40, 60.0 / $0.period)) }
+        let unique = Array(NSCountedSet(array: candidates.map { Int($0.rounded()) }).allObjects.compactMap { ($0 as? NSNumber)?.intValue })
+            .map { Double($0) }
+            .sorted()
+        return unique.isEmpty ? [120] : unique
+    }
+
+    /// Average tempo in quarter notes per minute: the heaviest onset
+    /// cluster whose tempo sits in the range where a tap-along beat lives
+    /// (50-190 bpm). Faster clusters are subdivisions of the beat, slower
+    /// ones are the bar; if nothing lands in range the heaviest cluster
+    /// overall wins, clamped. Ties go to the slower period, because the
+    /// beat is what the foot taps, not the hand.
+    public static func inferTempo(_ notes: [NoteEvent]) -> Double {
+        let clusters = onsetClusters(notes)
+        guard !clusters.isEmpty else { return 120 }
+        let inRange = clusters.filter {
+            let bpm = 60.0 / $0.period
+            return bpm >= 50 && bpm <= 190
+        }
+        let pool = inRange.isEmpty ? clusters : inRange
+        let best = pool.max { a, b in
+            if a.weight != b.weight { return a.weight < b.weight }
+            return a.period < b.period
+        }!
+        return min(240, max(40, 60.0 / best.period))
     }
 
     // MARK: key
 
     /// Krumhansl-Schmuckler: correlate the duration-weighted pitch-class
-    /// profile against the major and minor key profiles. The best
-    /// correlation wins; a confident C major run reads C major whatever
-    /// the first chord was.
+    /// profile against the major and minor key profiles, with two musical
+    /// corrections on top. Out-of-scale sounding time penalizes a key —
+    /// a lot of F natural is evidence against G major, whatever the tonic
+    /// mass says. And the first and last onset groups add a cadence bias
+    /// toward their own pitch classes, so a piece that ends on C reads
+    /// C major even when the harmony spent the middle on G7.
     public static func inferKey(_ notes: [NoteEvent]) -> KeySignature {
         let majorProfile: [Double] = [
             6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
@@ -69,19 +110,45 @@ public enum Engraver {
         let minorProfile: [Double] = [
             6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
         ]
+        let majorScale = [0, 2, 4, 5, 7, 9, 11]
+        let minorScale = [0, 2, 3, 5, 7, 8, 10]
 
         var histogram = Array(repeating: 0.0, count: 12)
         for note in notes {
             histogram[note.pitchClass] += note.duration + 0.01
         }
+        let total = histogram.reduce(0, +)
+
+        // cadence evidence: pitch classes of the first and last onset group
+        let grouped = groupedForInference(notes)
+        let byGroup = Dictionary(grouping: grouped, by: { $0.onsetGroup }).values
+        var struck: [(onset: Double, classes: Set<Int>)] = []
+        for group in byGroup {
+            let onset = group.map(\.onset).min() ?? 0
+            let classes = Set(group.map(\.pitchClass))
+            struck.append((onset, classes))
+        }
+        struck.sort { $0.onset < $1.onset }
+        let firstGroup = struck.first?.classes
+        let lastGroup = struck.last?.classes
 
         var bestTonic = 0
         var bestMinor = false
         var bestScore = -2.0
         for tonic in 0..<12 {
+            var bias = 1.0
+            if let firstGroup, firstGroup.contains(tonic) { bias *= 1.05 }
+            if let lastGroup, lastGroup.contains(tonic) { bias *= 1.15 }
+            let scale = { (steps: [Int]) -> Double in
+                var outOfScale = 0.0
+                for pc in 0..<12 where !steps.contains((pc - tonic + 12) % 12) {
+                    outOfScale += histogram[pc]
+                }
+                return total > 0 ? exp(-1.5 * outOfScale / total) : 1.0
+            }
             let rotated = (0..<12).map { histogram[($0 + tonic) % 12] }
-            let major = correlation(rotated, majorProfile)
-            let minor = correlation(rotated, minorProfile)
+            let major = correlation(rotated, majorProfile) * bias * scale(majorScale)
+            let minor = correlation(rotated, minorProfile) * bias * scale(minorScale)
             if major > bestScore {
                 bestScore = major
                 bestTonic = tonic
@@ -132,16 +199,31 @@ public enum Engraver {
     /// and unaccented material leans on the grid alone. Few strokes fall
     /// back to 4/4.
     public static func inferTimeSignature(_ notes: [NoteEvent], tempo: Double) -> TimeSignature {
+        let scored = scoreMeterCandidates(notes, tempo: tempo)
+        return scored.max { $0.score < $1.score }?.signature
+            ?? TimeSignature(beatsPerMeasure: 4, beatUnit: 4)
+    }
+
+    /// Set true to print per-candidate grid and accent evidence while
+    /// scoring meters (used by the midiscore diagnostic).
+    nonisolated(unsafe) public static var meterDebug = false
+
+    /// Every candidate meter with its score (grid lift times accent lift
+    /// times prior), best first. The app's choices step can show these as
+    /// the alternatives the user may override.
+    public static func scoreMeterCandidates(
+        _ notes: [NoteEvent],
+        tempo: Double
+    ) -> [(signature: TimeSignature, score: Double)] {
         let strikes = strikesForMeter(notes, tempo: tempo)
         guard strikes.count >= 4 else {
-            return TimeSignature(beatsPerMeasure: 4, beatUnit: 4)
+            return meterCandidates.map { ($0.signature, 0) }
         }
         let snap = scoreTicksPerQuarter / 4
         let velocitySum = Double(strikes.map(\.velocity).reduce(0, +))
         let averageVelocity = velocitySum / Double(strikes.count)
 
-        var best: TimeSignature?
-        var bestScore = -1.0
+        var scored: [(signature: TimeSignature, score: Double)] = []
         for candidate in meterCandidates {
             let measureTicks = candidate.signature.ticksPerMeasure
             let beatTicks = candidate.signature.ticksPerBeat
@@ -173,12 +255,15 @@ public enum Engraver {
             while phase < measureTicks {
                 var observed = 0.0
                 var downbeatVelocities: [Double] = []
+                var beatVelocities: [Double] = []
                 var otherVelocities: [Double] = []
                 for strike in strikes {
                     let position = ((strike.tick - phase) % measureTicks + measureTicks) % measureTicks
                     observed += positionWeight(position, velocity: Double(strike.velocity))
                     if position == 0 {
                         downbeatVelocities.append(Double(strike.velocity))
+                    } else if position % beatTicks == 0 {
+                        beatVelocities.append(Double(strike.velocity))
                     } else {
                         otherVelocities.append(Double(strike.velocity))
                     }
@@ -186,27 +271,33 @@ public enum Engraver {
                 let observedMean = observed / Double(strikes.count)
                 let gridLift = baseline > 0 ? observedMean / baseline : 0
 
-                // how much louder the candidate's downbeats are than the
-                // rest; too few hits to say reads as no evidence
+                // metrical hierarchy: the downbeat should be louder than
+                // the other beats of its own meter; too few hits to say
+                // reads as no evidence
                 var accentLift = 1.0
-                if downbeatVelocities.count >= 3, !otherVelocities.isEmpty {
+                if downbeatVelocities.count >= 3 {
                     let downbeatMean = downbeatVelocities.reduce(0, +) / Double(downbeatVelocities.count)
-                    let otherMean = otherVelocities.reduce(0, +) / Double(otherVelocities.count)
-                    if otherMean > 0 {
-                        accentLift = downbeatMean / otherMean
+                    let comparison: [Double] = !beatVelocities.isEmpty ? beatVelocities : otherVelocities
+                    if !comparison.isEmpty {
+                        let comparisonMean = comparison.reduce(0, +) / Double(comparison.count)
+                        if comparisonMean > 0 {
+                            accentLift = downbeatMean / comparisonMean
+                        }
                     }
                 }
 
                 let total = gridLift * accentLift * candidate.prior
+                if Self.meterDebug, total > candidateBest {
+                    print(String(format: "  meter %d/%d phase %d: grid %.3f accent %.3f total %.3f",
+                                 candidate.signature.beatsPerMeasure, candidate.signature.beatUnit,
+                                 phase, gridLift, accentLift, total))
+                }
                 candidateBest = max(candidateBest, total)
                 phase += snap
             }
-            if candidateBest > bestScore {
-                bestScore = candidateBest
-                best = candidate.signature
-            }
+            scored.append((candidate.signature, candidateBest))
         }
-        return best ?? TimeSignature(beatsPerMeasure: 4, beatUnit: 4)
+        return scored.sorted { $0.score > $1.score }
     }
 
     /// Onset strikes with velocity, on the tick grid at the given tempo:
