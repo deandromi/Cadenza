@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // palette for the day the app follows the system again)
         NSApplication.shared.appearance = NSAppearance(named: .aqua)
 
+        // the notation font for the sheet music section
+        MusicFont.register()
+
         publisher.setup()
         engine.onNoteEvent = { [weak self] event, kind in
             guard let self else { return }

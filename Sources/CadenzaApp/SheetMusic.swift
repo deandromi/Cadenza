@@ -1,5 +1,7 @@
 import AppKit
 import CadenzaCore
+@preconcurrency import CoreText
+import CoreGraphics
 import UniformTypeIdentifiers
 
 /// The sheet music section: a paper window where the recorded session is
@@ -283,16 +285,124 @@ final class SheetMusicController: NSObject {
     }
 }
 
-/// The engraved score drawn in ink on the paper: grand staff systems, hand-
-/// drawn clefs, key glyphs, time signature, noteheads with stems, flags and
-/// dots, ledger lines, rests, chord symbols and measure numbers. All
-/// geometry comes from ScoreLayout; this view only knows how to draw it.
+/// The notation font: Bravura (OFL, bundled in Resources/), the same SMuFL
+/// font MuseScore engraves with. Registered with CoreText once at launch;
+/// every glyph below is a real music glyph, not a drawn imitation.
+enum MusicFont {
+    static let familyName = "Bravura"
+
+    /// Registers the bundled font for this process: the app bundle's
+    /// resources first, then the repository's Resources for swift run.
+    static func register() {
+        var candidates: [URL] = []
+        if let resources = Bundle.main.resourceURL {
+            candidates.append(resources.appendingPathComponent("Bravura.otf"))
+        }
+        if let executable = Bundle.main.executableURL {
+            var dir = executable.deletingLastPathComponent()
+            for _ in 0..<6 {
+                candidates.append(dir.appendingPathComponent("Resources/Bravura.otf"))
+                dir = dir.deletingLastPathComponent()
+            }
+        }
+        var dir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        for _ in 0..<6 {
+            candidates.append(dir.appendingPathComponent("Resources/Bravura.otf"))
+            dir = dir.deletingLastPathComponent()
+        }
+        for url in candidates where FileManager.default.fileExists(atPath: url.path) {
+            var error: Unmanaged<CFError>?
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error)
+            return
+        }
+    }
+
+    /// The music font at the given point size. SMuFL is built so that one
+    /// em is four staff spaces, so a staff with line gap g wants 4 * g.
+    static func font(size: CGFloat) -> NSFont {
+        NSFont(name: familyName, size: size) ?? .systemFont(ofSize: size)
+    }
+
+    /// The same font as a CoreText font, for glyph-precise drawing.
+    static func ctFont(size: CGFloat) -> CTFont {
+        CTFontCreateWithName(familyName as CFString, size, nil)
+            ?? CTFontCreateWithName("System" as CFString, size, nil)
+    }
+
+    /// Metrics of one SMuFL glyph: its glyph id and bounding box in em
+    /// units (y up from the baseline), measured once at a reference size.
+    /// Glyph ids are size-independent, so one cache serves every size.
+    struct GlyphInfo {
+        let glyph: CGGlyph
+        let x0: CGFloat
+        let y0: CGFloat
+        let x1: CGFloat
+        let y1: CGFloat
+        var width: CGFloat { x1 - x0 }
+        var centerY: CGFloat { (y0 + y1) / 2 }
+    }
+
+    private static nonisolated(unsafe) let referenceFont = ctFont(size: 1000)
+    private static nonisolated(unsafe) var cache: [UInt32: GlyphInfo] = [:]
+
+    static func info(_ codepoint: UInt32) -> GlyphInfo? {
+        if let hit = cache[codepoint] { return hit }
+        let text = String(UnicodeScalar(codepoint)!)
+        let line = CTLineCreateWithAttributedString(NSAttributedString(
+            string: text,
+            attributes: [.font: NSFont(name: familyName, size: 1000) ?? .systemFont(ofSize: 1000)]
+        ))
+        guard let run = (CTLineGetGlyphRuns(line) as? [CTRun])?.first else { return nil }
+        var glyph: CGGlyph = 0
+        CTRunGetGlyphs(run, CFRange(location: 0, length: 1), &glyph)
+        guard glyph != 0 else { return nil }
+        var box = CGRect.zero
+        CTFontGetBoundingRectsForGlyphs(referenceFont, .horizontal, [glyph], &box, 1)
+        let info = GlyphInfo(glyph: glyph,
+                             x0: box.minX / 1000, y0: box.minY / 1000,
+                             x1: box.maxX / 1000, y1: box.maxY / 1000)
+        cache[codepoint] = info
+        return info
+    }
+}
+
+/// The engraved score on the paper: grand staff systems drawn with the
+/// Bravura music font — real clefs, noteheads, flags, accidentals, rests,
+/// augmentation dots and time signature digits — with stems and beams as
+/// engraved lines, ledger lines, barlines, a brace, chord symbols and
+/// measure numbers. All geometry comes from ScoreLayout; this view only
+/// knows how to draw it.
 @MainActor
 final class ScoreView: NSView {
+    // SMuFL codepoints in Bravura (private-use range, per the SMuFL spec)
+    private enum Glyph {
+        static let gClef: UInt32 = 0xE050
+        static let fClef: UInt32 = 0xE062
+        static let brace: UInt32 = 0xE002
+        static let noteheadWhole: UInt32 = 0xE0A2
+        static let noteheadHalf: UInt32 = 0xE0A3
+        static let noteheadBlack: UInt32 = 0xE0A4
+        static let flag8thUp: UInt32 = 0xE241
+        static let flag8thDown: UInt32 = 0xE240
+        static let flag16thUp: UInt32 = 0xE245
+        static let flag16thDown: UInt32 = 0xE244
+        static let augmentationDot: UInt32 = 0xE1E7
+        static let restWhole: UInt32 = 0xE4E3
+        static let restHalf: UInt32 = 0xE4E4
+        static let accidentalSharp: UInt32 = 0xE262
+        static let accidentalNatural: UInt32 = 0xE261
+        static let accidentalFlat: UInt32 = 0xE260
+        static func timeSignatureDigit(_ n: Int) -> UInt32 { 0xE080 + UInt32(n) }
+    }
+
     private let layout: ScoreLayout.Result
+    private let musicFont: CTFont
+    private let fontSize: CGFloat
 
     init(layout: ScoreLayout.Result) {
         self.layout = layout
+        self.fontSize = 4 * CGFloat(layout.lineGap)
+        self.musicFont = MusicFont.ctFont(size: self.fontSize)
         super.init(frame: NSRect(x: 0, y: 0, width: layout.width, height: layout.height))
     }
 
@@ -316,17 +426,25 @@ final class ScoreView: NSView {
             func yOnTreble(_ position: Int) -> CGFloat { trebleBottom - CGFloat(position) * gap / 2 }
             func yOnBass(_ position: Int) -> CGFloat { bassBottom - CGFloat(position) * gap / 2 }
 
-            // staff lines
-            ink.withAlphaComponent(0.8).setStroke()
+            // staff lines: a classical hairline
+            ink.withAlphaComponent(0.9).setStroke()
             for line in 0...4 {
-                let y = top + CGFloat(line) * gap
-                NSBezierPath.strokeLine(from: NSPoint(x: 8, y: y), to: NSPoint(x: bounds.width - 8, y: y))
-                let yb = bassTop + CGFloat(line) * gap
-                NSBezierPath.strokeLine(from: NSPoint(x: 8, y: yb), to: NSPoint(x: bounds.width - 8, y: yb))
+                strokeLine(from: NSPoint(x: 8, y: top + CGFloat(line) * gap),
+                           to: NSPoint(x: bounds.width - 8, y: top + CGFloat(line) * gap), width: 0.8)
+                strokeLine(from: NSPoint(x: 8, y: bassTop + CGFloat(line) * gap),
+                           to: NSPoint(x: bounds.width - 8, y: bassTop + CGFloat(line) * gap), width: 0.8)
             }
 
-            // brace at the left of the system
-            drawBrace(x: 14, from: top, to: bassBottom, gap: gap, ink: ink)
+            // the brace joining the two staves: scaled so its ink spans from
+            // the treble top line to the bass bottom line, baseline below the
+            // top by the glyph's own top offset
+            if let braceInfo = MusicFont.info(Glyph.brace) {
+                let span = bassBottom - top + 0.4 * gap
+                let size = span / (braceInfo.y1 - braceInfo.y0)
+                drawGlyph(Glyph.brace,
+                          baselineAt: NSPoint(x: 4, y: top + braceInfo.y1 * size),
+                          font: MusicFont.ctFont(size: size), color: ink)
+            }
 
             var lastRight = 8.0
             for measure in system.measures {
@@ -335,26 +453,31 @@ final class ScoreView: NSView {
                 lastRight = mx + mw
 
                 // barline spanning both staves
-                ink.withAlphaComponent(0.8).setStroke()
-                NSBezierPath.strokeLine(from: NSPoint(x: mx, y: top), to: NSPoint(x: mx, y: bassBottom))
+                ink.withAlphaComponent(0.9).setStroke()
+                strokeLine(from: NSPoint(x: mx, y: top), to: NSPoint(x: mx, y: bassBottom), width: 1.0)
 
                 if measure.showsFraming {
-                    drawTrebleClef(x: mx + 6, gLineY: yOnTreble(2), gap: gap, ink: ink)
-                    drawBassClef(x: mx + 6, fLineY: yOnBass(6), gap: gap, ink: ink)
-                    var keyX = mx + 6 + 2.4 * gap
+                    // clefs: SMuFL baseline sits on the clef's reference line
+                    // (G line = second from bottom, F line = second from top)
+                    drawGlyph(Glyph.gClef, baselineAt: NSPoint(x: mx + 10, y: yOnTreble(2)), font: musicFont, color: ink)
+                    drawGlyph(Glyph.fClef, baselineAt: NSPoint(x: mx + 10, y: yOnBass(6)), font: musicFont, color: ink)
+                    var keyX = mx + 10 + 1.9 * gap
                     for glyph in layout.keyGlyphs {
-                        let y = yOnTreble(glyph.treblePosition)
-                        drawAccidentalGlyph(glyph.accidental, x: keyX, y: y, gap: gap, ink: ink)
-                        let yb = yOnBass(glyph.bassPosition)
-                        drawAccidentalGlyph(glyph.accidental, x: keyX, y: yb, gap: gap, ink: ink)
-                        keyX += 1.15 * gap
+                        let accidental = glyph.accidental == .sharp ? Glyph.accidentalSharp
+                            : glyph.accidental == .flat ? Glyph.accidentalFlat : Glyph.accidentalNatural
+                        let accWidth = MusicFont.info(accidental).map { $0.width * fontSize } ?? 0.9 * gap
+                        drawGlyph(accidental, baselineAt: NSPoint(x: keyX, y: yOnTreble(glyph.treblePosition)), font: musicFont, color: ink)
+                        drawGlyph(accidental, baselineAt: NSPoint(x: keyX, y: yOnBass(glyph.bassPosition)), font: musicFont, color: ink)
+                        keyX += accWidth + 0.25 * gap
                     }
-                    let sigX = keyX + 0.5 * gap
-                    drawTimeSignature(
-                        beats: layout.beatsPerMeasure, unit: layout.beatUnit,
-                        x: sigX, trebleBottom: trebleBottom, bassBottom: bassBottom,
-                        gap: gap, ink: ink
-                    )
+                    // time signature: digits are 2 spaces tall and centered on
+                    // their baseline — numerator above the middle line,
+                    // denominator below it
+                    let sigX = keyX + 0.6 * gap
+                    drawGlyph(Glyph.timeSignatureDigit(layout.beatsPerMeasure), baselineAt: NSPoint(x: sigX, y: trebleBottom - 3 * gap), font: musicFont, color: ink)
+                    drawGlyph(Glyph.timeSignatureDigit(layout.beatUnit), baselineAt: NSPoint(x: sigX, y: trebleBottom - gap), font: musicFont, color: ink)
+                    drawGlyph(Glyph.timeSignatureDigit(layout.beatsPerMeasure), baselineAt: NSPoint(x: sigX, y: bassBottom - 3 * gap), font: musicFont, color: ink)
+                    drawGlyph(Glyph.timeSignatureDigit(layout.beatUnit), baselineAt: NSPoint(x: sigX, y: bassBottom - gap), font: musicFont, color: ink)
                 }
 
                 // measure number at the top of each system's first measure
@@ -377,13 +500,9 @@ final class ScoreView: NSView {
                     )
                 }
 
-                // notes on both staves
-                for note in measure.treble {
-                    drawNote(note, measureX: mx, bottomLineY: trebleBottom, gap: gap, ink: ink)
-                }
-                for note in measure.bass {
-                    drawNote(note, measureX: mx, bottomLineY: bassBottom, gap: gap, ink: ink)
-                }
+                // notes on both staves, beamed where they run
+                drawStaffNotes(measure.treble, measureX: mx, bottomLineY: trebleBottom, gap: gap, ink: ink)
+                drawStaffNotes(measure.bass, measureX: mx, bottomLineY: bassBottom, gap: gap, ink: ink)
 
                 // rests
                 if let rest = measure.trebleRest {
@@ -395,232 +514,246 @@ final class ScoreView: NSView {
             }
 
             // closing barline of the system
-            ink.withAlphaComponent(0.8).setStroke()
-            NSBezierPath.strokeLine(from: NSPoint(x: lastRight, y: top), to: NSPoint(x: lastRight, y: bassBottom))
+            ink.withAlphaComponent(0.9).setStroke()
+            strokeLine(from: NSPoint(x: lastRight, y: top), to: NSPoint(x: lastRight, y: bassBottom), width: 1.0)
         }
 
-        // final double barline
-        let lastSystem = layout.systems.last
-        if let lastSystem, let last = lastSystem.measures.last {
+        // final barline: thin then thick
+        if let lastSystem = layout.systems.last, let last = lastSystem.measures.last {
             let x = CGFloat(last.x + last.width) + 8
             let top = CGFloat(lastSystem.y)
             let bottom = top + 4 * gap + staffGapPx + 4 * gap
-            PaperTheme.ink.setStroke()
-            NSBezierPath.strokeLine(from: NSPoint(x: x - 3, y: top), to: NSPoint(x: x - 3, y: bottom))
-            strokeLine(from: NSPoint(x: x, y: top), to: NSPoint(x: x, y: bottom), width: 3)
+            ink.setStroke()
+            strokeLine(from: NSPoint(x: x - 3, y: top), to: NSPoint(x: x - 3, y: bottom), width: 1.0)
+            strokeLine(from: NSPoint(x: x, y: top), to: NSPoint(x: x, y: bottom), width: 3.5)
         }
     }
 
-    // MARK: glyphs
+    // MARK: notes, stems, beams
 
-    private func yFor(_ position: Int, bottomLineY: CGFloat, gap: CGFloat) -> CGFloat {
-        bottomLineY - CGFloat(position) * gap / 2
+    private struct BeamInfo {
+        /// y of the beam's center line at the note's stem x
+        var beamY: CGFloat
+        /// whether a second beam passes at this note
+        var secondBeam: Bool
     }
 
-    private func drawNote(_ note: ScoreLayout.Note, measureX: CGFloat, bottomLineY: CGFloat, gap: CGFloat, ink: NSColor) {
-        let cx = measureX + CGFloat(note.x) - 0.72 * gap
-        let cy = yFor(note.staffPosition, bottomLineY: bottomLineY, gap: gap)
-        let rx = 0.72 * gap
-        let ry = 0.5 * gap
-
-        // ledger lines first, under the head
-        ink.withAlphaComponent(0.8).setStroke()
-        for position in note.ledgerPositions {
-            let y = yFor(position, bottomLineY: bottomLineY, gap: gap)
-            NSBezierPath.strokeLine(from: NSPoint(x: cx - rx * 1.35, y: y), to: NSPoint(x: cx + rx * 1.35, y: y))
+    private func drawStaffNotes(_ notes: [ScoreLayout.Note], measureX: CGFloat, bottomLineY: CGFloat, gap: CGFloat, ink: NSColor) {
+        let beams = computeBeams(notes, measureX: measureX, bottomLineY: bottomLineY, gap: gap)
+        for (index, note) in notes.enumerated() {
+            drawNote(note, beam: beams[index], measureX: measureX, bottomLineY: bottomLineY, gap: gap, ink: ink)
         }
+    }
 
-        // accidental left of the head
-        if let accidental = note.accidental {
-            drawAccidentalGlyph(accidental, x: cx - rx - 1.1 * gap, y: cy, gap: gap, ink: ink)
-        }
-
-        // head
-        let headPath = tiltedEllipse(center: NSPoint(x: cx, y: cy), radiusX: rx, radiusY: ry, tilt: -20)
-        switch note.head {
-        case .filled:
-            ink.setFill()
-            headPath.fill()
-        case .hollow:
-            // a half note's head is an open ring: staff lines show through
-            ink.setStroke()
-            headPath.lineWidth = 1.7
-            headPath.stroke()
-        case .whole:
-            ink.setStroke()
-            headPath.lineWidth = 2.2
-            headPath.stroke()
-        }
-
-        // stem and flags
-        if note.head != .whole {
-            let stemLength = 3.4 * gap
-            let stemX = note.stemUp ? cx + rx * 0.95 : cx - rx * 0.95
-            let fromY = note.stemUp ? cy - ry * 0.7 : cy + ry * 0.7
-            let toY = note.stemUp ? cy - stemLength : cy + stemLength
-            ink.setStroke()
-            strokeLine(from: NSPoint(x: stemX, y: fromY), to: NSPoint(x: stemX, y: toY), width: 1.1)
-            for flag in 0..<note.flags {
-                drawFlag(stemX: stemX, tipY: toY, up: note.stemUp, index: flag, gap: gap, ink: ink)
+    /// Groups flagged notes into beam runs: consecutive onsets close enough
+    /// in x share one beam. A lone flagged note keeps its flag.
+    private func computeBeams(_ notes: [ScoreLayout.Note], measureX: CGFloat, bottomLineY: CGFloat, gap: CGFloat) -> [Int: BeamInfo] {
+        let flagged = notes.enumerated().filter { $0.element.flags > 0 }.map { $0.offset }
+        guard !flagged.isEmpty else { return [:] }
+        var beams: [Int: BeamInfo] = [:]
+        var run: [Int] = []
+        func flush() {
+            guard run.count >= 2 else {
+                run = []
+                return
             }
-        }
-
-        // dots, in the space above when the head sits on a line
-        if note.dots > 0 {
-            let dotY = note.staffPosition % 2 == 0 ? cy - gap / 2 : cy
-            for dot in 0..<note.dots {
-                let dotX = cx + rx + 0.55 * gap + CGFloat(dot) * 0.55 * gap
-                ink.setFill()
-                NSBezierPath(ovalIn: NSRect(x: dotX - 0.09 * gap, y: dotY - 0.09 * gap, width: 0.18 * gap, height: 0.18 * gap)).fill()
+            let stemUp = notes[run[0]].stemUp
+            let xs = run.map { measureX + CGFloat(notes[$0].x) }
+            let heads = run.map { noteY(notes[$0], bottomLineY: bottomLineY, gap: gap) }
+            // beam line through the outer stem tips (3.5 spaces from the head),
+            // slant clamped to half a space; in view coords up is negative y
+            let stemLen = 3.5 * gap
+            var y1 = heads[0] + (stemUp ? -stemLen : stemLen)
+            var y2 = heads[run.count - 1] + (stemUp ? -stemLen : stemLen)
+            let slant = max(-0.5 * gap, min(0.5 * gap, y2 - y1))
+            y2 = y1 + slant
+            // keep the beam at least three spaces clear of every head
+            for (position, headY) in heads.enumerated() {
+                let fraction = CGFloat(position) / CGFloat(run.count - 1)
+                let beamY = y1 + (y2 - y1) * fraction
+                let clearance = stemUp ? headY - beamY : beamY - headY
+                if clearance < 3 * gap {
+                    let shift = 3 * gap - clearance
+                    if stemUp { y1 -= shift; y2 -= shift } else { y1 += shift; y2 += shift }
+                }
             }
+            for (position, index) in run.enumerated() {
+                let fraction = CGFloat(position) / CGFloat(run.count - 1)
+                beams[index] = BeamInfo(beamY: y1 + (y2 - y1) * fraction,
+                                        secondBeam: notes[index].flags >= 2)
+            }
+            // the beam spans from the first stem to the last
+            let stemEdge = (stemUp ? 0.55 : -0.55) * gap
+            inkBeam(x1: xs[0] + stemEdge, x2: xs[run.count - 1] + stemEdge,
+                    y1: y1, y2: y2, up: stemUp, gap: gap, ink: PaperTheme.ink)
+            // second beam across the sixteenth notes, on the far side of the first
+            let sixteenths = run.filter { notes[$0].flags >= 2 }
+            if !sixteenths.isEmpty {
+                let first = run.firstIndex(of: sixteenths[0]) ?? 0
+                let last = run.firstIndex(of: sixteenths[sixteenths.count - 1]) ?? run.count - 1
+                let offset = (stemUp ? -1 : 1) * 0.34 * gap
+                let f1 = CGFloat(first) / CGFloat(run.count - 1)
+                let f2 = CGFloat(last) / CGFloat(run.count - 1)
+                inkBeam(x1: xs[first] + stemEdge, x2: xs[last] + stemEdge,
+                        y1: y1 + offset + (y2 - y1) * f1,
+                        y2: y2 + offset + (y2 - y1) * f2,
+                        up: stemUp, gap: gap, ink: PaperTheme.ink)
+            }
+            run = []
         }
+        var previousX: CGFloat = -1e9
+        for index in flagged.sorted(by: { notes[$0].x < notes[$1].x }) {
+            let x = measureX + CGFloat(notes[index].x)
+            if x - previousX > 1.5 * ScoreLayout.groupSpacing, !run.isEmpty {
+                flush()
+            }
+            run.append(index)
+            previousX = x
+        }
+        flush()
+        return beams
     }
 
-    private func drawFlag(stemX: CGFloat, tipY: CGFloat, up: Bool, index: Int, gap: CGFloat, ink: NSColor) {
+    /// A beam: a filled parallelogram between the outer stem tips, its
+    /// thickness extending away from the noteheads (up in view coords means
+    /// negative y, so the sign flips).
+    private func inkBeam(x1: CGFloat, x2: CGFloat, y1: CGFloat, y2: CGFloat, up: Bool, gap: CGFloat, ink: NSColor) {
+        let thickness = 0.48 * gap
         let sign: CGFloat = up ? -1 : 1
-        let baseY = tipY + sign * CGFloat(index) * 0.55 * gap
         let path = NSBezierPath()
-        path.move(to: NSPoint(x: stemX, y: baseY))
-        path.curve(
-            to: NSPoint(x: stemX + 1.05 * gap, y: baseY + sign * (0.9 + 0.35 * CGFloat(index)) * gap),
-            controlPoint1: NSPoint(x: stemX + 0.55 * gap, y: baseY + sign * 0.15 * gap),
-            controlPoint2: NSPoint(x: stemX + 1.0 * gap, y: baseY + sign * 0.55 * gap)
-        )
-        path.curve(
-            to: NSPoint(x: stemX + 0.45 * gap, y: baseY + sign * (1.5 + 0.35 * CGFloat(index)) * gap),
-            controlPoint1: NSPoint(x: stemX + 0.95 * gap, y: baseY + sign * (1.1 + 0.35 * CGFloat(index)) * gap),
-            controlPoint2: NSPoint(x: stemX + 0.6 * gap, y: baseY + sign * (1.35 + 0.35 * CGFloat(index)) * gap)
-        )
-        path.line(to: NSPoint(x: stemX, y: baseY + sign * 0.5 * gap))
+        path.move(to: NSPoint(x: x1, y: y1))
+        path.line(to: NSPoint(x: x2, y: y2))
+        path.line(to: NSPoint(x: x2, y: y2 + sign * thickness))
+        path.line(to: NSPoint(x: x1, y: y1 + sign * thickness))
         path.close()
         ink.setFill()
         path.fill()
     }
 
-    private func drawRest(_ rest: ScoreLayout.Rest, measureX: CGFloat, bottomLineY: CGFloat, gap: CGFloat, ink: NSColor) {
-        let x = measureX + CGFloat(rest.x)
-        let y = yFor(rest.staffPosition, bottomLineY: bottomLineY, gap: gap)
-        ink.setFill()
-        if rest.whole {
-            // hangs below the line it sits on
-            NSBezierPath.fill(NSRect(x: x - 0.45 * gap, y: y - 0.55 * gap, width: 0.9 * gap, height: 0.55 * gap))
-        } else {
-            // sits on top of the line
-            NSBezierPath.fill(NSRect(x: x - 0.45 * gap, y: y, width: 0.9 * gap, height: 0.55 * gap))
-        }
+    private func noteY(_ note: ScoreLayout.Note, bottomLineY: CGFloat, gap: CGFloat) -> CGFloat {
+        bottomLineY - CGFloat(note.staffPosition) * gap / 2
     }
 
-    private func drawAccidentalGlyph(_ accidental: ScoreLayout.Accidental, x: CGFloat, y: CGFloat, gap: CGFloat, ink: NSColor) {
-        ink.setStroke()
-        let line = { [weak self] (from: NSPoint, to: NSPoint) in
-            self?.strokeLine(from: from, to: to, width: 0.15 * gap)
-        }
-        switch accidental {
-        case .sharp:
-            line(NSPoint(x: x - 0.22 * gap, y: y - 0.95 * gap), NSPoint(x: x - 0.22 * gap, y: y + 0.95 * gap))
-            line(NSPoint(x: x + 0.22 * gap, y: y - 0.95 * gap), NSPoint(x: x + 0.22 * gap, y: y + 0.95 * gap))
-            line(NSPoint(x: x - 0.42 * gap, y: y - 0.42 * gap), NSPoint(x: x + 0.42 * gap, y: y - 0.05 * gap))
-            line(NSPoint(x: x - 0.42 * gap, y: y + 0.05 * gap), NSPoint(x: x + 0.42 * gap, y: y + 0.42 * gap))
-        case .flat:
-            line(NSPoint(x: x - 0.28 * gap, y: y - 1.15 * gap), NSPoint(x: x - 0.28 * gap, y: y + 0.55 * gap))
-            let bowl = NSBezierPath()
-            bowl.move(to: NSPoint(x: x - 0.28 * gap, y: y + 0.55 * gap))
-            bowl.curve(to: NSPoint(x: x + 0.55 * gap, y: y - 0.05 * gap), controlPoint1: NSPoint(x: x + 0.45 * gap, y: y + 0.55 * gap), controlPoint2: NSPoint(x: x + 0.6 * gap, y: y + 0.2 * gap))
-            bowl.curve(to: NSPoint(x: x - 0.28 * gap, y: y - 0.25 * gap), controlPoint1: NSPoint(x: x + 0.3 * gap, y: y - 0.45 * gap), controlPoint2: NSPoint(x: x - 0.1 * gap, y: y - 0.45 * gap))
-            bowl.lineWidth = 0.16 * gap
-            bowl.stroke()
-        case .natural:
-            line(NSPoint(x: x - 0.22 * gap, y: y - 0.95 * gap), NSPoint(x: x - 0.22 * gap, y: y + 0.95 * gap))
-            line(NSPoint(x: x + 0.22 * gap, y: y - 0.95 * gap), NSPoint(x: x + 0.22 * gap, y: y + 0.95 * gap))
-            line(NSPoint(x: x - 0.42 * gap, y: y + 0.42 * gap), NSPoint(x: x + 0.42 * gap, y: y + 0.05 * gap))
-            line(NSPoint(x: x - 0.42 * gap, y: y - 0.05 * gap), NSPoint(x: x + 0.42 * gap, y: y - 0.42 * gap))
-        }
-    }
+    private func drawNote(_ note: ScoreLayout.Note, beam: BeamInfo?, measureX: CGFloat, bottomLineY: CGFloat, gap: CGFloat, ink: NSColor) {
+        // hx is the head's center x; SMuFL noteheads hang from their baseline
+        // at the head's vertical center and start at their left edge
+        let hx = measureX + CGFloat(note.x)
+        let cy = noteY(note, bottomLineY: bottomLineY, gap: gap)
 
-    private func drawTimeSignature(beats: Int, unit: Int, x: CGFloat, trebleBottom: CGFloat, bassBottom: CGFloat, gap: CGFloat, ink: NSColor) {
-        let font = PaperTheme.displaySerif(2.6 * gap, weight: .semibold)
-        for bottom in [trebleBottom, bassBottom] {
-            for (text, position) in [("\(beats)", 6), ("\(unit)", 2)] {
-                let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
-                let size = (text as NSString).size(withAttributes: attrs)
-                let centerY = bottom - CGFloat(position) * gap / 2
-                drawText(text, at: NSPoint(x: x, y: centerY - size.height / 2), font: font, color: ink)
+        let headGlyph: UInt32
+        switch note.head {
+        case .filled: headGlyph = Glyph.noteheadBlack
+        case .hollow: headGlyph = Glyph.noteheadHalf
+        case .whole: headGlyph = Glyph.noteheadWhole
+        }
+        let headInfo = MusicFont.info(headGlyph)
+        let headWidth = headInfo.map { $0.width * fontSize } ?? 1.18 * gap
+
+        // ledger lines, engraved thin
+        if !note.ledgerPositions.isEmpty {
+            ink.withAlphaComponent(0.9).setStroke()
+            for position in note.ledgerPositions {
+                let y = bottomLineY - CGFloat(position) * gap / 2
+                strokeLine(from: NSPoint(x: hx - headWidth * 0.75, y: y),
+                           to: NSPoint(x: hx + headWidth * 0.75, y: y), width: 0.8)
+            }
+        }
+
+        // accidental left of the head, vertically centered on the note
+        if let accidental = note.accidental {
+            let cp = accidental == .sharp ? Glyph.accidentalSharp
+                : accidental == .flat ? Glyph.accidentalFlat : Glyph.accidentalNatural
+            let accWidth = MusicFont.info(cp).map { $0.width * fontSize } ?? 0.9 * gap
+            drawGlyph(cp, baselineAt: NSPoint(x: hx - headWidth / 2 - accWidth - 0.3 * gap, y: cy), font: musicFont, color: ink)
+        }
+
+        // the notehead itself
+        drawGlyph(headGlyph, baselineAt: NSPoint(x: hx - headWidth / 2, y: cy), font: musicFont, color: ink)
+
+        // stem: up on the right side of the head, down on the left; it runs
+        // to the beam when beamed, else a standard 3.5-space stem with a flag
+        if note.head != .whole {
+            let stemWidth = 0.12 * gap
+            let stemX = note.stemUp ? hx + headWidth / 2 - stemWidth : hx - headWidth / 2
+            let fromY = note.stemUp ? cy + 0.1 * gap : cy - 0.1 * gap
+            let toY: CGFloat
+            if let beam {
+                toY = note.stemUp ? beam.beamY + 0.1 * gap : beam.beamY - 0.1 * gap
+            } else {
+                toY = note.stemUp ? cy - 3.5 * gap : cy + 3.5 * gap
+            }
+            ink.setStroke()
+            strokeLine(from: NSPoint(x: stemX, y: fromY), to: NSPoint(x: stemX, y: toY), width: stemWidth)
+            if beam == nil, note.flags > 0 {
+                let flag: UInt32
+                if note.flags >= 2 {
+                    flag = note.stemUp ? Glyph.flag16thUp : Glyph.flag16thDown
+                } else {
+                    flag = note.stemUp ? Glyph.flag8thUp : Glyph.flag8thDown
+                }
+                // the flag's origin sits on the stem at its tip
+                drawGlyph(flag, baselineAt: NSPoint(x: stemX, y: toY), font: musicFont, color: ink)
+            }
+        }
+
+        // augmentation dots in the space above when the head is on a line
+        if note.dots > 0 {
+            let dotY = note.staffPosition % 2 == 0 ? cy - gap / 2 : cy
+            for dot in 0..<note.dots {
+                drawGlyph(Glyph.augmentationDot,
+                          baselineAt: NSPoint(x: hx + headWidth / 2 + 0.3 * gap + CGFloat(dot) * 0.6 * gap, y: dotY),
+                          font: musicFont, color: ink)
             }
         }
     }
 
-    /// Draws a line of text upright inside a flipped view: the context is
-    /// flipped locally around the anchor point so glyphs never render
-    /// upside down, on screen or in an offscreen bitmap.
+    // MARK: rests and text
+
+    private func drawRest(_ rest: ScoreLayout.Rest, measureX: CGFloat, bottomLineY: CGFloat, gap: CGFloat, ink: NSColor) {
+        // a whole rest hangs below its baseline (the fourth line), a half
+        // rest sits on it (the middle line)
+        let cp = rest.whole ? Glyph.restWhole : Glyph.restHalf
+        let x = measureX + CGFloat(rest.x)
+        let y = bottomLineY - CGFloat(rest.staffPosition) * gap / 2
+        let width = MusicFont.info(cp).map { $0.width * fontSize } ?? gap
+        drawGlyph(cp, baselineAt: NSPoint(x: x - width / 2, y: y), font: musicFont, color: ink)
+    }
+
+    /// Draws one music glyph with its SMuFL baseline exactly at the anchor
+    /// point (a clef's baseline is its reference line, a notehead's its
+    /// center), upright inside the flipped view. CoreText draws the glyph
+    /// with its origin on the baseline, which NSString drawing does not
+    /// guarantee for fonts with unusual metrics like Bravura.
+    private func drawGlyph(_ codepoint: UInt32, baselineAt point: NSPoint, font: CTFont, color: NSColor) {
+        guard let info = MusicFont.info(codepoint) else { return }
+        guard let cg = NSGraphicsContext.current?.cgContext else { return }
+        color.setFill()
+        cg.saveGState()
+        cg.translateBy(x: point.x, y: point.y)
+        cg.scaleBy(x: 1, y: -1)
+        var glyph = info.glyph
+        var origin = CGPoint.zero
+        CTFontDrawGlyphs(font, &glyph, &origin, 1, cg)
+        cg.restoreGState()
+    }
+
+    /// Draws a line of UI text upright, anchored at its top edge.
     private func drawText(_ text: String, at point: NSPoint, font: NSFont, color: NSColor) {
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
-        let size = (text as NSString).size(withAttributes: attrs)
-        NSGraphicsContext.saveGraphicsState()
-        if let cg = NSGraphicsContext.current?.cgContext {
-            cg.saveGState()
-            cg.translateBy(x: point.x, y: point.y)
-            cg.scaleBy(x: 1, y: -1)
-            (text as NSString).draw(at: NSPoint(x: 0, y: -size.height), withAttributes: attrs)
-            cg.restoreGState()
-        }
-        NSGraphicsContext.restoreGraphicsState()
-    }
-
-    /// A stylized ink treble clef: a loop around the G line, a spine rising
-    /// past the staff and hooking over, a tail dropping below.
-    private func drawTrebleClef(x: CGFloat, gLineY: CGFloat, gap: CGFloat, ink: NSColor) {
-        ink.setStroke()
-        let loop = NSBezierPath(ovalIn: NSRect(
-            x: x - 0.52 * gap, y: gLineY - 0.95 * gap,
-            width: 1.04 * gap, height: 1.9 * gap
+        let line = CTLineCreateWithAttributedString(NSAttributedString(
+            string: text,
+            attributes: [.font: font, .foregroundColor: color]
         ))
-        loop.lineWidth = 1.3
-        loop.stroke()
-        let spine = NSBezierPath()
-        spine.move(to: NSPoint(x: x + 0.52 * gap, y: gLineY))
-        spine.line(to: NSPoint(x: x + 0.52 * gap, y: gLineY - 3.1 * gap))
-        spine.curve(
-            to: NSPoint(x: x - 0.45 * gap, y: gLineY - 3.0 * gap),
-            controlPoint1: NSPoint(x: x + 0.52 * gap, y: gLineY - 3.9 * gap),
-            controlPoint2: NSPoint(x: x - 0.1 * gap, y: gLineY - 3.95 * gap)
-        )
-        spine.lineWidth = 1.3
-        spine.stroke()
-        let tail = NSBezierPath()
-        tail.move(to: NSPoint(x: x - 0.52 * gap, y: gLineY))
-        tail.curve(
-            to: NSPoint(x: x - 0.05 * gap, y: gLineY + 3.0 * gap),
-            controlPoint1: NSPoint(x: x - 0.75 * gap, y: gLineY + 1.4 * gap),
-            controlPoint2: NSPoint(x: x - 0.6 * gap, y: gLineY + 2.6 * gap)
-        )
-        tail.lineWidth = 1.3
-        tail.stroke()
-    }
-
-    /// A stylized ink bass clef: an arc opening left around the F line with
-    /// two dots.
-    private func drawBassClef(x: CGFloat, fLineY: CGFloat, gap: CGFloat, ink: NSColor) {
-        ink.setStroke()
-        let arc = NSBezierPath()
-        arc.move(to: NSPoint(x: x + 1.15 * gap, y: fLineY - 1.35 * gap))
-        arc.curve(to: NSPoint(x: x + 1.15 * gap, y: fLineY + 1.35 * gap), controlPoint1: NSPoint(x: x - 0.75 * gap, y: fLineY - 1.5 * gap), controlPoint2: NSPoint(x: x - 0.75 * gap, y: fLineY + 1.5 * gap))
-        arc.lineWidth = 1.5
-        arc.stroke()
-        ink.setFill()
-        for offset in [-0.55, 0.55] {
-            NSBezierPath(ovalIn: NSRect(x: x + 1.35 * gap - 0.11 * gap, y: fLineY + CGFloat(offset) * gap - 0.11 * gap, width: 0.22 * gap, height: 0.22 * gap)).fill()
-        }
-    }
-
-    private func drawBrace(x: CGFloat, from top: CGFloat, to bottom: CGFloat, gap: CGFloat, ink: NSColor) {
-        ink.setStroke()
-        let path = NSBezierPath()
-        let mid = (top + bottom) / 2
-        path.move(to: NSPoint(x: x, y: top))
-        path.curve(to: NSPoint(x: x + 0.5 * gap, y: mid), controlPoint1: NSPoint(x: x, y: top + (bottom - top) * 0.25), controlPoint2: NSPoint(x: x + 0.45 * gap, y: mid - (bottom - top) * 0.12))
-        path.curve(to: NSPoint(x: x, y: bottom), controlPoint1: NSPoint(x: x + 0.45 * gap, y: mid + (bottom - top) * 0.12), controlPoint2: NSPoint(x: x, y: bottom - (bottom - top) * 0.25))
-        path.lineWidth = 1.2
-        path.stroke()
+        var ascent = CGFloat.zero
+        var descent = CGFloat.zero
+        var leading = CGFloat.zero
+        _ = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+        guard let cg = NSGraphicsContext.current?.cgContext else { return }
+        color.setFill()
+        cg.saveGState()
+        cg.translateBy(x: point.x, y: point.y + ascent)
+        cg.scaleBy(x: 1, y: -1)
+        CTLineDraw(line, cg)
+        cg.restoreGState()
     }
 
     private func strokeLine(from: NSPoint, to: NSPoint, width: CGFloat) {
@@ -629,19 +762,5 @@ final class ScoreView: NSView {
         path.line(to: to)
         path.lineWidth = width
         path.stroke()
-    }
-
-    private func tiltedEllipse(center: NSPoint, radiusX: CGFloat, radiusY: CGFloat, tilt: CGFloat) -> NSBezierPath {
-        let path = NSBezierPath(ovalIn: NSRect(
-            x: center.x - radiusX,
-            y: center.y - radiusY,
-            width: radiusX * 2,
-            height: radiusY * 2
-        ))
-        var transform = AffineTransform(translationByX: center.x, byY: center.y)
-        transform.rotate(byDegrees: tilt)
-        transform.translate(x: -center.x, y: -center.y)
-        path.transform(using: transform)
-        return path
     }
 }

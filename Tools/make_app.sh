@@ -59,6 +59,12 @@ chmod +x "${app_dir}/Contents/MacOS/Cadenza"
 sed -e "s/\\\${CADENZA_VERSION}/${version}/g" "${plist_template}" > "${app_dir}/Contents/Info.plist"
 printf 'APPL????' > "${app_dir}/Contents/PkgInfo"
 
+# The notation font (Bravura, OFL) rides in the bundle's resources; the app
+# registers it with CoreText at launch.
+mkdir -p "${app_dir}/Contents/Resources"
+cp "${repo_root}/Resources/Bravura.otf" "${app_dir}/Contents/Resources/Bravura.otf"
+cp "${repo_root}/Resources/Bravura-OFL.txt" "${app_dir}/Contents/Resources/Bravura-OFL.txt"
+
 echo "Signing build/Cadenza.app (ad-hoc)"
 codesign --force -s - "${app_dir}"
 

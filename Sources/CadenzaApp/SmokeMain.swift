@@ -623,6 +623,7 @@ enum SmokeMain {
             // the app renders its paper world in light mode; the offscreen
             // render must resolve the same dynamic colors
             NSApplication.shared.appearance = NSAppearance(named: .aqua)
+            MusicFont.register()
             guard let file = try? MidiReader.read(url: URL(fileURLWithPath: path)) else {
                 print("sheet: cannot read \(path)")
                 exit(1)
