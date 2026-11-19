@@ -628,56 +628,25 @@ enum SmokeMain {
                 print("sheet: cannot read \(path)")
                 exit(1)
             }
-            let grouped = assignOnsetGroups(file.notes)
-            var chords: [(seconds: Double, symbol: String)] = []
-            var lastSymbol = ""
-            let byGroup = Dictionary(grouping: grouped, by: { $0.onsetGroup })
-            for groupId in byGroup.keys.sorted() {
-                guard let chord = Chord.identify(in: grouped, group: groupId) else { continue }
-                guard chord.symbol != lastSymbol else { continue }
-                let onset = byGroup[groupId]?.map(\.onset).min() ?? 0
-                chords.append((onset, chord.symbol))
-                lastSymbol = chord.symbol
-            }
-            guard let score = Engraver.engrave(notes: file.notes, chords: chords) else {
-                print("sheet: nothing to engrave")
-                exit(1)
-            }
-            print("sheet: \(chords.count) chord symbols, first: \(score.chords.first.map { "\($0.onsetTick):\($0.symbol)" } ?? "none"), measure0 start \(score.measures.first?.startTick ?? -1)")
-            print("sheet: \(score.measures.count) measures, \(Int(score.framing.beatsPerMinute.rounded())) bpm, \(score.framing.timeSignature.beatsPerMeasure)/\(score.framing.timeSignature.beatUnit), \(score.framing.key.name)")
-
-            let layout = ScoreLayout.layout(score, width: 1000)
-            let withChord = layout.systems.flatMap(\.measures).filter { $0.chord != nil }
-            print("sheet layout: \(withChord.count) measures carry a chord symbol, first: \(withChord.first.map { "m\($0.index) \($0.chord!.symbol) @x\(Int($0.x))" } ?? "none")")
-            print("sheet layout: \(layout.systems.count) systems, \(Int(layout.width))x\(Int(layout.height))")
-
-            // optional third argument: cap the systems rendered, for close inspection
-            var render = layout
-            if let capArg = CommandLine.arguments.firstIndex(of: "--sheet").flatMap({ i -> String? in
-                CommandLine.arguments.count > i + 2 ? CommandLine.arguments[i + 2] : nil
-            }), let cap = Int(capArg), cap < layout.systems.count {
-                let kept = Array(layout.systems.prefix(cap))
-                let height = (kept.last.map { CGFloat($0.y) } ?? 0) + 4 * CGFloat(layout.lineGap) * 2 + 3.2 * CGFloat(layout.lineGap) + 40
-                render = ScoreLayout.Result(
-                    systems: kept,
-                    keyGlyphs: layout.keyGlyphs,
-                    fifths: layout.fifths,
-                    beatsPerMeasure: layout.beatsPerMeasure,
-                    beatUnit: layout.beatUnit,
-                    beatsPerMinute: layout.beatsPerMinute,
-                    lineGap: layout.lineGap,
-                    width: layout.width,
-                    height: Double(height)
-                )
-                print("sheet render: first \(cap) systems only, \(Int(render.width))x\(Int(render.height))")
-            }
-            let view = ScoreView(layout: render)
-            view.frame = NSRect(x: 0, y: 0, width: render.width, height: render.height)
+            // the sheet honours the file's own meter and tempo when it declares
+            // them, the way a DAW-exported MIDI carries its notation intent
+            let metaMeter = file.timeSignatures.first?.signature
+            let metaBpm = file.initialTempo
+            let options = SheetDraft.Options(
+                bpm: metaBpm > 0 ? metaBpm : 120,
+                numerator: metaMeter?.beatsPerMeasure ?? 4,
+                denominator: metaMeter?.beatUnit ?? 4)
+            let result = SheetDraft.draft(notes: file.notes, options: options, pageWidth: 86)
+            print("sheet draft: \(result.rows.count) rows, fifths \(result.fifths), "
+                + "\(result.beamGroups.count) beams, options \(result.options.numerator)/\(result.options.denominator)")
+            let view = ScoreView(result: result)
+            let size = ScoreView.pointSize(of: result)
+            view.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
             let scale: CGFloat = 1.6
             let rep = NSBitmapImageRep(
                 bitmapDataPlanes: nil,
-                pixelsWide: Int(render.width * scale),
-                pixelsHigh: Int(render.height * scale),
+                pixelsWide: Int(size.width * scale),
+                pixelsHigh: Int(size.height * scale),
                 bitsPerSample: 8,
                 samplesPerPixel: 4,
                 hasAlpha: true,
@@ -694,7 +663,7 @@ enum SmokeMain {
                 NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh).fill()
                 ctx.cgContext.translateBy(x: 0, y: CGFloat(rep.pixelsHigh))
                 ctx.cgContext.scaleBy(x: scale, y: -scale)
-                view.draw(NSRect(x: 0, y: 0, width: render.width, height: render.height))
+                view.draw(NSRect(x: 0, y: 0, width: size.width, height: size.height))
             }
             NSGraphicsContext.restoreGraphicsState()
             guard let cg = rep.cgImage,

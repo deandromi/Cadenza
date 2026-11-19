@@ -492,6 +492,138 @@ layoutFixture: do {
     expect(wide.systems[0].measures[1].showsFraming == false, "later measures on the same system show no framing")
 }
 
+// MARK: SheetDraft (the live-stream engraving process)
+
+do {
+    // Chordify: onsets within the 40 ms window collapse onto the chain head.
+    let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
+    let notes = [
+        SheetDraft.RunningNote(start: 0, duration: 240, pitch: 60),
+        SheetDraft.RunningNote(start: 30, duration: 240, pitch: 64),
+        SheetDraft.RunningNote(start: 200, duration: 240, pitch: 67),
+    ]
+    let chordified = SheetDraft.chordify(notes, options: options)
+    expect(chordified[0].start == chordified[1].start, "onsets within the combine interval collapse")
+    expect(chordified[2].start > chordified[1].start, "an onset past the interval keeps its own time")
+    expect(SheetDraft.ticks(ms: 40, options: options) == 38, "40 ms is 38 ticks at 120 bpm")
+}
+
+do {
+    // Duration rounding: notes stretch to the next onset on a quarter grid.
+    var notes = [
+        SheetDraft.RunningNote(start: 0, duration: 120, pitch: 60),
+        SheetDraft.RunningNote(start: 480, duration: 120, pitch: 62),
+    ]
+    notes = SheetDraft.roundDurations(notes)
+    expect(notes[0].duration == 480, "a note to the next quarter fills a quarter")
+    var pair = [
+        SheetDraft.RunningNote(start: 0, duration: 240, pitch: 60),
+        SheetDraft.RunningNote(start: 240, duration: 240, pitch: 64),
+    ]
+    pair = SheetDraft.roundDurations(pair)
+    expect(pair[0].duration == 240, "an adjacent equal pair stays intact for beaming")
+}
+
+do {
+    // Hand split: a chord spanning octaves divides top and bottom.
+    let notes = [
+        SheetDraft.RunningNote(start: 0, duration: 480, pitch: 48),
+        SheetDraft.RunningNote(start: 0, duration: 480, pitch: 76),
+        SheetDraft.RunningNote(start: 480, duration: 480, pitch: 60),
+    ]
+    let hands = SheetDraft.splitHands(notes, measureTicks: 1920)
+    expect(hands.top.contains { $0.pitch == 76 }, "the high note goes to the top hand")
+    expect(hands.bottom.contains { $0.pitch == 48 }, "the low note goes to the bottom hand")
+}
+
+do {
+    // Key guessing picks the key with the fewest accidentals.
+    let cMajor = [60, 62, 64, 65, 67, 69, 71, 72]
+    expect(SheetDraft.guessedFifths(pitches: cMajor) == 0, "the C major scale reads as C major")
+    let eMajor = [64, 66, 68, 69, 71, 73, 75, 76]
+    expect(SheetDraft.guessedFifths(pitches: eMajor) == 4, "the E major scale reads as E major")
+    let fMajor = [65, 67, 69, 70, 72, 74, 76]
+    expect(SheetDraft.guessedFifths(pitches: fMajor) == -1, "the F major scale reads as F major")
+}
+
+do {
+    // Accidentals per key signature.
+    expect(SheetDraft.accidental(pitchClass: 6, fifths: 0) == .sharp, "F sharp in C major takes a sharp")
+    expect(SheetDraft.accidental(pitchClass: 5, fifths: 1) == .natural, "F natural in G major takes a natural")
+    expect(SheetDraft.accidental(pitchClass: 10, fifths: 0) == .flat, "A sharp spells as B flat on the sharp side")
+    expect(SheetDraft.accidental(pitchClass: 6, fifths: 1) == .none, "F sharp in G major carries no accidental")
+}
+
+do {
+    // The duration ladder.
+    expect(SheetDraft.noteValue(1920).head == .whole, "a whole note wears a whole head")
+    expect(SheetDraft.noteValue(960).head == .half && SheetDraft.noteValue(960).dots == 0, "three quarters draw as a half")
+    expect(SheetDraft.noteValue(480).flags == 0, "a quarter note carries no flags")
+    expect(SheetDraft.noteValue(240).flags == 1, "an eighth note carries one flag")
+    expect(SheetDraft.noteValue(120).flags == 2, "a sixteenth note carries two flags")
+}
+
+do {
+    // Rests fill by the classic buckets.
+    let quarterGap = SheetDraft.rests(start: 0, end: 480)
+    expect(quarterGap == [.rest(startTicks: 0, kind: .quarter)], "a quarter gap fills with one quarter rest")
+    let dottedHalf = SheetDraft.rests(start: 0, end: 1440)
+    expect(dottedHalf == [.rest(startTicks: 0, kind: .half), .rest(startTicks: 960, kind: .quarter)],
+           "a dotted half splits into half plus quarter")
+    expect(SheetDraft.rests(start: 0, end: 120).isEmpty, "a tiny gap draws nothing")
+}
+
+do {
+    // A full draft of a two-measure run of quarter chords.
+    let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
+    var events: [NoteEvent] = []
+    for i in 0..<8 {
+        let onset = 0.25 + Double(i) * 0.5
+        events.append(NoteEvent(pitch: i.isMultiple(of: 2) ? 64 : 67, velocity: 80, onset: onset, duration: 0.4))
+    }
+    let result = SheetDraft.draft(notes: events, options: options)
+    expect(result.rows.first?.showsFraming == true, "the first row shows clef key and meter")
+    expect(result.rows.first?.firstMeasure == 1, "measure numbers start at one")
+    let topBars = result.topTrack.filter { if case .bar = $0 { return true }; return false }
+    expect(topBars.count >= 2, "the run crosses a measure boundary")
+    if case .chord(let first)? = result.topTrack.first(where: { if case .chord = $0 { return true }; return false }) {
+        expect(first.notes[0].staffPosition >= 0, "the treble chord lands on the staff")
+        expect(first.stems.isEmpty || first.stems[0].flags == 0, "quarter chords carry no flags")
+    } else {
+        expect(false, "the top track carries chords")
+    }
+    expect(result.rows[0].top.contains { placed in
+        placed.trackIndex >= 0
+    }, "placed symbols carry their track index")
+}
+
+do {
+    // Eighths in the same beat beam together.
+    let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
+    var events: [NoteEvent] = []
+    for i in 0..<4 {
+        let onset = 0.25 + Double(i) * 0.25
+        events.append(NoteEvent(pitch: 72, velocity: 80, onset: onset, duration: 0.15))
+    }
+    let result = SheetDraft.draft(notes: events, options: options)
+    expect(result.beamGroups.contains { $0.chordIndices.count == 2 },
+           "a beat's two eighths share a beam")
+    let beamedChords = result.topTrack.filter { symbol in
+        if case .chord(let c) = symbol {
+            return c.stems.contains { $0.beamGroupId != nil }
+        }
+        return false
+    }
+    expect(beamedChords.count == 2, "the on-beat eighths get beamed, the trailing ones stand alone")
+}
+
+do {
+    // The empty stream still produces a framed empty row.
+    let result = SheetDraft.draft(notes: [], options: SheetDraft.Options())
+    expect(result.rows.count == 1 && result.rows[0].showsFraming, "an empty stream draws one empty row")
+    expect(result.fifths == 0, "no notes guess the key of C")
+}
+
 if failures == 0 {
     print("all \(checks) checks passed")
 } else {

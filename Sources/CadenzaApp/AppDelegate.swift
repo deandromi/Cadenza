@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.publisher.noteReleased(event)
                 self.screen?.noteReleased(event)
             }
+            self.sheetController?.sync(notes: self.engine.notes)
         }
 
         let size = NSSize(width: 1080, height: 720)
@@ -119,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             publisher.panic()
             screen?.sessionStopped()
             screen?.syncTransport()
+            sheetController?.sessionEnded()
         } else {
             guard let assets = Self.locateAssets() else {
                 present(error: "Model files not found next to the app")
@@ -127,6 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             engine.start(tensorsDir: assets.tensors, modelURL: assets.model)
             screen?.sessionStarted()
             screen?.syncTransport()
+            sheetController?.reset()
         }
         present(error: engine.lastError)
     }
@@ -152,20 +155,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Opens the sheet section on the current session: the choices step
     /// frames the performance, then the engraver cuts it into measures.
     private func openSheetMusic() {
-        guard !engine.notes.isEmpty else {
-            screen?.setStatus("Play something first, then make a sheet", error: false)
+        if let controller = sheetController, controller.isOpen {
+            controller.show(relativeTo: window)
+            controller.sync(notes: engine.notes)
             return
         }
-        let notes = engine.notes
-        // chord symbols from the engine's sheet, one per change
-        var chords: [(seconds: Double, symbol: String)] = []
-        var lastSymbol = ""
-        for entry in engine.sheet.sorted(by: { $0.onset < $1.onset }) {
-            guard entry.chord.symbol != lastSymbol else { continue }
-            chords.append((entry.onset, entry.chord.symbol))
-            lastSymbol = entry.chord.symbol
-        }
-        let controller = SheetMusicController(notes: notes, chords: chords)
+        let controller = SheetMusicController(notes: engine.notes)
         sheetController = controller
         controller.show(relativeTo: window)
     }
