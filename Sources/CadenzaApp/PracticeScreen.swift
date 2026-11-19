@@ -2,15 +2,16 @@ import AppKit
 import CadenzaCore
 
 /// The real practice screen: the approved draft's composition, driven by the
-/// transcription engine instead of the gallery's simulated clock. The keybed
-/// carries whatever sounds, notes bloom into the field as chords are struck
-/// and dissolve as they release, and the panel holds the session's numbers.
-/// The transport closures carry the panel's actions up to the app shell,
-/// which owns the engine.
+/// transcription engine instead of the gallery's simulated clock. The
+/// endless measure runs its notation across the middle of the paper - fresh
+/// notes engraved at the now line, drifting left - while the keybed carries
+/// whatever sounds and the panel holds the session's numbers. The transport
+/// closures carry the panel's actions up to the app shell, which owns the
+/// engine.
 @MainActor
 final class PracticeScreenView: NSView {
     private let keybed = KeybedView()
-    private let bloom = NoteBloomView()
+    private let strip = EndlessStaffView()
     private let panel: ControlPanelLens
     private let menuLens: MenuLens
     private let wordmark = makeInkLabel(
@@ -28,10 +29,6 @@ final class PracticeScreenView: NSView {
 
     /// pitches sounding right now, from the engine's note events
     private var soundingPitches: Set<Int> = []
-    /// pitches struck since the last flush, batched into one bloom strike
-    private var pendingStrikes: [Int] = []
-    private var strikeFlushTimer: Timer?
-    private var strikeSerial = 0
     /// the last chord the engine heard, staying on the panel until replaced
     private var chordSymbol: String?
     private var noteCount = 0
@@ -40,11 +37,6 @@ final class PracticeScreenView: NSView {
     private var sessionStart: Date?
     private var sessionSeconds: Double = 0
     private var clockTimer: Timer?
-
-    /// how long the panel waits for co-struck notes to batch into one
-    /// bloom strike; the engine groups onsets at 50 ms, so 60 ms catches
-    /// a full chord in one cascade
-    private static let strikeBatchWindow = 0.06
 
     init(transport: PanelTransport, onSheetMusic: (() -> Void)? = nil) {
         panel = ControlPanelLens(transport: transport)
@@ -64,7 +56,7 @@ final class PracticeScreenView: NSView {
         ])
 
         addSubview(keybed)
-        addSubview(bloom)
+        addSubview(strip)
 
         wordmark.translatesAutoresizingMaskIntoConstraints = false
         addSubview(wordmark)
@@ -83,10 +75,10 @@ final class PracticeScreenView: NSView {
             keybed.bottomAnchor.constraint(equalTo: bottomAnchor),
             keybed.heightAnchor.constraint(equalToConstant: 118),
 
-            bloom.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 36),
-            bloom.trailingAnchor.constraint(lessThanOrEqualTo: centerXAnchor, constant: -40),
-            bloom.topAnchor.constraint(equalTo: wordmark.bottomAnchor, constant: 8),
-            bloom.bottomAnchor.constraint(equalTo: keybed.topAnchor, constant: -30),
+            strip.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 36),
+            strip.trailingAnchor.constraint(lessThanOrEqualTo: panel.leadingAnchor, constant: -48),
+            strip.topAnchor.constraint(equalTo: wordmark.bottomAnchor, constant: 14),
+            strip.bottomAnchor.constraint(equalTo: keybed.topAnchor, constant: -34),
 
             wordmark.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 38),
             wordmark.topAnchor.constraint(equalTo: topAnchor, constant: 22),
@@ -121,27 +113,19 @@ final class PracticeScreenView: NSView {
 
     // MARK: engine events
 
-    /// A note begins sounding: light the key, queue its bloom.
+    /// A note begins sounding: light the key, engrave it at the now line.
     func noteStruck(_ event: NoteEvent) {
         soundingPitches.insert(event.pitch)
         keybed.soundingPitches = soundingPitches
-        pendingStrikes.append(event.pitch)
-        if strikeFlushTimer == nil {
-            strikeFlushTimer = Timer.scheduledTimer(
-                withTimeInterval: Self.strikeBatchWindow,
-                repeats: false
-            ) { [weak self] _ in
-                Task { @MainActor in self?.flushStrikes() }
-            }
-        }
+        strip.noteStruck(pitch: event.pitch)
         refresh()
     }
 
-    /// A note stops sounding: hand its blooming notes back to the ink.
+    /// A note stops sounding: hand its notation back to the ink.
     func noteReleased(_ event: NoteEvent) {
         soundingPitches.remove(event.pitch)
         keybed.soundingPitches = soundingPitches
-        bloom.release(pitch: event.pitch)
+        strip.noteReleased(pitch: event.pitch)
         refresh()
     }
 
@@ -177,29 +161,19 @@ final class PracticeScreenView: NSView {
         }
     }
 
-    /// Listening ended: the clock settles, nothing stays lit, every blooming
-    /// note drifts out of the paper.
+    /// Listening ended: the clock settles, nothing stays lit, the running
+    /// notation becomes blank paper again.
     func sessionStopped() {
         clockTimer?.invalidate()
         clockTimer = nil
-        strikeFlushTimer?.invalidate()
-        strikeFlushTimer = nil
-        flushStrikes()
         sessionStart = nil
         soundingPitches = []
         keybed.soundingPitches = []
-        bloom.releaseAll()
+        strip.clear()
         refresh()
     }
 
     // MARK: session internals
-
-    private func flushStrikes() {
-        guard !pendingStrikes.isEmpty else { return }
-        bloom.strike(pitches: pendingStrikes, serial: strikeSerial)
-        strikeSerial += 1
-        pendingStrikes = []
-    }
 
     private func tickClock() {
         guard let sessionStart else { return }

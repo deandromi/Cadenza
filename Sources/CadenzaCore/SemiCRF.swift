@@ -26,7 +26,10 @@ public enum SemiCRFDecoder {
         return result
     }
 
-    private static func decodeSymbol(
+    /// The per-symbol suffix DP. Symbols are independent, so callers that
+    /// have spare cores may run this concurrently for each symbol; the
+    /// result depends only on the inputs, never on scheduling.
+    public static func decodeSymbol(
         score: [Float], skip: [Float], T: Int, P: Int, p: Int, start: Int
     ) -> [FrameInterval] {
         var q = [Float](repeating: 0, count: T)

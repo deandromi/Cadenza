@@ -330,33 +330,49 @@ enum SmokeMain {
 
         var edge = WindowGeometry.streamingWarmup
         var index = 0
-        var emissionCount = 0
-        while edge * deviceRate <= Double(input.count) {
-            Self.feed(tapState, from: input, fed: &fed, upTo: Int((edge * deviceRate).rounded()))
-            guard let window = tapState.takeStreamWindow(edgeSeconds: edge) else { break }
-            let forcedStart = merge.forcedStart(for: edge - WindowGeometry.segmentSeconds)
-            let decodeStart = CACurrentMediaTime()
-            guard let result = context.run(windowIndex: index, edgeSeconds: edge, samples: window,
-                                           deviceRate: deviceRate, forcedStartPos: forcedStart) else {
-                print("replay-stream FAILED: window \(index) decode error")
-                exit(1)
-            }
-            let decodeWall = CACurrentMediaTime() - decodeStart
-
-            for emission in merge.absorb(result) {
-                emissionCount += 1
-                let kind: String
-                switch emission.kind {
-                case .struck: kind = "struck"
-                case .extended: kind = "extended"
-                case .released: kind = "released"
+            var emissionCount = 0
+            var struckLatencies: [Double] = []
+            while edge * deviceRate <= Double(input.count) {
+                Self.feed(tapState, from: input, fed: &fed, upTo: Int((edge * deviceRate).rounded()))
+                guard let window = tapState.takeStreamWindow(edgeSeconds: edge) else { break }
+                let forcedStart = merge.forcedStart(for: edge - WindowGeometry.segmentSeconds)
+                let decodeStart = CACurrentMediaTime()
+                guard let result = context.run(windowIndex: index, edgeSeconds: edge, samples: window,
+                                               deviceRate: deviceRate, forcedStartPos: forcedStart) else {
+                    print("replay-stream FAILED: window \(index) decode error")
+                    exit(1)
                 }
-                let note = emission.event
-                print(String(format: "stream %@: %d @%.3f-%.3f v%d at edge %.2f", kind, note.pitch, note.onset, note.offset, note.velocity, edge))
+                let decodeWall = CACurrentMediaTime() - decodeStart
+
+                for emission in merge.absorb(result) {
+                    emissionCount += 1
+                    let kind: String
+                    switch emission.kind {
+                    case .struck: kind = "struck"
+                    case .extended: kind = "extended"
+                    case .released: kind = "released"
+                    }
+                    let note = emission.event
+                    if emission.kind == .struck {
+                        // in live playback the note becomes public about when
+                        // this decode finishes, so far behind the onset as
+                        // this: the number the pipeline is chasing
+                        struckLatencies.append(edge + decodeWall - note.onset)
+                    }
+                    print(String(format: "stream %@: %d @%.3f-%.3f v%d at edge %.2f", kind, note.pitch, note.onset, note.offset, note.velocity, edge))
+                }
+                index += 1
+                edge += WindowGeometry.streamingAdvance(decodeWall: decodeWall)
             }
-            index += 1
-            edge += WindowGeometry.streamingAdvance(decodeWall: decodeWall)
-        }
+
+            if !struckLatencies.isEmpty {
+                let sorted = struckLatencies.sorted()
+                let median = sorted[sorted.count / 2]
+                let p90 = sorted[Int(Double(sorted.count - 1) * 0.9)]
+                print(String(format: "replay-stream latency: mean %.2f s, median %.2f s, p90 %.2f s, max %.2f s over %d strikes",
+                             struckLatencies.reduce(0, +) / Double(struckLatencies.count), median, p90,
+                             sorted.last!, struckLatencies.count))
+            }
 
         for emission in merge.releaseAll() {
             let note = emission.event
@@ -674,6 +690,48 @@ enum SmokeMain {
             CGImageDestinationAddImage(dest, cg, nil)
             CGImageDestinationFinalize(dest)
             print("sheet: wrote /tmp/cadenza_sheet.png")
+        }
+    }
+
+    /// Renders the endless measure with a spread of synthetic notes,
+    /// offscreen: --strip-shot. The strip is otherwise driven by live
+    /// engine events, so this is how its engraving gets inspected.
+    static func runStripShot() {
+        MainActor.assumeIsolated {
+            NSApplication.shared.appearance = NSAppearance(named: .aqua)
+            MusicFont.register()
+            let strip = EndlessStaffView()
+            let size = NSSize(width: 900, height: 240)
+            strip.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
+            // a chord, a melody, an accidental and a ledger test, oldest first
+            for (pitch, age) in [(48, 8.6), (55, 8.5), (72, 6.4), (76, 6.3),
+                                 (61, 4.4), (66, 4.3), (70, 2.2), (84, 0.9),
+                                 (93, 0.9), (30, 0.4)] {
+                strip.noteStruck(pitch: pitch, age: age)
+            }
+            // flush the timer: draw one frame now
+            let scale: CGFloat = 2
+            let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            if let ctx = NSGraphicsContext.current {
+                PaperTheme.paper.setFill()
+                NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh).fill()
+                ctx.cgContext.translateBy(x: 0, y: CGFloat(rep.pixelsHigh))
+                ctx.cgContext.scaleBy(x: scale, y: -scale)
+                strip.draw(NSRect(x: 0, y: 0, width: size.width, height: size.height))
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            if let cg = rep.cgImage,
+               let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: "/tmp/cadenza_strip.png") as CFURL, UTType.png.identifier as CFString, 1, nil) {
+                CGImageDestinationAddImage(dest, cg, nil)
+                CGImageDestinationFinalize(dest)
+                print("strip-shot: wrote /tmp/cadenza_strip.png")
+            }
         }
     }
 

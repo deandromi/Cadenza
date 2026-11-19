@@ -35,10 +35,10 @@ enum WindowGeometry {
     /// decode time and the step only bounds it from below.
     static let streamingStep = 0.45
 
-    /// Content required before the first streaming window decodes: an early
-    /// note reaches the trailing edge almost together with the warmup
-    /// silence, and the decode needs some frames past an attack to see it.
-    static let streamingWarmup = 1.0
+    /// Content required before the first streaming window decodes: the
+    /// decode needs a handful of frames past an attack, and the first
+    /// window may not extend beyond the audio that exists yet.
+    static let streamingWarmup = 0.6
 
     /// The ring keeps this much history: a window reaches back segmentSeconds
     /// behind its trailing edge, and the grid pipeline needs a bit less.
@@ -46,11 +46,13 @@ enum WindowGeometry {
 
     /// How far the next window's trailing edge moves after a decode that
     /// just finished, given it took `decodeWall` seconds: at least a step,
-    /// at least a decode plus a hop so decodes pipeline back to back, and
-    /// never more than one window, or consecutive windows would stop
-    /// overlapping and tear holes in the coverage.
+    /// at least a decode plus a small slack so decodes pipeline back to
+    /// back, and never more than one window, or consecutive windows would
+    /// stop overlapping and tear holes in the coverage. The slack past the
+    /// decode time lands directly in the publication delay of fresh notes,
+    /// so it stays minimal.
     static func streamingAdvance(decodeWall: Double) -> Double {
-        min(max(streamingStep, decodeWall + 0.25), segmentSeconds)
+        min(max(streamingStep, decodeWall + 0.10), segmentSeconds)
     }
 }
 
@@ -243,8 +245,21 @@ final class InferenceContext: @unchecked Sendable {
         heads = try AttributeHeads(tensorsDir: tensorsDir)
         let compiled = try MLModel.compileModel(at: modelURL)
         let configuration = MLModelConfiguration()
-        configuration.computeUnits = .cpuOnly
+        configuration.computeUnits = Self.computeUnits
         model = try MLModel(contentsOf: compiled, configuration: configuration)
+    }
+
+    /// The compute-unit choice for the backbone. The CPU beats the
+    /// accelerators for this model's dense per-frame convolutions on this
+    /// machine, but the choice stays measurable: set
+    /// CADENZA_COMPUTE_UNITS to cpuOnly, cpuAndGPU, cpuAndNe or all.
+    static var computeUnits: MLComputeUnits {
+        switch ProcessInfo.processInfo.environment["CADENZA_COMPUTE_UNITS"] {
+        case "cpuAndGPU": return .cpuAndGPU
+        case "cpuAndNE": return .cpuAndNeuralEngine
+        case "all": return .all
+        default: return .cpuOnly
+        }
     }
 
     /// Decodes one window ending at `edgeSeconds` content time: resamples to
@@ -262,10 +277,11 @@ final class InferenceContext: @unchecked Sendable {
             return nil
         }
         if at44100.count < MelFrontEnd.hopSize { return nil }
+        let melStart = CACurrentMediaTime()
         let frames = mel.compute(Self.alignToSegment(at44100))
+        let melWall = CACurrentMediaTime() - melStart
         let t = frames.count / (MelFrontEnd.nMels * MelFrontEnd.nChannels)
         guard t > 1 else { return nil }
-        print("[inference] window \(windowIndex): \(at44100.count) samples at 44100, \(t) frames")
 
         guard let features = try? MLMultiArray(
             shape: [1, t, MelFrontEnd.nMels, MelFrontEnd.nChannels] as [NSNumber],
@@ -274,24 +290,35 @@ final class InferenceContext: @unchecked Sendable {
         frames.withUnsafeBufferPointer { pointer in
             destination.update(from: pointer.baseAddress!, count: frames.count)
         }
+        let predStart = CACurrentMediaTime()
         guard let prediction = try? model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["mel": features])),
               let scoreArray = prediction.featureValue(for: "S")?.multiArrayValue,
               let skipArray = prediction.featureValue(for: "S_skip")?.multiArrayValue,
               let contextArray = prediction.featureValue(for: "ctx")?.multiArrayValue else { return nil }
+        let predWall = CACurrentMediaTime() - predStart
 
         let symbolCount = WindowGeometry.symbols.count
         let score = copy(scoreArray)
         let skip = copy(skipArray)
         let context = copy(contextArray)
-        let intervals = SemiCRFDecoder.decode(score: score, skip: skip, frameCount: t,
-                                              symbolCount: symbolCount, forcedStartPos: forcedStartPos)
+        let crfStart = CACurrentMediaTime()
+        // every symbol's suffix DP is independent: spread them over the cores
+        var intervals = [[FrameInterval]](repeating: [], count: symbolCount)
+        DispatchQueue.concurrentPerform(iterations: symbolCount) { symbol in
+            intervals[symbol] = SemiCRFDecoder.decodeSymbol(
+                score: score, skip: skip, T: t, P: symbolCount,
+                p: symbol, start: forcedStartPos[symbol])
+        }
+        let crfWall = CACurrentMediaTime() - crfStart
 
         let beginTime = edgeSeconds - WindowGeometry.segmentSeconds
-        var events: [WindowResult.Event] = []
-        var lastP = Array(repeating: 0, count: symbolCount)
-        for symbol in 0..<symbolCount {
+        var lastP = [Int](repeating: 0, count: symbolCount)
+        var perSymbolEvents = [[WindowResult.Event]](repeating: [], count: symbolCount)
+        DispatchQueue.concurrentPerform(iterations: symbolCount) { symbol in
             let pitch = WindowGeometry.symbols[symbol]
-            guard (21...108).contains(pitch) else { continue }
+            guard (21...108).contains(pitch) else { return }
+            var events: [WindowResult.Event] = []
+            var symbolLastP = 0
             var lastEnd = 0.0
             for interval in intervals[symbol] {
                 var attributes = [Float](repeating: 0, count: 768)
@@ -329,16 +356,21 @@ final class InferenceContext: @unchecked Sendable {
                     onsetSeconds: onset, offsetSeconds: offset,
                     presenceOnset: presenceOnset, presenceOffset: presenceOffset))
                 if interval.end < WindowGeometry.lastFrameIdx || presenceOffset {
-                    lastP[symbol] = interval.end
+                    symbolLastP = interval.end
                 }
             }
+            perSymbolEvents[symbol] = events
+            lastP[symbol] = symbolLastP
         }
+        var events = perSymbolEvents.flatMap { $0 }
         events.sort { a, b in
             if a.onsetSeconds != b.onsetSeconds { return a.onsetSeconds < b.onsetSeconds }
             if a.offsetSeconds != b.offsetSeconds { return a.offsetSeconds < b.offsetSeconds }
             return a.pitch < b.pitch
         }
-        print("[inference] window \(windowIndex): \(events.count) events decoded in \(String(format: "%.2f", CACurrentMediaTime() - decodeStart)) s")
+        let headsWall = CACurrentMediaTime() - decodeStart - melWall - predWall - crfWall
+        print("[inference] window \(windowIndex): \(events.count) events decoded in \(String(format: "%.2f", CACurrentMediaTime() - decodeStart)) s "
+            + "(mel \(String(format: "%.2f", melWall)), model \(String(format: "%.2f", predWall)), crf \(String(format: "%.2f", crfWall)), heads \(String(format: "%.2f", headsWall)), units \(Self.computeUnits))")
         return WindowResult(windowIndex: windowIndex, beginSeconds: beginTime, events: events, lastP: lastP)
     }
 
