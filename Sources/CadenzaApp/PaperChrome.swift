@@ -186,10 +186,14 @@ final class ControlPanelLens: NSView {
     private let stopPlaybackButton = NSButton(title: "Stop", target: nil, action: nil)
     private var latestSessions: [SessionRecord] = []
     private var latestPlaying: SessionRecord?
-    /// true while the panel shows the per-session action rows; a tap on the
-    /// panel itself (never on a button — those are the named shortcuts)
-    /// toggles it with a glass animation
+    /// true while the panel shows the per-session action rows
     private var expanded = false
+    /// set by the screen: a tap on the panel's paper (never on a button —
+    /// those stay named shortcuts) asks for the big centered glass panel
+    var onRequestExpand: (() -> Void)?
+    /// true when this lens lives inside the big centered panel, where taps
+    /// must not re-trigger the expansion
+    var isOverlay = false
     private let backdrop: NSGlassEffectView
 
     init(transport: PanelTransport) {
@@ -382,22 +386,20 @@ final class ControlPanelLens: NSView {
 
     /// A tap on the panel's paper (the window delivers mouse events to the
     /// deepest view, so the buttons keep their own clicks as named
-    /// shortcuts) expands or collapses the per-session actions with a soft
-    /// glass animation.
+    /// shortcuts) asks the screen to open the big centered glass panel.
     override func mouseDown(with event: NSEvent) {
-        toggleExpanded()
+        guard !isOverlay else { return }
+        onRequestExpand?()
     }
 
     var isExpanded: Bool { expanded }
 
-    func toggleExpanded() {
-        expanded.toggle()
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.28
-            context.allowsImplicitAnimation = true
-            setSessions(latestSessions, playing: latestPlaying)
-            window?.contentView?.animator().layoutSubtreeIfNeeded()
-        }
+    /// Shows or hides the per-session action rows. The big centered panel
+    /// opens with expanded rows; the small dock panel starts collapsed.
+    func setExpanded(_ newValue: Bool) {
+        guard expanded != newValue else { return }
+        expanded = newValue
+        setSessions(latestSessions, playing: latestPlaying)
     }
 
     private func record(for sender: NSButton) -> SessionRecord? {
@@ -509,6 +511,162 @@ final class ControlPanelLens: NSView {
 
     @objc private func exportTapped() {
         transport.export()
+    }
+}
+
+/// The big centered session panel: a tap on the small dock panel opens this
+/// full glass lens in the middle of the screen, animated growing out of the
+/// dock panel's frame. It carries the same lens content with the per-session
+/// actions expanded, plus a Close pill. A tap outside the glass closes it.
+final class ExpandedSessionPanel: NSView {
+    private let glassPanel: NSView
+    private let lens: ControlPanelLens
+    private let container: NSGlassEffectContainerView
+    let onClose: () -> Void
+    private var targetFrame = NSRect.zero
+
+    init(transport: PanelTransport, onClose: @escaping () -> Void) {
+        self.onClose = onClose
+        lens = ControlPanelLens(transport: transport)
+        lens.isOverlay = true
+        lens.setExpanded(true)
+        container = NSGlassEffectContainerView()
+        let backdrop = makeGlassBackdrop(cornerRadius: 28, interactive: true)
+        glassPanel = NSView(frame: .zero)
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        glassPanel.translatesAutoresizingMaskIntoConstraints = false
+        container.translatesAutoresizingMaskIntoConstraints = false
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        lens.translatesAutoresizingMaskIntoConstraints = false
+
+        let closeButton = NSButton(title: "Close", target: nil, action: nil)
+        closeButton.isBordered = false
+        closeButton.font = .systemFont(ofSize: 13, weight: .medium)
+        closeButton.contentTintColor = PaperTheme.ink
+        closeButton.target = self
+        closeButton.action = #selector(closeTapped)
+        let closePill = padForLens(closeButton, horizontal: 16, vertical: 9)
+        closePill.translatesAutoresizingMaskIntoConstraints = false
+        let closeBackdrop = makeGlassBackdrop(cornerRadius: 16, interactive: true)
+        closeBackdrop.translatesAutoresizingMaskIntoConstraints = false
+        closePill.addSubview(closeBackdrop)
+        closePill.addSubview(closeButton)
+
+        addSubview(glassPanel)
+        glassPanel.addSubview(container)
+        container.addSubview(backdrop)
+        glassPanel.addSubview(lens)
+        glassPanel.addSubview(closePill)
+        NSLayoutConstraint.activate([
+            container.leadingAnchor.constraint(equalTo: glassPanel.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: glassPanel.trailingAnchor),
+            container.topAnchor.constraint(equalTo: glassPanel.topAnchor),
+            container.bottomAnchor.constraint(equalTo: glassPanel.bottomAnchor),
+            backdrop.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            backdrop.topAnchor.constraint(equalTo: container.topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            lens.leadingAnchor.constraint(equalTo: glassPanel.leadingAnchor, constant: 8),
+            lens.trailingAnchor.constraint(equalTo: glassPanel.trailingAnchor, constant: -8),
+            lens.topAnchor.constraint(equalTo: glassPanel.topAnchor, constant: 8),
+            lens.bottomAnchor.constraint(equalTo: glassPanel.bottomAnchor, constant: -8),
+            lens.widthAnchor.constraint(equalToConstant: 480),
+            closePill.topAnchor.constraint(equalTo: glassPanel.topAnchor, constant: 16),
+            closePill.trailingAnchor.constraint(equalTo: glassPanel.trailingAnchor, constant: -16),
+            closeBackdrop.leadingAnchor.constraint(equalTo: closePill.leadingAnchor),
+            closeBackdrop.trailingAnchor.constraint(equalTo: closePill.trailingAnchor),
+            closeBackdrop.topAnchor.constraint(equalTo: closePill.topAnchor),
+            closeBackdrop.bottomAnchor.constraint(equalTo: closePill.bottomAnchor),
+            closeButton.leadingAnchor.constraint(equalTo: closePill.leadingAnchor),
+            closeButton.trailingAnchor.constraint(equalTo: closePill.trailingAnchor),
+            closeButton.topAnchor.constraint(equalTo: closePill.topAnchor),
+            closeButton.bottomAnchor.constraint(equalTo: closePill.bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    /// Mirrors of the dock panel's state, so the big panel never disagrees.
+    func setSessions(_ sessions: [SessionRecord], playing: SessionRecord?) {
+        lens.setSessions(sessions, playing: playing)
+    }
+
+    func syncTransport() {
+        lens.syncTransport()
+    }
+
+    func setSession(time: String, notes: String, level: Double, sounding: Bool) {
+        lens.setSession(time: time, notes: notes, level: level, sounding: sounding)
+    }
+
+    /// The glass panel's target frame: wide, tall enough for the content,
+    /// centered in the overlay.
+    func layoutTarget(in bounds: NSRect) {
+        let contentHeight = lens.intrinsicContentSize.height + 16
+        let width: CGFloat = 520
+        let height = min(680, max(430, contentHeight))
+        targetFrame = NSRect(
+            x: (bounds.width - width) / 2,
+            y: (bounds.height - height) / 2,
+            width: width,
+            height: height
+        )
+        glassPanel.frame = targetFrame
+    }
+
+    /// Grows the glass panel out of `startFrame` (the dock panel's frame, in
+    /// this view's coordinates) into the centered target, with a soft glass
+    /// bloom. Non-animated (smoke shots) jumps straight to the target.
+    func animateOpen(from startFrame: NSRect, animated: Bool) {
+        glassPanel.wantsLayer = true
+        glassPanel.frame = startFrame
+        glassPanel.alphaValue = 0
+        if !animated {
+            glassPanel.frame = targetFrame
+            glassPanel.alphaValue = 1
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.38
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.allowsImplicitAnimation = true
+            glassPanel.frame = targetFrame
+            glassPanel.alphaValue = 1
+        }
+    }
+
+    func animateClose(to endFrame: NSRect, animated: Bool, completion: @escaping () -> Void) {
+        if !animated {
+            completion()
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.28
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.allowsImplicitAnimation = true
+            glassPanel.frame = endFrame
+            glassPanel.alphaValue = 0
+        }, completionHandler: completion)
+    }
+
+    /// Taps outside the glass close the panel; the glass itself passes taps
+    /// on to its subviews (buttons).
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if glassPanel.frame.contains(point) {
+            return super.hitTest(point)
+        }
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onClose()
+    }
+
+    @objc private func closeTapped() {
+        onClose()
     }
 }
 

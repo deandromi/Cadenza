@@ -13,6 +13,11 @@ final class PracticeScreenView: NSView {
     private let keybed = KeybedView()
     private let staffLens: StaffLensView
     private let panel: ControlPanelLens
+    private let transport: PanelTransport
+    private var panelSessions: [SessionRecord] = []
+    private var panelPlaying: SessionRecord?
+    /// the big centered glass panel, present while expanded
+    private var expandedPanel: ExpandedSessionPanel?
     private let menuLens: MenuLens
     private let wordmark = makeInkLabel(
         "Cadenza",
@@ -37,6 +42,7 @@ final class PracticeScreenView: NSView {
     private var clockTimer: Timer?
 
     init(transport: PanelTransport, onSheetMusic: (() -> Void)? = nil, onSettings: (() -> Void)? = nil) {
+        self.transport = transport
         panel = ControlPanelLens(transport: transport)
         menuLens = MenuLens(onSheetMusic: onSheetMusic, onSettings: onSettings)
         // the measure opens the engraved sheet: same door as the menu
@@ -68,6 +74,7 @@ final class PracticeScreenView: NSView {
 
         addSubview(panel)
         addSubview(menuLens)
+        panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(true) }
 
         NSLayoutConstraint.activate([
             keybed.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -136,12 +143,45 @@ final class PracticeScreenView: NSView {
     }
 
     func setSessions(_ sessions: [SessionRecord], playing: SessionRecord?) {
+        panelSessions = sessions
+        panelPlaying = playing
         panel.setSessions(sessions, playing: playing)
+        expandedPanel?.setSessions(sessions, playing: playing)
     }
 
-    /// Expands or collapses the panel's per-session actions (smoke shots).
-    func setPanelExpanded(_ expanded: Bool) {
-        if panel.isExpanded != expanded { panel.toggleExpanded() }
+    /// Opens the big centered glass panel, animated growing out of the dock
+    /// panel, or closes it back into it. The overlay mirrors the dock panel's
+    /// content so the two never disagree.
+    func showExpandedPanel(_ show: Bool, animated: Bool = true) {
+        if show {
+            guard expandedPanel == nil else { return }
+            let overlay = ExpandedSessionPanel(transport: transport) { [weak self] in
+                self?.showExpandedPanel(false)
+            }
+            overlay.setSessions(panelSessions, playing: panelPlaying)
+            expandedPanel = overlay
+            addSubview(overlay)
+            NSLayoutConstraint.activate([
+                overlay.leadingAnchor.constraint(equalTo: leadingAnchor),
+                overlay.trailingAnchor.constraint(equalTo: trailingAnchor),
+                overlay.topAnchor.constraint(equalTo: topAnchor),
+                overlay.bottomAnchor.constraint(equalTo: bottomAnchor),
+            ])
+            // the overlay's bounds only exist after a layout pass
+            layoutSubtreeIfNeeded()
+            overlay.layoutTarget(in: overlay.bounds)
+            let start = convert(panel.frame, from: panel.superview)
+            overlay.animateOpen(from: start, animated: animated)
+            overlay.syncTransport()
+            refresh()
+        } else {
+            guard let overlay = expandedPanel else { return }
+            expandedPanel = nil
+            let end = convert(panel.frame, from: panel.superview)
+            overlay.animateClose(to: end, animated: animated) {
+                overlay.removeFromSuperview()
+            }
+        }
     }
 
     func setNoteCount(_ count: Int) {
@@ -158,6 +198,7 @@ final class PracticeScreenView: NSView {
 
     func syncTransport() {
         panel.syncTransport()
+        expandedPanel?.syncTransport()
     }
 
     /// Listening began: the session clock runs.
@@ -194,6 +235,12 @@ final class PracticeScreenView: NSView {
     /// The panel reads the whole session state each time any of it moves.
     private func refresh() {
         panel.setSession(
+            time: sessionTimeString(sessionSeconds),
+            notes: "\(noteCount) notes",
+            level: levelTarget,
+            sounding: !soundingPitches.isEmpty
+        )
+        expandedPanel?.setSession(
             time: sessionTimeString(sessionSeconds),
             notes: "\(noteCount) notes",
             level: levelTarget,
