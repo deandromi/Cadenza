@@ -20,6 +20,7 @@ final class PracticeScreenView: NSView {
     private var panelCenterX: NSLayoutConstraint?
     private var panelUnfoldedWidth: NSLayoutConstraint?
     private var panelIsUnfolded = false
+    private var panelMorphing = false
     private let menuLens: MenuLens
     private let wordmark = makeInkLabel(
         "Cadenza",
@@ -152,12 +153,20 @@ final class PracticeScreenView: NSView {
     }
 
     /// The panel itself moves: docked at the right edge when collapsed,
-    /// centered and wide when unfolded, its per-session actions appearing as
-    /// it travels — one liquid glass morph, no second view.
+    /// centered and wide when unfolded. The morph is a compositor transform,
+    /// the way Apple's own glass morphs work — the lens is laid out in its
+    /// final geometry at once and its layer is squeezed onto the dock
+    /// footprint, then animates its transform to identity: the glass
+    /// travels and unfolds with no per-subview relayout to glitch.
     func showExpandedPanel(_ show: Bool, animated: Bool = true) {
-        guard show != panelIsUnfolded else { return }
+        guard show != panelIsUnfolded, !panelMorphing else { return }
+        let dockFrame = panel.frame
+        let dockCenter = CGPoint(x: dockFrame.midX, y: dockFrame.midY)
+        panelMorphing = true
         panelIsUnfolded = show
-        func apply() {
+        panel.wantsLayer = true
+
+        func swapGeometry() {
             panelDockWidth?.isActive = !show
             panelDockTrailing?.isActive = !show
             panelCenterX?.isActive = show
@@ -165,21 +174,51 @@ final class PracticeScreenView: NSView {
             panel.setExpanded(show)
             layoutSubtreeIfNeeded()
         }
-        if animated {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.42
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                context.allowsImplicitAnimation = true
-                apply()
-            }
-        } else {
-            apply()
+        func setTap(_ unfold: Bool) {
+            panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(unfold) }
         }
-        // a click while unfolded folds it back into the dock
-        if show {
-            panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(false) }
-        } else {
-            panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(true) }
+
+        if !animated {
+            swapGeometry()
+            panelMorphing = false
+            setTap(!show)
+            return
+        }
+
+        swapGeometry()
+        let bigFrame = panel.frame
+        guard bigFrame.width > 1, dockFrame.width > 0 else {
+            panelMorphing = false
+            setTap(!show)
+            return
+        }
+        // the squeeze that maps the unfolded lens exactly onto the dock lens
+        let sx = dockFrame.width / bigFrame.width
+        let sy = dockFrame.height / bigFrame.height
+        let tx = dockCenter.x - bigFrame.midX * sx
+        let ty = dockCenter.y - bigFrame.midY * sy
+        let squeeze = CATransform3DConcat(
+            CATransform3DMakeTranslation(tx, ty, 0),
+            CATransform3DMakeScale(sx, sy, 1)
+        )
+        let animation = CABasicAnimation(keyPath: "transform")
+        animation.fromValue = NSValue(caTransform3D: show ? squeeze : CATransform3DIdentity)
+        animation.toValue = NSValue(caTransform3D: show ? CATransform3DIdentity : squeeze)
+        animation.duration = 0.42
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        animation.isRemovedOnCompletion = false
+        panel.layer?.transform = squeeze
+        panel.layer?.add(animation, forKey: show ? "unfold" : "fold")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in
+            guard let self else { return }
+            panel.layer?.removeAllAnimations()
+            if !show {
+                swapGeometry()
+                layoutSubtreeIfNeeded()
+            }
+            panel.layer?.transform = CATransform3DIdentity
+            panelMorphing = false
+            setTap(!show)
         }
     }
 
