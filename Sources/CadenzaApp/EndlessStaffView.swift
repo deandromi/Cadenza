@@ -232,7 +232,9 @@ final class EndlessStaffView: NSView {
 
     private var fontSize: CGFloat { gap * 4 }
 
-    private var musicFont: CTFont { MusicFont.ctFont(size: fontSize) }
+    /// Built once: creating a CTFont per draw was allocating thousands of
+    /// font objects a second on the strip's 30 Hz clock.
+    private let musicFont = MusicFont.ctFont(size: 7.5 * 4)
 
     private func strokeHorizontal(_ y: CGFloat) {
         let path = NSBezierPath()

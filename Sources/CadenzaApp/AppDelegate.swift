@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the sheet section opened from an archived session's row
     private var archiveSheetController: SheetMusicController?
     private var settingsController: SettingsController?
+    private var statsController: StatsController?
     private var cancellables: Set<AnyCancellable> = []
     private var sessionStartedAt: Date?
     private var playbackTask: Task<Void, Never>?
@@ -48,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MusicFont.register()
 
         publisher.setup()
+        installShortcuts()
         engine.onNoteEvent = { [weak self] event, kind in
             guard let self else { return }
             switch kind {
@@ -103,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let screen = PracticeScreenView(
             transport: makeTransport(),
             onSheetMusic: { [weak self] in self?.openSheetMusic() },
+            onStatistics: { [weak self] in self?.openStats() },
             onSettings: { [weak self] in self?.openSettings() }
         )
         root.addSubview(screen)
@@ -153,7 +156,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    // MARK: keyboard shortcuts
+
+    /// Space toggles play and pause while the practice window is frontmost,
+    /// command N starts a new session, everything else passes through to
+    /// the normal key handling.
+    private func installShortcuts() {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === self.window else { return event }
+            guard self.window?.firstResponder is NSView else { return event }
+            // AppKit carries four user-visible modifiers; mask to them so
+            // caps-lock or the function keys never change a shortcut
+            switch (event.keyCode, event.modifierFlags.intersection([.command, .shift, .option, .control])) {
+            case (49, []):
+                self.togglePlayPause()
+                return nil
+            case (45, [.command]):
+                self.toggleListening()
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
     // MARK: settings
+
+    private func openStats() {
+        if statsController == nil {
+            statsController = StatsController()
+        }
+        statsController?.show(relativeTo: window, sessions: store.sessions)
+    }
 
     private func openSettings() {
         if settingsController == nil {
@@ -347,10 +381,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     notes: engine.notes,
                     startedAt: startedAt,
                     durationSeconds: Date().timeIntervalSince(startedAt),
-                    audio: keepAudio ? engine.lastRecording : nil,
+                    audio: engine.lastRecording,
                     keepAudio: keepAudio)
-                if record != nil {
+                if let record {
+                    engraveSessionPDF(record, notes: engine.notes)
                     screen?.setStatus(keepAudio ? "Saved session to the archive" : "Saved session (audio discarded)", error: false)
+                } else {
+                    // empty session: nothing earned its folder, the streamed
+                    // recording goes with it
+                    engine.discardRecording()
                 }
             }
             sessionStartedAt = nil
@@ -371,6 +410,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: session playback
+
+    /// Engraves the session's notes to sheet.pdf in its folder. A failing
+    /// engraving leaves the session intact without it: nothing saved twice.
+    private func engraveSessionPDF(_ record: SessionRecord, notes: [NoteEvent]) {
+        guard !notes.isEmpty else { return }
+        do {
+            try SheetPDF.write(notes: notes, to: store.folderURL(for: record).appendingPathComponent("sheet.pdf"))
+            store.markHasPDF(record)
+        } catch {
+            print("[pdf] \(error.localizedDescription)")
+        }
+    }
 
     /// Plays a preserved session through the live MIDI path, the keybed and
     /// the endless measure dancing along; a second press stops it.

@@ -899,6 +899,26 @@ enum SmokeMain {
         }
     }
 
+    /// Engraves a MIDI file's session PDF the way a session end writes it,
+    /// so the automatic export is verifiable offline: --pdf <mid> <out.pdf>
+    static func runPDF(path: String, out: String) {
+        MainActor.assumeIsolated {
+            NSApplication.shared.appearance = NSAppearance(named: .aqua)
+            MusicFont.register()
+            guard let file = try? MidiReader.read(url: URL(fileURLWithPath: path)) else {
+                print("pdf: cannot read \(path)")
+                exit(1)
+            }
+            do {
+                try SheetPDF.write(notes: file.notes, to: URL(fileURLWithPath: out))
+                print("pdf: wrote \(out)")
+            } catch {
+                print("pdf: \(error.localizedDescription)")
+                exit(1)
+            }
+        }
+    }
+
     /// Renders the endless measure with a spread of synthetic notes,
     /// offscreen: --strip-shot. The strip is otherwise driven by live
     /// engine events, so this is how its engraving gets inspected.

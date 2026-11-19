@@ -44,9 +44,10 @@ final class PracticeScreenView: NSView {
     private var sessionSeconds: Double = 0
     private var clockTimer: Timer?
 
-    init(transport: PanelTransport, onSheetMusic: (() -> Void)? = nil, onSettings: (() -> Void)? = nil) {
+    init(transport: PanelTransport, onSheetMusic: (() -> Void)? = nil,
+         onStatistics: (() -> Void)? = nil, onSettings: (() -> Void)? = nil) {
         panel = ControlPanelLens(transport: transport)
-        menuLens = MenuLens(onSheetMusic: onSheetMusic, onSettings: onSettings)
+        menuLens = MenuLens(onSheetMusic: onSheetMusic, onStatistics: onStatistics, onSettings: onSettings)
         // the measure opens the engraved sheet: same door as the menu
         staffLens = StaffLensView(onOpen: onSheetMusic ?? {})
         super.init(frame: .zero)

@@ -18,6 +18,8 @@ struct SessionRecord: Codable, Identifiable, Sendable, Equatable {
     let noteCount: Int
     /// Whether an audio.wav sits in the session folder.
     var hasAudio: Bool = false
+    /// Whether the session folder carries its engraved sheet.pdf.
+    var hasPDF: Bool = false
 
     var midiFileName: String { "session.mid" }
     var audioFileName: String { "audio.wav" }
@@ -51,6 +53,70 @@ enum WavWriter {
             body.append(Data(bytes: &pcm, count: 2))
         }
         try (header + body).write(to: url)
+    }
+}
+
+/// A wav file written as the audio arrives: the 44-byte header goes down
+/// up front and its two size fields are patched on close, so a session of
+/// any length costs no RAM.
+extension WavWriter {
+    final class Sink {
+        let url: URL
+        private let handle: FileHandle
+        private(set) var frames = 0
+        private var closed = false
+
+        init?(url: URL, rate: Double) {
+            self.url = url
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+            guard let handle = try? FileHandle(forWritingTo: url) else { return nil }
+            self.handle = handle
+            handle.write(Self.header(rate: rate, dataCount: 0))
+        }
+
+        /// Appends one chunk of raw mono samples as 16-bit PCM.
+        func append(_ samples: [Float]) {
+            guard !closed, !samples.isEmpty else { return }
+            var pcm = Data(capacity: samples.count * 2)
+            for sample in samples {
+                let clamped = max(-1.0, min(1.0, Double(sample)))
+                var value = Int16(clamped * 32767).littleEndian
+                pcm.append(Data(bytes: &value, count: 2))
+            }
+            handle.write(pcm)
+            frames += samples.count
+        }
+
+        /// Patches the RIFF and data sizes with the real byte counts and
+        /// closes the file.
+        func close() {
+            guard !closed else { return }
+            closed = true
+            var size = UInt32(36 + (frames * 2)).littleEndian
+            var count = UInt32(frames * 2).littleEndian
+            handle.seek(toFileOffset: 4)
+            handle.write(Data(bytes: &size, count: 4))
+            handle.seek(toFileOffset: 40)
+            handle.write(Data(bytes: &count, count: 4))
+            try? handle.close()
+        }
+
+        /// Best-effort abandonment used when a session is thrown away.
+        func closeAndDelete() {
+            close()
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        private static func header(rate: Double, dataCount: UInt32) -> Data {
+            var header = Data()
+            func u32(_ v: UInt32) { var x = v.littleEndian; header.append(Data(bytes: &x, count: 4)) }
+            func u16(_ v: UInt16) { var x = v.littleEndian; header.append(Data(bytes: &x, count: 2)) }
+            header.append(Data("RIFF".utf8)); u32(36 + dataCount); header.append(Data("WAVE".utf8))
+            header.append(Data("fmt ".utf8)); u32(16); u16(1); u16(1)
+            u32(UInt32(rate)); u32(UInt32(rate) * 2); u16(2); u16(16)
+            header.append(Data("data".utf8)); u32(dataCount)
+            return header
+        }
     }
 }
 
@@ -105,7 +171,7 @@ final class SessionStore {
     /// what the panel lists it by. Sessions with no notes are discarded.
     @discardableResult
     func saveSession(notes: [NoteEvent], startedAt: Date, durationSeconds: Double,
-                     audio: (samples: [Float], rate: Double)? = nil, keepAudio: Bool = true) -> SessionRecord? {
+                     audio: (url: URL, rate: Double)? = nil, keepAudio: Bool = true) -> SessionRecord? {
         guard !notes.isEmpty else { return nil }
         let folderName = nextFolderName()
         let folder = directory.appendingPathComponent(folderName, isDirectory: true)
@@ -119,8 +185,8 @@ final class SessionStore {
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try MidiFileWriter.write(notes, to: folder.appendingPathComponent(record.midiFileName))
-            if keepAudio, let audio {
-                try WavWriter.write(audio.samples, rate: audio.rate, to: folder.appendingPathComponent(record.audioFileName))
+            if keepAudio, let audio, FileManager.default.fileExists(atPath: audio.url.path) {
+                try FileManager.default.moveItem(at: audio.url, to: folder.appendingPathComponent(record.audioFileName))
                 record.hasAudio = true
             }
             sessions.insert(record, at: 0)
@@ -137,6 +203,13 @@ final class SessionStore {
     func rename(_ record: SessionRecord, to name: String) {
         guard let index = sessions.firstIndex(where: { $0.id == record.id }) else { return }
         sessions[index].name = name.isEmpty ? nil : name
+        try? JSONEncoder().encode(sessions).write(to: indexURL, options: .atomic)
+    }
+
+    /// Marks a session's sheet as engraved once its PDF landed.
+    func markHasPDF(_ record: SessionRecord) {
+        guard let index = sessions.firstIndex(where: { $0.id == record.id }) else { return }
+        sessions[index].hasPDF = true
         try? JSONEncoder().encode(sessions).write(to: indexURL, options: .atomic)
     }
 

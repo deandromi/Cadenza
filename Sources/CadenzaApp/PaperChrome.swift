@@ -159,12 +159,14 @@ final class MenuLens: NSView {
     private let menuButton = NSButton(title: "Menu", target: nil, action: nil)
     private var pill: NSStackView?
     private var backdrop: NSView?
-    private let menuItems = ["Sheet music", "Sessions", "MIDI routing", "Settings"]
+    private let menuItems = ["Sheet music", "Sessions", "Statistics", "MIDI routing", "Settings"]
     private let onSheetMusic: (() -> Void)?
+    private let onStatistics: (() -> Void)?
     private let onSettings: (() -> Void)?
 
-    init(onSheetMusic: (() -> Void)? = nil, onSettings: (() -> Void)? = nil) {
+    init(onSheetMusic: (() -> Void)? = nil, onStatistics: (() -> Void)? = nil, onSettings: (() -> Void)? = nil) {
         self.onSheetMusic = onSheetMusic
+        self.onStatistics = onStatistics
         self.onSettings = onSettings
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
@@ -215,6 +217,10 @@ final class MenuLens: NSView {
                 item.isEnabled = onSheetMusic != nil
                 item.target = self
                 item.action = #selector(sheetMusicTapped)
+            } else if title == "Statistics" {
+                item.isEnabled = onStatistics != nil
+                item.target = self
+                item.action = #selector(statisticsTapped)
             } else if title == "Settings" {
                 item.isEnabled = onSettings != nil
                 item.target = self
@@ -230,6 +236,10 @@ final class MenuLens: NSView {
 
     @objc private func sheetMusicTapped() {
         onSheetMusic?()
+    }
+
+    @objc private func statisticsTapped() {
+        onStatistics?()
     }
 
     @objc private func settingsTapped() {
@@ -541,35 +551,8 @@ final class ControlPanelLens: NSView {
 
     /// The practice summary: time and note count of today, then the week.
     static func practiceSummary(_ sessions: [SessionRecord]) -> String {
-        guard !sessions.isEmpty else { return "No practice recorded yet" }
-        let calendar = Calendar.current
-        let startOfToday = calendar.startOfDay(for: Date())
-        let startOfWeek = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: startOfToday)) ?? startOfToday
-        var todaySeconds = 0.0
-        var todayNotes = 0
-        var weekSeconds = 0.0
-        var weekNotes = 0
-        var weekSessions = 0
-        for session in sessions {
-            if session.startedAt >= startOfWeek {
-                weekSeconds += session.durationSeconds
-                weekNotes += session.noteCount
-                weekSessions += 1
-            }
-            if session.startedAt >= startOfToday {
-                todaySeconds += session.durationSeconds
-                todayNotes += session.noteCount
-            }
-        }
-        func minutes(_ seconds: Double) -> String {
-            Int(seconds / 60) >= 60
-                ? "\(Int(seconds / 3600)) h \(Int(seconds / 60) % 60) min"
-                : "\(max(1, Int(seconds / 60))) min"
-        }
-        if todaySeconds < 1, weekSeconds < 1 { return "No practice recorded yet" }
-        var line = todaySeconds >= 1 ? "Today \(minutes(todaySeconds)) · \(todayNotes) notes" : "Nothing today"
-        line += weekSessions > 0 ? " · week \(minutes(weekSeconds)) · \(weekNotes) notes" : ""
-        return line
+        // the canonical calendar math lives with the statistics section
+        PracticeStats.summaryLine(sessions)
     }
 
     /// A tap on the panel's paper (the window delivers mouse events to the

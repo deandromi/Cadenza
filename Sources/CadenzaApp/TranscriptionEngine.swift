@@ -120,9 +120,9 @@ final class AudioTapState: @unchecked Sendable {
     private var plan: WindowPlan = .standard
     /// rms of the most recent tap buffer, read by the level timer on main
     private var latestLevel: Float = 0
-    /// full-session mirror of the tap, for offline diagnostics; untouched
-    /// by gain and tuning so the .wav is the microphone as it heard it
-    private var rawAll: [Float] = []
+    /// the streaming recording of the raw microphone; untouched by gain
+    /// and tuning, so the .wav is the piano as it was heard
+    private var recording: WavWriter.Sink?
     private var recordingRaw = false
     /// stretch applied at append: a4/440, slowing content so a piano tuned
     /// sharp of A=440 still lands on a 440-referenced model
@@ -148,24 +148,44 @@ final class AudioTapState: @unchecked Sendable {
         gainValue = gain
         self.rate = rate / pitchRatio
         self.plan = plan
-        rawAll = []
         readPos = 0
         carry = 0
         rawConsumed = 0
     }
 
-    func setRecording(_ on: Bool) {
+    /// Streams the raw microphone capture straight to a temp wav file, so a
+    /// long session costs no RAM. Call sites: startRecording when capture
+    /// begins, finishRecording when the session ends and saveSession moves
+    /// the file into the session folder.
+    func startRecording(url: URL) {
         lock.lock()
         defer { lock.unlock() }
-        recordingRaw = on
+        recording?.close()
+        recording = WavWriter.Sink(url: url, rate: rate)
     }
 
-    func drainRaw() -> [Float] {
+    /// Finalizes the streaming wav and hands back its url, or nil when
+    /// nothing had been recorded.
+    func finishRecording() -> URL? {
         lock.lock()
         defer { lock.unlock() }
-        let copy = rawAll
-        rawAll = []
-        return copy
+        guard let recording, recording.frames > 0 else {
+            recording?.close()
+            self.recording = nil
+            return nil
+        }
+        recording.close()
+        let url = recording.url
+        self.recording = nil
+        return url
+    }
+
+    /// Discards the recording in progress and deletes its file.
+    func discardRecording() {
+        lock.lock()
+        defer { lock.unlock() }
+        recording?.closeAndDelete()
+        recording = nil
     }
 
     func append(_ samples: [Float]) {
@@ -196,12 +216,8 @@ final class AudioTapState: @unchecked Sendable {
         }
         rawConsumed += samples.count
         ring.append(contentsOf: modelPath)
-        if recordingRaw {
-            rawAll.append(contentsOf: samples)
-            let cap = Int(300 * rate)
-            if rawAll.count > cap {
-                rawAll.removeFirst(rawAll.count - cap)
-            }
+        if recordingRaw, let sink = recording {
+            sink.append(samples)
         }
         var sum = 0.0
         for sample in samples { sum += Double(sample) * Double(sample) }
@@ -592,6 +608,7 @@ final class TranscriptionEngine: ObservableObject {
             tapState.reset(
                 rate: format.sampleRate, plan: plan,
                 tuningA4: SettingsKeys.tuningA4, gain: SettingsKeys.inputGain)
+            tapState.startRecording(url: Self.recordingTempURL())
             windowIndex = 0
             nextEdge = plan.streamingWarmup
             lastDecodeWall = 0
@@ -602,7 +619,6 @@ final class TranscriptionEngine: ObservableObject {
             sheet = []
             currentChord = nil
             noteCount = 0
-            tapState.setRecording(true)
             input.removeTap(onBus: 0)
             // 4096 frames: the tap chunk bounds how long the ring waits for
             // its trailing edge; smaller buffers only add callback overhead
@@ -639,10 +655,10 @@ final class TranscriptionEngine: ObservableObject {
         }
     }
 
-    /// The raw mic capture of the session that just stopped, at device rate.
-    /// The app shell hands it to the session store; nil when nothing was
-    /// recorded.
-    private(set) var lastRecording: (samples: [Float], rate: Double)?
+    /// The streaming wav the session that just stopped recorded into, at
+    /// device rate. The app shell moves it into the session folder or
+    /// deletes it; nil captures nothing.
+    private(set) var lastRecording: (url: URL, rate: Double)?
 
     func stop() {
         guard isRunning else { return }
@@ -654,29 +670,27 @@ final class TranscriptionEngine: ObservableObject {
         audioEngine.stop()
         isRunning = false
         lastRecording = takeRecording()
-        dumpSessionRecording()
     }
 
-    /// Drains the recorded raw audio without stopping capture.
-    private func takeRecording() -> (samples: [Float], rate: Double)? {
-        let raw = tapState.drainRaw()
-        tapState.setRecording(false)
-        guard !raw.isEmpty else { return nil }
-        return (raw, tapState.deviceRate())
+    private func takeRecording() -> (url: URL, rate: Double)? {
+        let rate = tapState.deviceRate()
+        guard let url = tapState.finishRecording() else { return nil }
+        return (url, rate)
     }
 
-    /// Writes the session's raw mic capture (device rate) next to the other
-    /// diagnostics, so a failed session can be replayed offline.
-    private func dumpSessionRecording() {
-        guard let (raw, rate) = lastRecording else { return }
-        let stamp = ISO8601DateFormatter().string(from: Date())
-            .replacingOccurrences(of: ":", with: "")
-        let url = URL(fileURLWithPath: "/tmp/cadenza_session_\(stamp.prefix(19)).f32")
-        raw.withUnsafeBufferPointer { pointer in
-            let data = Data(bytes: pointer.baseAddress!, count: raw.count * 4)
-            try? data.write(to: url)
+    /// Deletes the last session's wav without saving it anywhere.
+    func discardRecording() {
+        if let lastRecording {
+            try? FileManager.default.removeItem(at: lastRecording.url)
         }
-        print("[engine] session mic capture written to \(url.path), \(raw.count) samples at \(Int(rate)) Hz")
+        lastRecording = nil
+    }
+
+    /// Where a session's mic capture streams while it runs. One scratch
+    /// file per process: a new session overwrites the previous one, which
+    /// by then lives in the session folder it belongs to.
+    static func recordingTempURL() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("Cadenza capture.wav")
     }
 
     /// audio content captured so far this session, for diagnostics
