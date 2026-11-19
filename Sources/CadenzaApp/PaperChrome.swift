@@ -20,6 +20,14 @@ struct PanelTransport {
     var stopPlayback: () -> Void = { }
     /// Whether playback is paused right now.
     var playbackPaused: () -> Bool = { false }
+    /// Per-session actions, revealed when the panel expands: rename the
+    /// session, copy its MIDI file to the clipboard, export MIDI or audio.
+    var renameSession: (SessionRecord, String) -> Void = { _, _ in }
+    var copySessionMIDI: (SessionRecord) -> Void = { _ in }
+    var exportSessionMIDI: (SessionRecord) -> Void = { _ in }
+    var exportSessionAudio: (SessionRecord) -> Void = { _ in }
+    /// Whether the session folder holds an audio recording.
+    var sessionHasAudio: (SessionRecord) -> Bool = { _ in false }
 }
 
 /// Shot diagnostics shared by every screen carrying the practice chrome:
@@ -63,9 +71,11 @@ final class MenuLens: NSView {
     private var backdrop: NSView?
     private let menuItems = ["Sheet music", "Sessions", "MIDI routing", "Settings"]
     private let onSheetMusic: (() -> Void)?
+    private let onSettings: (() -> Void)?
 
-    init(onSheetMusic: (() -> Void)? = nil) {
+    init(onSheetMusic: (() -> Void)? = nil, onSettings: (() -> Void)? = nil) {
         self.onSheetMusic = onSheetMusic
+        self.onSettings = onSettings
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         menuButton.isBordered = false
@@ -115,6 +125,10 @@ final class MenuLens: NSView {
                 item.isEnabled = onSheetMusic != nil
                 item.target = self
                 item.action = #selector(sheetMusicTapped)
+            } else if title == "Settings" {
+                item.isEnabled = onSettings != nil
+                item.target = self
+                item.action = #selector(settingsTapped)
             } else {
                 // items stay disabled: the sections are future work, the
                 // menu shows where they will live
@@ -126,6 +140,10 @@ final class MenuLens: NSView {
 
     @objc private func sheetMusicTapped() {
         onSheetMusic?()
+    }
+
+    @objc private func settingsTapped() {
+        onSettings?()
     }
 }
 
@@ -167,6 +185,11 @@ final class ControlPanelLens: NSView {
     private let playPauseButton = NSButton(title: "Play", target: nil, action: nil)
     private let stopPlaybackButton = NSButton(title: "Stop", target: nil, action: nil)
     private var latestSessions: [SessionRecord] = []
+    private var latestPlaying: SessionRecord?
+    /// true while the panel shows the per-session action rows; a tap on the
+    /// panel itself (never on a button — those are the named shortcuts)
+    /// toggles it with a glass animation
+    private var expanded = false
     private let backdrop: NSGlassEffectView
 
     init(transport: PanelTransport) {
@@ -295,6 +318,7 @@ final class ControlPanelLens: NSView {
     /// playing one carrying the stamp, none of them crowding the panel.
     func setSessions(_ sessions: [SessionRecord], playing: SessionRecord?) {
         latestSessions = sessions
+        latestPlaying = playing
         let playingID = playing?.id
         for view in sessionRows.arrangedSubviews {
             sessionRows.removeArrangedSubview(view)
@@ -302,6 +326,9 @@ final class ControlPanelLens: NSView {
         }
         guard !sessions.isEmpty else {
             sessionRows.addArrangedSubview(noSessionsLabel)
+            // the archive changed: the transport under the timer may have a
+            // session to offer now, or the playing one may have ended
+            syncTransport()
             return
         }
         for record in sessions.prefix(4) {
@@ -311,7 +338,7 @@ final class ControlPanelLens: NSView {
             playButton.contentTintColor = record.id == playingID ? PaperTheme.stamp : PaperTheme.ink
             playButton.identifier = NSUserInterfaceItemIdentifier(record.id.uuidString)
             let label = makeInkLabel(
-                record.id == playingID ? record.label : record.label,
+                record.label,
                 font: .systemFont(ofSize: 12, weight: .regular),
                 color: record.id == playingID ? PaperTheme.ink : PaperTheme.secondaryInk
             )
@@ -320,11 +347,109 @@ final class ControlPanelLens: NSView {
             row.spacing = 8
             row.setContentHuggingPriority(.required, for: .vertical)
             row.setClippingResistancePriority(.required, for: .vertical)
-            sessionRows.addArrangedSubview(row)
+            if expanded {
+                let actions = NSStackView()
+                actions.orientation = .horizontal
+                actions.spacing = 12
+                actions.alignment = .firstBaseline
+                for (title, action) in [
+                    ("Rename", #selector(renameTapped(_:))),
+                    ("Copy MIDI", #selector(copyTapped(_:))),
+                    ("Export", #selector(exportSessionTapped(_:))),
+                ] {
+                    let button = NSButton(title: title, target: self, action: action)
+                    button.isBordered = false
+                    button.font = .systemFont(ofSize: 11, weight: .medium)
+                    button.contentTintColor = PaperTheme.secondaryInk
+                    button.identifier = NSUserInterfaceItemIdentifier(record.id.uuidString)
+                    actions.addArrangedSubview(button)
+                }
+                let entry = NSStackView(views: [row, actions])
+                entry.orientation = .vertical
+                entry.alignment = .leading
+                entry.spacing = 3
+                entry.setContentHuggingPriority(.required, for: .vertical)
+                entry.setClippingResistancePriority(.required, for: .vertical)
+                sessionRows.addArrangedSubview(entry)
+            } else {
+                sessionRows.addArrangedSubview(row)
+            }
         }
         // the archive changed: the transport under the timer may have a
         // session to offer now, or the playing one may have ended
         syncTransport()
+    }
+
+    /// A tap on the panel's paper (the window delivers mouse events to the
+    /// deepest view, so the buttons keep their own clicks as named
+    /// shortcuts) expands or collapses the per-session actions with a soft
+    /// glass animation.
+    override func mouseDown(with event: NSEvent) {
+        toggleExpanded()
+    }
+
+    var isExpanded: Bool { expanded }
+
+    func toggleExpanded() {
+        expanded.toggle()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.28
+            context.allowsImplicitAnimation = true
+            setSessions(latestSessions, playing: latestPlaying)
+            window?.contentView?.animator().layoutSubtreeIfNeeded()
+        }
+    }
+
+    private func record(for sender: NSButton) -> SessionRecord? {
+        guard let identifier = sender.identifier?.rawValue else { return nil }
+        return latestSessions.first(where: { $0.id.uuidString == identifier })
+    }
+
+    @objc private func renameTapped(_ sender: NSButton) {
+        guard let record = record(for: sender) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename session"
+        alert.informativeText = "Give “\(record.label)” a name."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 22))
+        field.stringValue = record.name ?? ""
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        transport.renameSession(record, field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    @objc private func copyTapped(_ sender: NSButton) {
+        guard let record = record(for: sender) else { return }
+        transport.copySessionMIDI(record)
+    }
+
+    /// Export offers the MIDI file always, the audio recording when the
+    /// session kept one, as a small popover at the button.
+    @objc private func exportSessionTapped(_ sender: NSButton) {
+        guard let record = record(for: sender) else { return }
+        let menu = NSMenu()
+        let midi = menu.addItem(withTitle: "MIDI file", action: #selector(exportMIDIChosen(_:)), keyEquivalent: "")
+        midi.target = self
+        midi.identifier = NSUserInterfaceItemIdentifier(record.id.uuidString)
+        if transport.sessionHasAudio(record) {
+            let audio = menu.addItem(withTitle: "Audio (.wav)", action: #selector(exportAudioChosen(_:)), keyEquivalent: "")
+            audio.target = self
+            audio.identifier = NSUserInterfaceItemIdentifier(record.id.uuidString)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY - 6), in: sender)
+    }
+
+    @objc private func exportMIDIChosen(_ sender: NSMenuItem) {
+        guard let identifier = sender.identifier?.rawValue,
+              let record = latestSessions.first(where: { $0.id.uuidString == identifier }) else { return }
+        transport.exportSessionMIDI(record)
+    }
+
+    @objc private func exportAudioChosen(_ sender: NSMenuItem) {
+        guard let identifier = sender.identifier?.rawValue,
+              let record = latestSessions.first(where: { $0.id.uuidString == identifier }) else { return }
+        transport.exportSessionAudio(record)
     }
 
     /// Play starts the newest session when nothing is playing; while one

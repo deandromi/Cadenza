@@ -12,8 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let publisher = MIDIPublisher()
     private let engine = TranscriptionEngine()
-    private let store = SessionStore()
+    private let store = SessionStore(directory: SettingsKeys.sessionDirectory)
     private var sheetController: SheetMusicController?
+    private var settingsController: SettingsController?
     private var cancellables: Set<AnyCancellable> = []
     private var sessionStartedAt: Date?
     private var playbackTask: Task<Void, Never>?
@@ -89,7 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let screen = PracticeScreenView(
             transport: makeTransport(),
-            onSheetMusic: { [weak self] in self?.openSheetMusic() }
+            onSheetMusic: { [weak self] in self?.openSheetMusic() },
+            onSettings: { [weak self] in self?.openSettings() }
         )
         root.addSubview(screen)
         NSLayoutConstraint.activate([
@@ -118,8 +120,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.stopPlayback()
                 self?.refreshSessions()
             },
-            playbackPaused: { [weak self] in self?.playbackPaused ?? false }
+            playbackPaused: { [weak self] in self?.playbackPaused ?? false },
+            renameSession: { [weak self] record, name in
+                self?.store.rename(record, to: name)
+                self?.refreshSessions()
+                self?.screen?.setStatus(name.isEmpty ? "Session name cleared" : "Renamed to \"\(name)\"", error: false)
+            },
+            copySessionMIDI: { [weak self] record in self?.copySessionMIDI(record) },
+            exportSessionMIDI: { [weak self] record in self?.exportSession(record, audio: false) },
+            exportSessionAudio: { [weak self] record in self?.exportSession(record, audio: true) },
+            sessionHasAudio: { [weak self] record in self?.store.sessions.first(where: { $0.id == record.id })?.hasAudio ?? false }
         )
+    }
+
+    // MARK: settings
+
+    private func openSettings() {
+        if settingsController == nil {
+            let controller = SettingsController()
+            controller.onSessionDirectoryChanged = { [weak self] url in
+                self?.store.setDirectory(url)
+                self?.refreshSessions()
+                self?.screen?.setStatus("Sessions now save to \(url.lastPathComponent)", error: false)
+            }
+            settingsController = controller
+        }
+        settingsController?.show(relativeTo: window)
+    }
+
+    // MARK: per-session actions
+
+    /// Puts the session's .mid file on the clipboard as a file copy.
+    private func copySessionMIDI(_ record: SessionRecord) {
+        let url = store.midiURL(for: record)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            present(error: "Couldn't find the session's MIDI file")
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([url as NSURL])
+        screen?.setStatus("Copied \(url.lastPathComponent) to the clipboard", error: false)
+    }
+
+    /// Saves the session's MIDI file or audio recording to a chosen location.
+    private func exportSession(_ record: SessionRecord, audio: Bool) {
+        guard let window else { return }
+        let source = audio ? store.audioURL(for: record) : store.midiURL(for: record)
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            present(error: audio ? "This session kept no audio recording" : "Couldn't find the session's MIDI file")
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [audio ? .wav : .midi]
+        panel.nameFieldStringValue = source.lastPathComponent
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+                try FileManager.default.copyItem(at: source, to: url)
+            } catch {
+                self.present(error: error.localizedDescription)
+            }
+        }
     }
 
     /// The archive lands on the panel after every change, with whoever is
@@ -140,12 +205,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             screen?.syncTransport()
             sheetController?.sessionEnded()
             if let startedAt = sessionStartedAt {
+                // empty sessions (no notes) are discarded by the store; the
+                // previous session moves to the history automatically
+                let keepAudio = SettingsKeys.keepRecordedAudio
                 let record = store.saveSession(
                     notes: engine.notes,
                     startedAt: startedAt,
-                    durationSeconds: Date().timeIntervalSince(startedAt))
+                    durationSeconds: Date().timeIntervalSince(startedAt),
+                    audio: keepAudio ? engine.lastRecording : nil,
+                    keepAudio: keepAudio)
                 if record != nil {
-                    screen?.setStatus("Saved session to the archive", error: false)
+                    screen?.setStatus(keepAudio ? "Saved session to the archive" : "Saved session (audio discarded)", error: false)
                 }
             }
             sessionStartedAt = nil

@@ -36,9 +36,9 @@ final class PracticeScreenView: NSView {
     private var sessionSeconds: Double = 0
     private var clockTimer: Timer?
 
-    init(transport: PanelTransport, onSheetMusic: (() -> Void)? = nil) {
+    init(transport: PanelTransport, onSheetMusic: (() -> Void)? = nil, onSettings: (() -> Void)? = nil) {
         panel = ControlPanelLens(transport: transport)
-        menuLens = MenuLens(onSheetMusic: onSheetMusic)
+        menuLens = MenuLens(onSheetMusic: onSheetMusic, onSettings: onSettings)
         // the measure opens the engraved sheet: same door as the menu
         staffLens = StaffLensView(onOpen: onSheetMusic ?? {})
         super.init(frame: .zero)
@@ -137,6 +137,11 @@ final class PracticeScreenView: NSView {
 
     func setSessions(_ sessions: [SessionRecord], playing: SessionRecord?) {
         panel.setSessions(sessions, playing: playing)
+    }
+
+    /// Expands or collapses the panel's per-session actions (smoke shots).
+    func setPanelExpanded(_ expanded: Bool) {
+        if panel.isExpanded != expanded { panel.toggleExpanded() }
     }
 
     func setNoteCount(_ count: Int) {

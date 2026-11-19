@@ -803,10 +803,11 @@ enum SmokeMain {
             )
             screen.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
             screen.setSessions([
-                SessionRecord(id: UUID(), startedAt: Date().addingTimeInterval(-3600), durationSeconds: 96, noteCount: 214),
-                SessionRecord(id: UUID(), startedAt: Date().addingTimeInterval(-7200), durationSeconds: 41, noteCount: 88),
-                SessionRecord(id: UUID(), startedAt: Date().addingTimeInterval(-90000), durationSeconds: 154, noteCount: 531),
+                SessionRecord(id: UUID(), name: nil, folderName: "Session 1", startedAt: Date().addingTimeInterval(-3600), durationSeconds: 96, noteCount: 214, hasAudio: true),
+                SessionRecord(id: UUID(), name: nil, folderName: "Session 2", startedAt: Date().addingTimeInterval(-7200), durationSeconds: 41, noteCount: 88, hasAudio: false),
+                SessionRecord(id: UUID(), name: nil, folderName: "Session 3", startedAt: Date().addingTimeInterval(-90000), durationSeconds: 154, noteCount: 531, hasAudio: true),
             ], playing: nil)
+            screen.setPanelExpanded(true)
             screen.setNoteCount(12)
             screen.sessionStarted()
             for (pitch, age) in [(48, 8.6), (55, 8.5), (72, 6.4), (76, 6.3),

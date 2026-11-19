@@ -458,7 +458,9 @@ final class TranscriptionEngine: ObservableObject {
     }
 
     /// Asks for microphone access, then begins capture and inference.
+    /// A start while already running is a no-op: the transport toggles.
     func start(tensorsDir: URL, modelURL: URL) {
+        guard !isRunning else { return }
         AVAudioApplication.requestRecordPermission { [weak self] granted in
             Task { @MainActor in
                 guard let self else { return }
@@ -523,7 +525,13 @@ final class TranscriptionEngine: ObservableObject {
         }
     }
 
+    /// The raw mic capture of the session that just stopped, at device rate.
+    /// The app shell hands it to the session store; nil when nothing was
+    /// recorded.
+    private(set) var lastRecording: (samples: [Float], rate: Double)?
+
     func stop() {
+        guard isRunning else { return }
         tickTimer?.invalidate()
         tickTimer = nil
         levelTimer?.invalidate()
@@ -531,15 +539,22 @@ final class TranscriptionEngine: ObservableObject {
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         isRunning = false
+        lastRecording = takeRecording()
         dumpSessionRecording()
+    }
+
+    /// Drains the recorded raw audio without stopping capture.
+    private func takeRecording() -> (samples: [Float], rate: Double)? {
+        let raw = tapState.drainRaw()
+        tapState.setRecording(false)
+        guard !raw.isEmpty else { return nil }
+        return (raw, tapState.deviceRate())
     }
 
     /// Writes the session's raw mic capture (device rate) next to the other
     /// diagnostics, so a failed session can be replayed offline.
     private func dumpSessionRecording() {
-        let raw = tapState.drainRaw()
-        tapState.setRecording(false)
-        guard !raw.isEmpty else { return }
+        guard let (raw, rate) = lastRecording else { return }
         let stamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "")
         let url = URL(fileURLWithPath: "/tmp/cadenza_session_\(stamp.prefix(19)).f32")
@@ -547,7 +562,7 @@ final class TranscriptionEngine: ObservableObject {
             let data = Data(bytes: pointer.baseAddress!, count: raw.count * 4)
             try? data.write(to: url)
         }
-        print("[engine] session mic capture written to \(url.path), \(raw.count) samples at \(Int(tapState.deviceRate())) Hz")
+        print("[engine] session mic capture written to \(url.path), \(raw.count) samples at \(Int(rate)) Hz")
     }
 
     /// audio content captured so far this session, for diagnostics
