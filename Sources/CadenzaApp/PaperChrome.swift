@@ -13,6 +13,13 @@ struct PanelTransport {
     var playSession: (SessionRecord) -> Void = { _ in }
     /// Whether one session is playing right now.
     var playingSession: () -> SessionRecord? = { nil }
+    /// Pause a playing session, or resume a paused one; with nothing
+    /// playing, starts the newest session.
+    var togglePlayPause: () -> Void = { }
+    /// Stop playback outright, paused or not.
+    var stopPlayback: () -> Void = { }
+    /// Whether playback is paused right now.
+    var playbackPaused: () -> Bool = { false }
 }
 
 /// Shot diagnostics shared by every screen carrying the practice chrome:
@@ -156,6 +163,9 @@ final class ControlPanelLens: NSView {
     )
     private let listenButton = NSButton(title: "New session", target: nil, action: nil)
     private let exportButton = NSButton(title: "Export", target: nil, action: nil)
+    /// the transport under the timer: play/pause the session in hand, stop it
+    private let playPauseButton = NSButton(title: "Play", target: nil, action: nil)
+    private let stopPlaybackButton = NSButton(title: "Stop", target: nil, action: nil)
     private var latestSessions: [SessionRecord] = []
     private let backdrop: NSGlassEffectView
 
@@ -169,7 +179,7 @@ final class ControlPanelLens: NSView {
         // views and their relationships are built only after super.init on
         // this OS build: mutation before it orphans subtrees from the live
         // layout engine
-        for button in [listenButton, exportButton] {
+        for button in [listenButton, exportButton, playPauseButton, stopPlaybackButton] {
             button.isBordered = false
             button.font = .systemFont(ofSize: 13, weight: .medium)
             button.contentTintColor = PaperTheme.ink
@@ -192,9 +202,14 @@ final class ControlPanelLens: NSView {
         let buttons = NSStackView(views: [listenButton, exportButton])
         buttons.orientation = .horizontal
         buttons.spacing = 20
+        let playbackButtons = NSStackView(views: [playPauseButton, stopPlaybackButton])
+        playbackButtons.orientation = .horizontal
+        playbackButtons.spacing = 20
+        playbackButtons.alignment = .firstBaseline
         addSubview(backdrop)
         addSubview(rows)
         rows.addArrangedSubview(Self.captionedRow("Session", timeLabel))
+        rows.addArrangedSubview(playbackButtons)
         rows.addArrangedSubview(Self.captionedRow("Notes", countLabel))
         rows.addArrangedSubview(Self.captionedRow("Level", levelLine))
         rows.addArrangedSubview(divider)
@@ -218,6 +233,10 @@ final class ControlPanelLens: NSView {
         listenButton.action = #selector(listenTapped)
         exportButton.target = self
         exportButton.action = #selector(exportTapped)
+        playPauseButton.target = self
+        playPauseButton.action = #selector(playPauseTapped)
+        stopPlaybackButton.target = self
+        stopPlaybackButton.action = #selector(stopPlaybackTapped)
         syncTransport()
     }
 
@@ -257,6 +276,12 @@ final class ControlPanelLens: NSView {
         listenButton.title = listening ? "Stop" : "New session"
         listenButton.contentTintColor = listening ? PaperTheme.stamp : PaperTheme.ink
         exportButton.isEnabled = transport.exportEnabled()
+        let playing = transport.playingSession() != nil
+        let paused = transport.playbackPaused()
+        playPauseButton.title = playing ? (paused ? "Resume" : "Pause") : "Play"
+        playPauseButton.isEnabled = !listening && (playing || !latestSessions.isEmpty)
+        playPauseButton.contentTintColor = playing ? PaperTheme.stamp : PaperTheme.ink
+        stopPlaybackButton.isEnabled = playing
     }
 
     func setSession(time: String, notes: String, level: Double, sounding: Bool) {
@@ -297,6 +322,25 @@ final class ControlPanelLens: NSView {
             row.setClippingResistancePriority(.required, for: .vertical)
             sessionRows.addArrangedSubview(row)
         }
+        // the archive changed: the transport under the timer may have a
+        // session to offer now, or the playing one may have ended
+        syncTransport()
+    }
+
+    /// Play starts the newest session when nothing is playing; while one
+    /// plays, the same button pauses and resumes it.
+    @objc private func playPauseTapped() {
+        if transport.playingSession() != nil {
+            transport.togglePlayPause()
+        } else if let newest = latestSessions.first {
+            transport.playSession(newest)
+        }
+        syncTransport()
+    }
+
+    @objc private func stopPlaybackTapped() {
+        transport.stopPlayback()
+        syncTransport()
     }
 
     @objc private func playTapped(_ sender: NSButton) {
@@ -326,6 +370,8 @@ final class ControlPanelLens: NSView {
         return [
             ("panel time", inLens(timeLabel)),
             ("panel count", inLens(countLabel)),
+            ("play pause button", inLens(playPauseButton)),
+            ("stop playback button", inLens(stopPlaybackButton)),
             ("listen button", inLens(listenButton)),
             ("export button", inLens(exportButton)),
         ]

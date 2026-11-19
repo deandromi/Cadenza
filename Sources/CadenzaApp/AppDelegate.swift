@@ -19,6 +19,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var playbackTask: Task<Void, Never>?
     private var playingRecord: SessionRecord?
     private var playbackCount = 0
+    private var playbackPaused = false
+    /// where a paused playback resumes: the next note's index and the onset
+    /// of the last note already sent
+    private var playbackCursor = 0
+    private var playbackPreviousOnset = 0.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // the practice screen is a paper world: it renders in light mode,
@@ -107,7 +112,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exportEnabled: { [weak self] in !(self?.engine.notes.isEmpty ?? true) },
             export: { [weak self] in self?.exportMIDI() },
             playSession: { [weak self] record in self?.togglePlayback(of: record) },
-            playingSession: { [weak self] in self?.playingRecord }
+            playingSession: { [weak self] in self?.playingRecord },
+            togglePlayPause: { [weak self] in self?.togglePlayPause() },
+            stopPlayback: { [weak self] in
+                self?.stopPlayback()
+                self?.refreshSessions()
+            },
+            playbackPaused: { [weak self] in self?.playbackPaused ?? false }
         )
     }
 
@@ -169,23 +180,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         stopPlayback()
-        guard let notes = store.notes(for: record) else {
+        guard store.notes(for: record) != nil else {
             present(error: "Couldn't read the session file")
             return
         }
         playingRecord = record
-        refreshSessions()
+        playbackPaused = false
+        playbackCursor = 0
+        playbackPreviousOnset = 0
         playbackCount = 0
+        refreshSessions()
+        startPlayback(from: record, cursor: 0, previousOnset: 0)
+    }
+
+    /// The transport button under the timer: with a session playing it
+    /// pauses, when paused it resumes from the cursor, and with nothing
+    /// playing it starts the newest session in the archive.
+    private func togglePlayPause() {
+        if let record = playingRecord {
+            if playbackPaused {
+                playbackPaused = false
+                startPlayback(from: record, cursor: playbackCursor, previousOnset: playbackPreviousOnset)
+            } else {
+                playbackTask?.cancel()
+                playbackTask = nil
+                playbackPaused = true
+                // hanging notes would drone on in other apps: release all
+                publisher.panic()
+                screen?.sessionStopped()
+            }
+        } else if let newest = store.sessions.first {
+            togglePlayback(of: newest)
+            return
+        }
+        refreshSessions()
+    }
+
+    /// The playback loop, resumable: `cursor` is the next note to send and
+    /// `previousOnset` the onset of the note before it, so a paused session
+    /// continues exactly where it stopped.
+    private func startPlayback(from record: SessionRecord, cursor: Int, previousOnset: Double) {
+        guard let notes = store.notes(for: record) else {
+            stopPlayback()
+            refreshSessions()
+            return
+        }
+        let sorted = notes.sorted(by: { $0.onset < $1.onset })
         screen?.sessionStopped()
         playbackTask = Task { [weak self] in
-            var previous = 0.0
-            for note in notes.sorted(by: { $0.onset < $1.onset }) {
+            var previous = previousOnset
+            var index = cursor
+            while index < sorted.count {
+                let note = sorted[index]
                 let wait = max(0, note.onset - previous)
                 previous = note.onset
                 if wait > 0 {
                     try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
                 }
                 guard !Task.isCancelled else { return }
+                self?.playbackCursor = index + 1
+                self?.playbackPreviousOnset = previous
                 self?.playbackCount += 1
                 self?.publisher.noteStruck(note)
                 self?.screen?.noteStruck(note)
@@ -193,10 +247,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let held = note
                 Task { [weak self] in
                     try? await Task.sleep(nanoseconds: UInt64(max(held.duration, 0.05) * 1_000_000_000))
-                    guard !Task.isCancelled else { return }
+                    // a release belongs to the run that struck it: when the
+                    // outer task was cancelled (pause or stop), let it go
+                    guard self?.playbackTask?.isCancelled == false else { return }
                     self?.publisher.noteReleased(held)
                     self?.screen?.noteReleased(held)
                 }
+                index += 1
             }
             // let the last note ring, then hand the keys back
             try? await Task.sleep(nanoseconds: 700_000_000)
@@ -209,6 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func stopPlayback() {
         playbackTask?.cancel()
         playbackTask = nil
+        playbackPaused = false
         if playingRecord != nil {
             publisher.panic()
         }
