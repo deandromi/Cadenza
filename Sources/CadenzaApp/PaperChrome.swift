@@ -133,7 +133,7 @@ final class ControlPanelLens: NSView {
     /// the stopwatch reads big and steady: it is the panel's heartbeat
     private let timeLabel = makeInkLabel(
         "0:00",
-        font: .monospacedDigitSystemFont(ofSize: 34, weight: .regular),
+        font: .monospacedDigitSystemFont(ofSize: 46, weight: .regular),
         color: PaperTheme.ink
     )
     private let countLabel = makeInkLabel(
@@ -187,6 +187,7 @@ final class ControlPanelLens: NSView {
         sessionRows.orientation = .vertical
         sessionRows.alignment = .leading
         sessionRows.spacing = 3
+        rows.setContentHuggingPriority(.required, for: .vertical)
         let divider = HairlineView()
         let buttons = NSStackView(views: [listenButton, exportButton])
         buttons.orientation = .horizontal
@@ -224,7 +225,9 @@ final class ControlPanelLens: NSView {
         fatalError("init(coder:) is not supported")
     }
 
-    /// Caption over value, the panel's rhythm.
+    /// Caption over value, the panel's rhythm. Rows never stretch: their
+    /// vertical hugging is required, so spare panel height can only pool
+    /// as still air between sections, never inside a row.
     private static func captionedRow(_ caption: String, _ value: NSView) -> NSStackView {
         let label = makeInkLabel(
             caption,
@@ -235,6 +238,8 @@ final class ControlPanelLens: NSView {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 2
+        stack.setContentHuggingPriority(.required, for: .vertical)
+        stack.setClippingResistancePriority(.required, for: .vertical)
         return stack
     }
 
@@ -288,6 +293,8 @@ final class ControlPanelLens: NSView {
             let row = NSStackView(views: [playButton, label])
             row.orientation = .horizontal
             row.spacing = 8
+            row.setContentHuggingPriority(.required, for: .vertical)
+            row.setClippingResistancePriority(.required, for: .vertical)
             sessionRows.addArrangedSubview(row)
         }
     }

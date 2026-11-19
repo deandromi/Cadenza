@@ -770,21 +770,16 @@ enum SmokeMain {
             screen.syncTransport()
 
             let scale: CGFloat = 2
+            screen.layoutSubtreeIfNeeded()
+            // the view tree renders through cacheDisplay: the official
+            // window-less render of a view and its subviews
             let rep = NSBitmapImageRep(
                 bitmapDataPlanes: nil,
                 pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
                 bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                 colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-            if let ctx = NSGraphicsContext.current {
-                PaperTheme.paper.setFill()
-                NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh).fill()
-                ctx.cgContext.translateBy(x: 0, y: CGFloat(rep.pixelsHigh))
-                ctx.cgContext.scaleBy(x: scale, y: -scale)
-                screen.draw(NSRect(x: 0, y: 0, width: size.width, height: size.height))
-            }
-            NSGraphicsContext.restoreGraphicsState()
+            rep.size = size
+            screen.cacheDisplay(in: NSRect(x: 0, y: 0, width: size.width, height: size.height), to: rep)
             if let cg = rep.cgImage,
                let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: "/tmp/cadenza_screen.png") as CFURL, UTType.png.identifier as CFString, 1, nil) {
                 CGImageDestinationAddImage(dest, cg, nil)

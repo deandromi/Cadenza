@@ -76,7 +76,12 @@ final class PracticeScreenView: NSView {
             keybed.heightAnchor.constraint(equalToConstant: 118),
 
             staffLens.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 36),
-            staffLens.trailingAnchor.constraint(lessThanOrEqualTo: panel.leadingAnchor, constant: -48),
+            // the measure runs the full available width: an inequality here
+            // let the layout collapse the lens to a sliver, so the trailing
+            // edge is pinned by equality, with a floor the window cannot
+            // squeeze past
+            staffLens.trailingAnchor.constraint(equalTo: panel.leadingAnchor, constant: -48),
+            staffLens.widthAnchor.constraint(greaterThanOrEqualToConstant: 420),
             staffLens.topAnchor.constraint(equalTo: wordmark.bottomAnchor, constant: 14),
             staffLens.bottomAnchor.constraint(equalTo: keybed.topAnchor, constant: -34),
 
@@ -100,7 +105,8 @@ final class PracticeScreenView: NSView {
             menuLens.topAnchor.constraint(equalTo: topAnchor, constant: 20),
 
             panel.widthAnchor.constraint(equalToConstant: 240),
-            panel.heightAnchor.constraint(equalToConstant: 372),
+            // the panel is only as tall as its rows: the lens wraps the
+            // content instead of stretching blank air around it
             panel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -30),
             panel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
