@@ -53,6 +53,9 @@ final class EndlessStaffView: NSView {
         fatalError("init(coder:) is not supported")
     }
 
+    /// The strip's geometry runs top down, like reading notation off paper.
+    override var isFlipped: Bool { true }
+
     // MARK: the pipeline feeds the strip
 
     /// A note was confirmed: it engraved itself at the now line.
