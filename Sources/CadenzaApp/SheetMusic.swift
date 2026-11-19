@@ -13,6 +13,9 @@ import UniformTypeIdentifiers
 @MainActor
 final class SheetMusicController: NSObject {
     private var notes: [NoteEvent]
+    /// sustain-pedal spans in seconds, from an imported MIDI's CC64; live
+    /// sessions carry none (the audio model folds pedal into durations)
+    private var pedalSpans: [(start: Double, end: Double)]
     private var options: SheetDraft.Options
     private var window: NSWindow?
     private var contentHost: NSView?
@@ -25,8 +28,10 @@ final class SheetMusicController: NSObject {
     /// default zoom, minus the sheet's margins.
     private let pageSpaces: Double = 86
 
-    init(notes: [NoteEvent], options: SheetDraft.Options = SheetDraft.Options()) {
+    init(notes: [NoteEvent], options: SheetDraft.Options = SheetDraft.Options(),
+         pedals: [(start: Double, end: Double)] = []) {
         self.notes = notes
+        self.pedalSpans = pedals
         self.options = options
         super.init()
     }
@@ -60,8 +65,15 @@ final class SheetMusicController: NSObject {
     /// runs. The sheet re-engraves immediately, throttled to keep the
     /// extended tails from redrawing more than a few times a second.
     func sync(notes: [NoteEvent]) {
+        sync(notes: notes, pedals: nil)
+    }
+
+    /// The live feed with optional pedal spans (an imported session's
+    /// sustain pedal); the sheet re-engraves with them.
+    func sync(notes: [NoteEvent], pedals: [(start: Double, end: Double)]?) {
         guard window?.isVisible == true else { return }
         self.notes = notes
+        if let pedals { self.pedalSpans = pedals }
         let now = CFAbsoluteTimeGetCurrent()
         guard now - lastDraft > 0.25 else { return }
         redraft()
@@ -84,7 +96,12 @@ final class SheetMusicController: NSObject {
 
     private func redraft() {
         lastDraft = CFAbsoluteTimeGetCurrent()
-        let result = SheetDraft.draft(notes: notes, options: options, pageWidth: pageSpaces)
+        let pedalTicks = pedalSpans.map { span in
+            SheetDraft.PedalSpan(
+                startTick: SheetDraft.ticks(seconds: span.start, options: options),
+                endTick: SheetDraft.ticks(seconds: span.end, options: options))
+        }
+        let result = SheetDraft.draft(notes: notes, options: options, pageWidth: pageSpaces, pedals: pedalTicks)
         guard let host = contentHost else { return }
         if let view = scoreView {
             view.update(result: result)
@@ -350,6 +367,8 @@ final class ScoreView: NSView {
         static let accidentalSharp: UInt32 = 0xE262
         static let accidentalNatural: UInt32 = 0xE261
         static let accidentalFlat: UInt32 = 0xE260
+        static let pedalDownMark: UInt32 = 0xE650
+        static let pedalUpMark: UInt32 = 0xE655
         static func timeSignatureDigit(_ n: Int) -> UInt32 { 0xE080 + UInt32(n) }
     }
 
@@ -473,6 +492,9 @@ final class ScoreView: NSView {
 
             // beams across the row's members
             drawBeams(row: row, topY: yOnTreble, bottomY: yOnBass, gap: gap, ink: ink)
+
+            // sustain pedal marks under the bass staff
+            drawPedals(row.bottom, bassBottom: bassBottom, rightX: rightX, gap: gap, ink: ink)
         }
     }
 
@@ -502,6 +524,50 @@ final class ScoreView: NSView {
             drawChord(chord, at: x, yOn: yOn, gap: gap, ink: ink)
         case .timeSignature:
             break
+        case .pedalDown, .pedalUp:
+            break
+        }
+    }
+
+    /// Sustain pedal marks: "Ped." where the pedal goes down, the release
+    /// star where it lifts, a line between them, all below the bass staff.
+    /// A pedal still down at a row's end runs its line to the final bar.
+    private func drawPedals(_ placed: [SheetDraft.Placed], bassBottom: CGFloat, rightX: CGFloat, gap: CGFloat, ink: NSColor) {
+        let lineY = bassBottom + 1.55 * gap
+        // placed.x is in staff spaces from the row start; convert like the
+        // symbol loop does
+        func pedalX(_ item: SheetDraft.Placed) -> CGFloat {
+            marginX + CGFloat(item.x) * gap
+        }
+        var openX: CGFloat?
+        for item in placed {
+            switch item.symbol {
+            case .pedalDown:
+                if let info = MusicFont.info(Glyph.pedalDownMark) {
+                    let x = pedalX(item)
+                    drawGlyph(Glyph.pedalDownMark, baselineAt: NSPoint(x: x, y: lineY), font: musicFont, color: ink)
+                    openX = x + info.width * fontSize * 0.85
+                }
+            case .pedalUp:
+                if let info = MusicFont.info(Glyph.pedalUpMark) {
+                    let x = pedalX(item)
+                    if let start = openX, x > start {
+                        ink.withAlphaComponent(0.75).setStroke()
+                        strokeLine(from: NSPoint(x: start, y: lineY), to: NSPoint(x: x, y: lineY), width: 0.9)
+                    }
+                    // the star hangs centered on the line
+                    drawGlyph(Glyph.pedalUpMark,
+                              baselineAt: NSPoint(x: x, y: lineY + info.centerY * fontSize),
+                              font: musicFont, color: ink)
+                }
+                openX = nil
+            default:
+                break
+            }
+        }
+        if let start = openX {
+            ink.withAlphaComponent(0.75).setStroke()
+            strokeLine(from: NSPoint(x: start, y: lineY), to: NSPoint(x: rightX, y: lineY), width: 0.9)
         }
     }
 

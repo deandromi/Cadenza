@@ -624,6 +624,66 @@ do {
     expect(result.fifths == 0, "no notes guess the key of C")
 }
 
+pedalChecks: do {
+    // CC64 spans: a note released under the pedal rings to the lift, and
+    // the reader keeps the pedal spans themselves for the engraver.
+    let midi = syntheticMidi(events: [
+        (0, [0x90, 60, 80]),        // C4 on
+        (0, [0xB0, 64, 100]),       // sustain down
+        (480, [0x80, 60, 0]),       // key up at 0.5 s, pedal holds it
+        (0, [0x90, 64, 80]),        // E4 on, still under the pedal
+        (480, [0xB0, 64, 0]),       // pedal up at 1.0 s
+        (240, [0x80, 64, 0]),       // E4 off at 1.25 s, unpedalled tail
+        (0, [0xFF, 0x2F, 0x00]),
+    ])
+    let file = try? MidiReader.read(midi)
+    expect(file != nil, "pedal midi parses")
+    guard let file else { break pedalChecks }
+    expect(file.notes.count == 2, "two notes under one pedal span")
+    if let c4 = file.notes.first(where: { $0.pitch == 60 }) {
+        expect(abs(c4.duration - 1.0) < 1e-9, "the pedalled note rings to the pedal lift")
+    } else {
+        expect(false, "the C4 note parsed")
+    }
+    expect(file.sustainPedals.count == 1, "one pedal span read")
+    if let span = file.sustainPedals.first {
+        expect(abs(span.start) < 1e-9 && abs(span.end - 1.0) < 1e-9,
+               "the pedal span runs 0 to 1 s")
+    }
+}
+
+pedalSheet: do {
+    // The engraver places pedal marks in the bass track, and a chord at
+    // the same tick survives beside them.
+    let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
+    let notes = [
+        NoteEvent(pitch: 60, velocity: 80, onset: 0.0, duration: 1.8),
+        NoteEvent(pitch: 64, velocity: 80, onset: 0.0, duration: 1.8),
+        NoteEvent(pitch: 67, velocity: 80, onset: 0.0, duration: 1.8),
+    ]
+    // pedal from just before the chord to mid-way: ticks at 120 bpm are
+    // 480 per quarter, so 2.0 s is exactly one bar span
+    let result = SheetDraft.draft(notes: notes, options: options, pedals: [
+        SheetDraft.PedalSpan(startTick: 950, endTick: 1500),
+    ])
+    let downs = result.bottomTrack.filter {
+        if case .pedalDown = $0 { return true }; return false
+    }
+    let ups = result.bottomTrack.filter {
+        if case .pedalUp = $0 { return true }; return false
+    }
+    expect(downs.count == 1 && downs.first?.startTicks == 950, "the pedal-down mark sits at its tick")
+    expect(ups.count == 1 && ups.first?.startTicks == 1500, "the pedal-up mark sits at its tick")
+    expect(result.bottomTrack.contains {
+        if case .chord = $0 { return true }; return false
+    }, "the chord survives beside the pedal marks")
+    // placement: the marks carry real x positions in the row
+    let placedDown = result.rows.first?.bottom.first {
+        if case .pedalDown = $0.symbol { return true }; return false
+    }
+    expect(placedDown != nil && placedDown?.trackIndex ?? -1 >= 0, "the pedal mark is placed by the layout")
+}
+
 if failures == 0 {
     print("all \(checks) checks passed")
 } else {

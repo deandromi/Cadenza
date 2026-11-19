@@ -268,6 +268,13 @@ final class PracticeScreenView: NSView {
         panel.syncTransport()
     }
 
+    /// Whether a play-along (listening while a session plays) runs; the
+    /// panel's play/pause button stays usable during one.
+    func panelPlayAlong(_ running: Bool) {
+        panel.playAlongRunning = running
+        panel.syncTransport()
+    }
+
     /// Listening began: the session clock runs.
     func sessionStarted() {
         sessionStart = Date()

@@ -140,6 +140,41 @@ final class SessionStore {
         try? JSONEncoder().encode(sessions).write(to: indexURL, options: .atomic)
     }
 
+    /// Imports a MIDI file as a session: the file is copied into a fresh
+    /// "Session N" folder and the archive lists it under the file's name.
+    /// Returns the new record, or nil when the file holds no notes.
+    @discardableResult
+    func importSession(from url: URL, name: String) -> SessionRecord? {
+        guard let file = try? MidiReader.read(url: url), !file.notes.isEmpty else { return nil }
+        let folderName = nextFolderName()
+        let folder = directory.appendingPathComponent(folderName, isDirectory: true)
+        var record = SessionRecord(
+            id: UUID(),
+            startedAt: Date(),
+            durationSeconds: file.notes.map { $0.offset }.max() ?? 0,
+            noteCount: file.notes.count
+        )
+        record.folderName = folderName
+        record.name = name
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: url, to: folder.appendingPathComponent(record.midiFileName))
+            sessions.insert(record, at: 0)
+            try JSONEncoder().encode(sessions).write(to: indexURL, options: .atomic)
+            return record
+        } catch {
+            try? FileManager.default.removeItem(at: folder)
+            return nil
+        }
+    }
+
+    /// The session's sustain-pedal spans in seconds, read back from its
+    /// MIDI file; empty when the file carries no pedal.
+    func pedalSpans(for record: SessionRecord) -> [(start: Double, end: Double)] {
+        guard let file = try? MidiReader.read(url: midiURL(for: record)) else { return [] }
+        return file.sustainPedals
+    }
+
     /// The session's notes, read back from its MIDI file.
     func notes(for record: SessionRecord) -> [NoteEvent]? {
         guard let file = try? MidiReader.read(url: midiURL(for: record)) else { return nil }

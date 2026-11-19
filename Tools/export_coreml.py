@@ -25,6 +25,17 @@ from transkun.Util import makeFrame
 
 REPO = Path(__file__).resolve().parent.parent
 SEGMENTS_T = 691   # frames in one 16 s segment at hop 1024 / 44100 Hz (matches make_goldens)
+OUTPUT_NAME = "TranskunBackbone"
+
+# --frames N [--out NAME]: export a second backbone at a short fixed window
+# (the fast, sub-second tier). The position-embedding bake pins the graph to
+# one shape, so each tier gets its own fixed-shape model; the golden
+# verification then runs on a crop of the golden mel of exactly that length.
+_args = sys.argv[1:]
+if "--frames" in _args:
+    SEGMENTS_T = int(_args[_args.index("--frames") + 1])
+if "--out" in _args:
+    OUTPUT_NAME = _args[_args.index("--out") + 1]
 
 
 def load_model() -> torch.nn.Module:
@@ -171,6 +182,9 @@ def main() -> None:
     patch_scorer(model)
     warmed = freeze_position_embeddings(model)
     mel_flat = np.fromfile(REPO / "Fixtures" / "golden" / "mel_gold.f32", dtype=np.float32)
+    full_frames = mel_flat.size // (229 * 6)
+    assert full_frames >= SEGMENTS_T, f"golden mel has {full_frames} frames, need {SEGMENTS_T}"
+    mel_flat = mel_flat[: SEGMENTS_T * 229 * 6]
     features_fixed = torch.from_numpy(mel_flat).reshape(1, SEGMENTS_T, 229, 6).contiguous()
     with torch.no_grad():
         wrapper = BackboneExport(model).eval()
@@ -214,7 +228,7 @@ def main() -> None:
         compute_precision=ct.precision.FLOAT32,
         compute_units=ct.ComputeUnit.CPU_ONLY,
     )
-    out_path = REPO / "Models" / "TranskunBackbone.mlpackage"
+    out_path = REPO / "Models" / f"{OUTPUT_NAME}.mlpackage"
     mlmodel.save(str(out_path))
     print("saved", out_path)
 

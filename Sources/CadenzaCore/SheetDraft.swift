@@ -41,6 +41,17 @@ public enum SheetDraft {
         }
     }
 
+    /// One sustain-pedal span in ticks: pressed at start, released at end.
+    public struct PedalSpan: Sendable, Equatable {
+        public let startTick: Int
+        public let endTick: Int
+
+        public init(startTick: Int, endTick: Int) {
+            self.startTick = startTick
+            self.endTick = endTick
+        }
+    }
+
     // MARK: options
 
     public struct Options: Sendable, Equatable {
@@ -173,6 +184,11 @@ public enum SheetDraft {
         case blank(startTicks: Int)
         /// The meter drawn once at the piece's start.
         case timeSignature
+        /// The sustain pedal goes down here (drawn as "Ped." below the
+        /// bass staff, the line running to the matching pedalUp).
+        case pedalDown(startTicks: Int)
+        /// The sustain pedal releases here (drawn as the release star).
+        case pedalUp(startTicks: Int)
 
         public var startTicks: Int {
             switch self {
@@ -181,6 +197,7 @@ public enum SheetDraft {
             case .bar(let t), .finalBar(let t): return t
             case .clefChange(_, let t): return t
             case .blank(let t): return t
+            case .pedalDown(let t), .pedalUp(let t): return t
             case .timeSignature: return 0
             }
         }
@@ -188,7 +205,7 @@ public enum SheetDraft {
         /// Column items are the things that align between barlines.
         public var isColumn: Bool {
             switch self {
-            case .chord, .rest, .blank, .clefChange: return true
+            case .chord, .rest, .blank, .clefChange, .pedalDown, .pedalUp: return true
             default: return false
             }
         }
@@ -207,6 +224,8 @@ public enum SheetDraft {
             case .clefChange: return 2.6
             case .blank: return 0
             case .timeSignature: return 2.2
+            case .pedalDown: return 2.4
+            case .pedalUp: return 1.2
             }
         }
     }
@@ -639,6 +658,45 @@ public enum SheetDraft {
 
     // MARK: beams
 
+    /// Merges pedal spans into a hand track as pedalDown/pedalUp marks,
+    /// inserted in tick order: after a barline at the same tick, before
+    /// anything else there, so a pedal press reads inside its measure. A
+    /// span reaching past the final bar clamps to it — a pedal held to the
+    /// end releases where the music ends.
+    static func insertingPedals(_ spans: [PedalSpan], into symbols: [Symbol]) -> [Symbol] {
+        let finalBarTick = symbols.last(where: {
+            if case .finalBar = $0 { return true }
+            return false
+        })?.startTicks
+        var marks: [(tick: Int, symbol: Symbol)] = []
+        for span in spans where span.endTick > span.startTick {
+            let end = finalBarTick.map { min(span.endTick, $0) } ?? span.endTick
+            marks.append((span.startTick, .pedalDown(startTicks: span.startTick)))
+            marks.append((end, .pedalUp(startTicks: end)))
+        }
+        marks.sort { $0.tick < $1.tick }
+        var result: [Symbol] = []
+        var index = 0
+        for mark in marks {
+            while index < symbols.count {
+                let symbol = symbols[index]
+                if symbol.startTicks < mark.tick {
+                    result.append(symbol)
+                    index += 1
+                    continue
+                }
+                if symbol.startTicks == mark.tick {
+                    if case .bar = symbol { result.append(symbol); index += 1; continue }
+                    if case .finalBar = symbol { result.append(symbol); index += 1; continue }
+                }
+                break
+            }
+            result.append(mark.symbol)
+        }
+        result.append(contentsOf: symbols[index...])
+        return result
+    }
+
     /// The stem summary the beamer compares: head, dots, flags, whether
     /// the chord carries two stems, and its average staff position.
     struct StemSummary: Equatable {
@@ -941,12 +999,17 @@ public enum SheetDraft {
                 for t in times.sorted() {
                     func draw(_ items: [Symbol], x: inout Double, cursor: inout Int,
                               placed: inout [Placed], list: [Symbol]) {
-                        if let item = items.first(where: { $0.isColumn && $0.startTicks == t }) {
+                        // every column item at this time takes its place in
+                        // order (a pedal mark and its chord share a column)
+                        var placedAny = false
+                        for item in items where item.isColumn && item.startTicks == t {
                             let index = trackIndexOf(item, at: cursor, list: list)
                             placed.append(Placed(x: x, trackIndex: index, symbol: item))
                             x += item.width + extra
                             if index >= 0 { cursor = index }
-                        } else {
+                            placedAny = true
+                        }
+                        if !placedAny {
                             placed.append(Placed(x: x, trackIndex: -1, symbol: .blank(startTicks: t)))
                             x += extra
                         }
@@ -991,8 +1054,11 @@ public enum SheetDraft {
 
     // MARK: the pipeline
 
-    /// Engrave the live note stream into a complete sheet draft.
-    public static func draft(notes: [NoteEvent] /* live stream */, options: Options, pageWidth: Double = 88) -> Result {
+    /// Engrave the live note stream into a complete sheet draft. Pedal
+    /// spans arrive in ticks ( pedal down to release); they engrave as
+    /// Ped./release marks under the bass staff.
+    public static func draft(notes: [NoteEvent] /* live stream */, options: Options, pageWidth: Double = 88,
+                             pedals: [PedalSpan] = []) -> Result {
         // 1. Onsets to ticks, shifted so the first note lands at zero.
         var running = notes
             .sorted { ($0.onset, $0.pitch) < ($1.onset, $1.pitch) }
@@ -1040,6 +1106,16 @@ public enum SheetDraft {
             allGroups.append(BeamGroup(id: allGroups.count, track: 1,
                                        chordIndices: group.indices, up: group.up,
                                        flags: group.flags))
+        }
+
+        // 6b. Pedal marks ride in the bass track, placed by the layout.
+        // Their ticks live in the same pre-shift space as the notes, so
+        // they shift by the piece's earliest start like everything else.
+        if !pedals.isEmpty {
+            let shifted = pedals.map { PedalSpan(
+                startTick: max(0, $0.startTick - earliest),
+                endTick: max(1, $0.endTick - earliest)) }
+            bottomSymbols = insertingPedals(shifted, into: bottomSymbols)
         }
 
         // 7. Rows with column alignment.

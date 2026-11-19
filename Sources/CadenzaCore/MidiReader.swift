@@ -15,19 +15,25 @@ public struct MidiFile: Sendable {
     public var timeSignatures: [(tick: Int, signature: TimeSignature)]
     /// Key signature changes as (tick, key), ascending.
     public var keySignatures: [(tick: Int, key: KeySignature)]
+    /// Sustain-pedal spans in seconds, from CC64 down to its release. Notes
+    /// already carry the pedal's effect folded into their durations; this
+    /// keeps the pedal itself so the sheet can engrave real pedal lines.
+    public var sustainPedals: [(start: Double, end: Double)]
 
     public init(
         notes: [NoteEvent],
         ticksPerQuarter: Int,
         tempoChanges: [(tick: Int, bpm: Double)],
         timeSignatures: [(tick: Int, signature: TimeSignature)],
-        keySignatures: [(tick: Int, key: KeySignature)]
+        keySignatures: [(tick: Int, key: KeySignature)],
+        sustainPedals: [(start: Double, end: Double)] = []
     ) {
         self.notes = notes
         self.ticksPerQuarter = ticksPerQuarter
         self.tempoChanges = tempoChanges
         self.timeSignatures = timeSignatures
         self.keySignatures = keySignatures
+        self.sustainPedals = sustainPedals
     }
 
     /// The file's tempo at its start; 120 when it carries no tempo event.
@@ -196,6 +202,24 @@ public enum MidiReader {
             return seconds
         }
 
+        // sustain spans: each pedal-down opens one, its release closes it;
+        // a pedal still down at the end closes at the track end
+        var sustainPedals: [(start: Double, end: Double)] = []
+        var openPedal: Int?
+        for event in pedals {
+            if event.isDown {
+                if openPedal == nil { openPedal = event.tick }
+            } else if let start = openPedal {
+                if event.tick > start {
+                    sustainPedals.append((seconds(atTick: start), seconds(atTick: event.tick)))
+                }
+                openPedal = nil
+            }
+        }
+        if let start = openPedal {
+            sustainPedals.append((seconds(atTick: start), seconds(atTick: trackEndTick)))
+        }
+
         let notes = sustained
             .map { note in
                 NoteEvent(
@@ -212,7 +236,8 @@ public enum MidiReader {
             ticksPerQuarter: ticksPerQuarter,
             tempoChanges: tempos,
             timeSignatures: timeSignatures.sorted { $0.tick < $1.tick },
-            keySignatures: keySignatures.sorted { $0.tick < $1.tick }
+            keySignatures: keySignatures.sorted { $0.tick < $1.tick },
+            sustainPedals: sustainPedals.sorted { $0.start < $1.start }
         )
     }
 

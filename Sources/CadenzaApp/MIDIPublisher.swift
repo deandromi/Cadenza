@@ -28,7 +28,27 @@ final class MIDIPublisher {
             lastError = "MIDI source creation failed (\(status))"
             return
         }
+        advertiseForWebMIDI()
         ready = true
+    }
+
+    /// Makes the virtual source visible and legible to every client,
+    /// browsers included. Desktop apps accept the defaults, but Web MIDI
+    /// stacks are pickier: Chrome's implementation filters private
+    /// endpoints and older web MIDI code mishandles endpoints that default
+    /// to the MIDI 2.0 (UMP) protocol on modern macOS, so the source
+    /// declares itself explicitly as a public, named, MIDI 1.0 endpoint.
+    private func advertiseForWebMIDI() {
+        // speak MIDI 1.0, not the UMP default: the one difference that
+        // makes desktop DAWs see the source while websites do not
+        // (1 = kMIDIProtocol_1_0, the C enum's raw value)
+        MIDIObjectSetIntegerProperty(source, kMIDIPropertyProtocolID, 1)
+        // never private: private endpoints are hidden from enumeration
+        MIDIObjectSetIntegerProperty(source, kMIDIPropertyPrivate, 0)
+        // the metadata Web MIDI's device pickers display
+        MIDIObjectSetStringProperty(source, kMIDIPropertyManufacturer, "Cadenza" as CFString)
+        MIDIObjectSetStringProperty(source, kMIDIPropertyModel, "Cadenza keyboard" as CFString)
+        MIDIObjectSetStringProperty(source, kMIDIPropertyName, "Cadenza keyboard" as CFString)
     }
 
     /// A newly confirmed strike: sounds immediately.

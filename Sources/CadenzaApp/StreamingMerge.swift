@@ -41,6 +41,10 @@ struct StreamingMerge {
     /// content seconds covered by the most recent decode
     private(set) var coveredSeconds = 0.0
 
+    /// the tier's geometry: frame duration for anchor math, the segment span
+    /// for coverage, the phantom threshold for strike candidates
+    let plan: WindowPlan
+
     /// onsets re-decode within about 35 ms of their first appearance while
     /// a true re-attack on the same key is at least about 80 ms apart
     static let reOnsetThreshold = 0.06
@@ -52,8 +56,9 @@ struct StreamingMerge {
     /// for the same reason; the windows overlap either way.
     static let anchorMargin = 2.0
 
-    init(symbolCount: Int) {
+    init(symbolCount: Int, plan: WindowPlan = .standard) {
         anchors = Array(repeating: 0, count: symbolCount)
+        self.plan = plan
     }
 
     /// The merged note history in confirmation order, like the engine
@@ -76,7 +81,7 @@ struct StreamingMerge {
     func forcedStart(for windowBegin: Double) -> [Int] {
         anchors.map { anchor in
             let reference = anchor - Self.anchorMargin
-            return Int(max((reference - windowBegin) / WindowGeometry.frameDuration, 0))
+            return Int(max((reference - windowBegin) / plan.frameDuration, 0))
         }
     }
 
@@ -88,11 +93,11 @@ struct StreamingMerge {
     mutating func absorb(_ result: WindowResult) -> [Emission] {
         var emissions: [Emission] = []
         let begin = result.beginSeconds
-        coveredSeconds = begin + WindowGeometry.segmentSeconds
+        coveredSeconds = begin + plan.segmentSeconds
 
         for symbol in anchors.indices where symbol < result.lastP.count {
             if result.lastP[symbol] > 0 {
-                anchors[symbol] = begin + Double(result.lastP[symbol]) * WindowGeometry.frameDuration
+                anchors[symbol] = begin + Double(result.lastP[symbol]) * plan.frameDuration
             } else {
                 anchors[symbol] = 0
             }

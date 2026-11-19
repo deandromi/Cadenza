@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let engine = TranscriptionEngine()
     private let store = SessionStore(directory: SettingsKeys.sessionDirectory)
     private var sheetController: SheetMusicController?
+    /// the sheet section opened from an archived session's row
+    private var archiveSheetController: SheetMusicController?
     private var settingsController: SettingsController?
     private var cancellables: Set<AnyCancellable> = []
     private var sessionStartedAt: Date?
@@ -25,6 +27,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// of the last note already sent
     private var playbackCursor = 0
     private var playbackPreviousOnset = 0.0
+    /// A-B loop over the playing session, with the practice rate
+    private var loopEnabled = false
+    private var loopA: Double?
+    private var loopB: Double?
+    private var playbackRate = 1.0
+    /// play-along: the session being played while the engine listens
+    private var playAlongRecord: SessionRecord?
+    /// the note count the play-along started with (the score reads only
+    /// what was played during the run)
+    private var playAlongStartNoteCount = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // the practice screen is a paper world: it renders in light mode,
@@ -127,9 +139,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.screen?.setStatus(name.isEmpty ? "Session name cleared" : "Renamed to \"\(name)\"", error: false)
             },
             copySessionMIDI: { [weak self] record in self?.copySessionMIDI(record) },
-            exportSessionMIDI: { [weak self] record in self?.exportSession(record, audio: false) },
-            exportSessionAudio: { [weak self] record in self?.exportSession(record, audio: true) },
-            sessionHasAudio: { [weak self] record in self?.store.sessions.first(where: { $0.id == record.id })?.hasAudio ?? false }
+            openSessionSheet: { [weak self] record in self?.openSessionSheet(record) },
+            playAlong: { [weak self] record in self?.togglePlayAlong(of: record) },
+            exportSessionMIDI: { [weak self] record in self?.exportSession(record, choice: .midi) },
+            exportSessionAudio: { [weak self] record in self?.exportSession(record, choice: .audio) },
+            exportSessionBoth: { [weak self] record in self?.exportSession(record, choice: .both) },
+            sessionHasAudio: { [weak self] record in self?.store.sessions.first(where: { $0.id == record.id })?.hasAudio ?? false },
+            importMIDI: { [weak self] in self?.importMIDI() },
+            setLoopPoint: { [weak self] isA in self?.setLoopPoint(isA) },
+            toggleLoop: { [weak self] in self?.toggleLoop() },
+            loopActive: { [weak self] in self?.loopEnabled ?? false },
+            setPlaybackRate: { [weak self] rate in self?.playbackRate = rate }
         )
     }
 
@@ -163,9 +183,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         screen?.setStatus("Copied \(url.lastPathComponent) to the clipboard", error: false)
     }
 
-    /// Saves the session's MIDI file or audio recording to a chosen location.
-    private func exportSession(_ record: SessionRecord, audio: Bool) {
+    /// Saves the session's MIDI file, its audio recording, or both to a
+    /// chosen location, per what the export popover offered.
+    private func exportSession(_ record: SessionRecord, choice: ExportChoice) {
         guard let window else { return }
+        if case .both = choice {
+            exportBoth(record)
+            return
+        }
+        let audio = choice == .audio
         let source = audio ? store.audioURL(for: record) : store.midiURL(for: record)
         guard FileManager.default.fileExists(atPath: source.path) else {
             present(error: audio ? "This session kept no audio recording" : "Couldn't find the session's MIDI file")
@@ -181,10 +207,119 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try FileManager.default.removeItem(at: url)
                 }
                 try FileManager.default.copyItem(at: source, to: url)
+                self.screen?.setStatus("Saved \(url.lastPathComponent)", error: false)
             } catch {
                 self.present(error: error.localizedDescription)
             }
         }
+    }
+
+    /// Both files at once: one folder choice, then MIDI and audio copy in
+    /// under the session's name.
+    private func exportBoth(_ record: SessionRecord) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Export here"
+        panel.message = "Choose where both files go"
+        panel.beginSheetModal(for: window!) { response in
+            guard response == .OK, let folder = panel.url else { return }
+            let base = (record.name?.isEmpty == false ? record.name! : record.folderName ?? "Cadenza session")
+            do {
+                var saved = 0
+                let midi = self.store.midiURL(for: record)
+                if FileManager.default.fileExists(atPath: midi.path) {
+                    let target = folder.appendingPathComponent("\(base).mid")
+                    if FileManager.default.fileExists(atPath: target.path) {
+                        try FileManager.default.removeItem(at: target)
+                    }
+                    try FileManager.default.copyItem(at: midi, to: target)
+                    saved += 1
+                }
+                let audio = self.store.audioURL(for: record)
+                if FileManager.default.fileExists(atPath: audio.path) {
+                    let target = folder.appendingPathComponent("\(base).wav")
+                    if FileManager.default.fileExists(atPath: target.path) {
+                        try FileManager.default.removeItem(at: target)
+                    }
+                    try FileManager.default.copyItem(at: audio, to: target)
+                    saved += 1
+                }
+                self.screen?.setStatus(saved == 2 ? "Saved \(base).mid and \(base).wav" : "Saved \(saved) file(s) to \(folder.lastPathComponent)", error: false)
+            } catch {
+                self.present(error: error.localizedDescription)
+            }
+        }
+    }
+
+    /// Imports a MIDI file as a session: it lands in the archive ready to
+    /// play, engrave or practice against.
+    private func importMIDI() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.midi]
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Import"
+        panel.beginSheetModal(for: window.unsafelyUnwrapped) { response in
+            guard response == .OK, let url = panel.url else { return }
+            let name = url.deletingPathExtension().lastPathComponent
+            if let record = self.store.importSession(from: url, name: name) {
+                self.refreshSessions()
+                self.screen?.setStatus("Imported \(name) (\(record.noteCount) notes)", error: false)
+            } else {
+                self.present(error: "Couldn't read \(url.lastPathComponent) — no notes in it")
+            }
+        }
+    }
+
+    /// Opens the sheet section on a stored session, pedal spans included.
+    private func openSessionSheet(_ record: SessionRecord) {
+        guard let notes = store.notes(for: record) else {
+            present(error: "Couldn't read the session file")
+            return
+        }
+        let controller = SheetMusicController(
+            notes: notes,
+            pedals: store.pedalSpans(for: record))
+        archiveSheetController = controller
+        controller.show(relativeTo: window)
+    }
+
+    // MARK: loop and rate
+
+    /// Marks the loop's start (true) or end (false) at the playing moment.
+    private func setLoopPoint(_ isA: Bool) {
+        guard playingRecord != nil else { return }
+        let moment = currentPlaybackMoment()
+        if isA {
+            loopA = moment
+            screen?.setStatus("Loop start at \(sessionTimeString(moment))", error: false)
+        } else {
+            loopB = moment
+            if let a = loopA, moment > a {
+                screen?.setStatus("Loop \(sessionTimeString(a)) – \(sessionTimeString(moment)), press Loop to repeat it", error: false)
+            } else {
+                screen?.setStatus("Loop end at \(sessionTimeString(moment)), set a start before it", error: false)
+            }
+        }
+        refreshSessions()
+    }
+
+    /// The playing moment: the onset of the last note already sent.
+    private func currentPlaybackMoment() -> Double {
+        let notes = sortedPlaybackNotes() ?? []
+        let index = min(max(0, playbackCursor - 1), max(0, notes.count - 1))
+        return notes.isEmpty ? 0 : notes[index].onset
+    }
+
+    private func toggleLoop() {
+        guard let a = loopA, let b = loopB, b > a else {
+            present(error: "Set loop points A and B first, B after A")
+            return
+        }
+        loopEnabled.toggle()
+        screen?.setStatus(loopEnabled ? "Loop on, \(Int(playbackRate * 100))% speed" : "Loop off", error: false)
+        refreshSessions()
     }
 
     /// The archive lands on the panel after every change, with whoever is
@@ -263,6 +398,84 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startPlayback(from: record, cursor: 0, previousOnset: 0)
     }
 
+    /// Play-along: the session plays through the keys while the engine
+    /// listens, so the player performs against their own or an imported
+    /// take. When the playback ends (first runs are unscored), the played
+    /// notes score against the reference's onsets.
+    private func togglePlayAlong(of record: SessionRecord) {
+        if playAlongRecord?.id == record.id {
+            stopPlayback()
+            refreshSessions()
+            return
+        }
+        guard !engine.isRunning else {
+            present(error: "Stop listening before playing along")
+            return
+        }
+        stopPlayback()
+        guard store.notes(for: record) != nil else {
+            present(error: "Couldn't read the session file")
+            return
+        }
+        guard let assets = Self.locateAssets() else {
+            present(error: "Model files not found next to the app")
+            return
+        }
+        playAlongRecord = record
+        playAlongStartNoteCount = engine.notes.count
+        screen?.panelPlayAlong(true)
+        engine.start(tensorsDir: assets.tensors, modelURL: assets.model)
+        sessionStartedAt = Date()
+        screen?.sessionStarted()
+        screen?.syncTransport()
+        sheetController?.reset()
+        startPlayback(from: record, cursor: 0, previousOnset: 0)
+        present(error: engine.lastError)
+    }
+
+    /// Scores a finished play-along: every note the player struck matches
+    /// the nearest same-pitch reference note within 150 ms; the fit is the
+    /// match rate, the timing the mean of the struck-too-late amounts.
+    private func scorePlayAlong() {
+        let played = Array(engine.notes.dropFirst(min(playAlongStartNoteCount, engine.notes.count)))
+        guard playAlongRecord != nil, !played.isEmpty else {
+            screen?.setStatus("Play-along ended without any played notes", error: false)
+            return
+        }
+        guard let reference = playAlongRecord.flatMap({ store.notes(for: $0) }) else {
+            screen?.setStatus("Couldn't reread the reference notes", error: true)
+            return
+        }
+        var used = Set<Int>()
+        var matched = 0
+        var deltas: [Double] = []
+        for note in played.sorted(by: { $0.onset < $1.onset }) {
+            var best = -1
+            var bestDelta = 0.15
+            for (index, ref) in reference.enumerated() where !used.contains(index) && ref.pitch == note.pitch {
+                let delta = note.onset - ref.onset
+                if abs(delta) <= abs(bestDelta) || best == -1 {
+                    if abs(delta) <= 0.15 {
+                        bestDelta = delta
+                        best = index
+                    }
+                }
+            }
+            if best >= 0 {
+                used.insert(best)
+                matched += 1
+                deltas.append(bestDelta)
+            }
+        }
+        let fit = Double(matched) / Double(played.count)
+        var line = String(format: "Fit %.0f%% (%d of %d notes)", fit * 100, matched, played.count)
+        if !deltas.isEmpty {
+            let meanAll = deltas.reduce(0, +) / Double(deltas.count)
+            line += String(format: ", %.0f ms %@ average", abs(meanAll) * 1000, meanAll >= 0 ? "late" : "early")
+        }
+        screen?.setStatus(line, error: false)
+    }
+
     /// The transport button under the timer: with a session playing it
     /// pauses, when paused it resumes from the cursor, and with nothing
     /// playing it starts the newest session in the archive.
@@ -286,9 +499,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshSessions()
     }
 
+    /// The sorted notes of a session, for the loop's moment bookkeeping.
+    private func sortedPlaybackNotes() -> [NoteEvent]? {
+        guard let record = playingRecord, let notes = store.notes(for: record) else { return nil }
+        return notes.sorted(by: { $0.onset < $1.onset })
+    }
+
     /// The playback loop, resumable: `cursor` is the next note to send and
     /// `previousOnset` the onset of the note before it, so a paused session
-    /// continues exactly where it stopped.
+    /// continues exactly where it stopped. With an A-B loop on, reaching B
+    /// restarts from A, and the waits stretch by the practice rate.
     private func startPlayback(from record: SessionRecord, cursor: Int, previousOnset: Double) {
         guard let notes = store.notes(for: record) else {
             stopPlayback()
@@ -296,13 +516,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let sorted = notes.sorted(by: { $0.onset < $1.onset })
+        let rate = max(0.25, min(2.0, playbackRate))
+        let looping = loopEnabled, loopA = loopA, loopB = loopB
         screen?.sessionStopped()
         playbackTask = Task { [weak self] in
             var previous = previousOnset
             var index = cursor
             while index < sorted.count {
                 let note = sorted[index]
-                let wait = max(0, note.onset - previous)
+                if looping, let b = loopB, let a = loopA, note.onset >= b {
+                    // the loop's end: restart from the first note at or
+                    // after A, keeping the loop's own lead-in silence
+                    if let start = sorted.firstIndex(where: { $0.onset >= a }) {
+                        index = start
+                        previous = max(0, sorted[index].onset - 0.4)
+                        continue
+                    }
+                }
+                let wait = max(0, note.onset - previous) / rate
                 previous = note.onset
                 if wait > 0 {
                     try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
@@ -315,8 +546,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.screen?.noteStruck(note)
                 self?.screen?.setNoteCount(self?.playbackCount ?? 0)
                 let held = note
+                let heldFor = max(held.duration, 0.05) / rate
                 Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: UInt64(max(held.duration, 0.05) * 1_000_000_000))
+                    try? await Task.sleep(nanoseconds: UInt64(heldFor * 1_000_000_000))
                     // a release belongs to the run that struck it: when the
                     // outer task was cancelled (pause or stop), let it go
                     guard self?.playbackTask?.isCancelled == false else { return }
@@ -328,9 +560,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // let the last note ring, then hand the keys back
             try? await Task.sleep(nanoseconds: 700_000_000)
             guard !Task.isCancelled else { return }
-            self?.stopPlayback()
-            self?.refreshSessions()
+            self?.playbackFinished()
         }
+    }
+
+    /// A playback ran to its end: stop the machinery; a play-along scores
+    /// itself before the keys come back.
+    private func playbackFinished() {
+        if playAlongRecord != nil {
+            scorePlayAlong()
+        }
+        stopPlayback()
+        refreshSessions()
     }
 
     private func stopPlayback() {
@@ -341,6 +582,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             publisher.panic()
         }
         playingRecord = nil
+        // loop points belong to the stopped playback; the next one starts clean
+        loopA = nil
+        loopB = nil
+        loopEnabled = false
+        // a play-along takes its listening down with it
+        if playAlongRecord != nil {
+            playAlongRecord = nil
+            screen?.panelPlayAlong(false)
+            if engine.isRunning {
+                engine.stop()
+                publisher.panic()
+                screen?.sessionStopped()
+                screen?.syncTransport()
+                sheetController?.sessionEnded()
+                sessionStartedAt = nil
+            }
+        }
         screen?.sessionStopped()
     }
 

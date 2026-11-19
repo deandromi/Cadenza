@@ -59,6 +59,36 @@ if let index = CommandLine.arguments.firstIndex(of: "--replay-stream"), CommandL
     exit(0)
 }
 
+if let index = CommandLine.arguments.firstIndex(of: "--eval"), CommandLine.arguments.count > index + 2 {
+    SmokeMain.runEval(
+        audioPath: CommandLine.arguments[index + 1],
+        midiPath: CommandLine.arguments[index + 2],
+        deviceRate: CommandLine.arguments.count > index + 3 ? Double(CommandLine.arguments[index + 3]) ?? 48000 : 48000
+    )
+    exit(0)
+}
+
+if let index = CommandLine.arguments.firstIndex(of: "--probe-short"), CommandLine.arguments.count > index + 1 {
+    // --probe-short <audio.f32> [rate] [crops] [segmentSeconds] [modelName]
+    let seconds = CommandLine.arguments.count > index + 4 ? Double(CommandLine.arguments[index + 4]) ?? 4.0 : 4.0
+    let modelName = CommandLine.arguments.count > index + 5 ? CommandLine.arguments[index + 5] : "TranskunBackbone.mlpackage"
+    let plan = WindowPlan(
+        segmentSeconds: seconds,
+        padSeconds: min(1.0, seconds / 4),
+        streamingStep: 0.3,
+        streamingWarmup: 0.45,
+        ringHistorySeconds: seconds * 3
+    )
+    SmokeMain.runProbeShort(
+        audioPath: CommandLine.arguments[index + 1],
+        deviceRate: CommandLine.arguments.count > index + 2 ? Double(CommandLine.arguments[index + 2]) ?? 44100 : 44100,
+        crops: CommandLine.arguments.count > index + 3 ? Int(CommandLine.arguments[index + 3]) ?? 6 : 6,
+        plan: plan,
+        modelURL: SmokeMain.modelByName(modelName)!
+    )
+    exit(0)
+}
+
 if let index = CommandLine.arguments.firstIndex(of: "--synth-midi"), CommandLine.arguments.count > index + 2 {
     SmokeMain.runSynthMidi(
         path: CommandLine.arguments[index + 1],

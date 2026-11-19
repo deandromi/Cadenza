@@ -21,13 +21,103 @@ struct PanelTransport {
     /// Whether playback is paused right now.
     var playbackPaused: () -> Bool = { false }
     /// Per-session actions, revealed when the panel expands: rename the
-    /// session, copy its MIDI file to the clipboard, export MIDI or audio.
+    /// session, copy its MIDI file to the clipboard, open its sheet, play
+    /// along with it, export MIDI, audio or both.
     var renameSession: (SessionRecord, String) -> Void = { _, _ in }
     var copySessionMIDI: (SessionRecord) -> Void = { _ in }
+    var openSessionSheet: (SessionRecord) -> Void = { _ in }
+    var playAlong: (SessionRecord) -> Void = { _ in }
     var exportSessionMIDI: (SessionRecord) -> Void = { _ in }
     var exportSessionAudio: (SessionRecord) -> Void = { _ in }
+    var exportSessionBoth: (SessionRecord) -> Void = { _ in }
     /// Whether the session folder holds an audio recording.
     var sessionHasAudio: (SessionRecord) -> Bool = { _ in false }
+    /// Import a MIDI file as a session.
+    var importMIDI: () -> Void = { }
+    /// A-B looping over the playing session: marks at the current moment,
+    /// the loop toggle, and the practice rate.
+    var setLoopPoint: (Bool) -> Void = { _ in }   // true = A, false = B
+    var toggleLoop: () -> Void = { }
+    var loopActive: () -> Bool = { false }
+    var setPlaybackRate: (Double) -> Void = { _ in }
+}
+
+/// What an export hands over, chosen in the export popover.
+enum ExportChoice {
+    case midi
+    case audio
+    case both
+}
+
+/// The export choice popover: one glass lens asking what a session hands
+/// over — its MIDI file, its audio recording, or both.
+@MainActor
+final class ExportChoicesPopover: NSPopover {
+    private let onChoice: (ExportChoice) -> Void
+    private let hasAudio: Bool
+
+    init(hasAudio: Bool, onChoice: @escaping (ExportChoice) -> Void) {
+        self.hasAudio = hasAudio
+        self.onChoice = onChoice
+        super.init()
+        behavior = .transient
+        let controller = NSViewController()
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 190, height: hasAudio ? 118 : 82))
+        let backdrop = makeGlassBackdrop(cornerRadius: 14, interactive: false)
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(backdrop)
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 2
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+        for (title, choice) in [("MIDI file", ExportChoice.midi)]
+            + (hasAudio ? [("Audio recording", ExportChoice.audio)] : [])
+            + (hasAudio ? [("MIDI and audio", ExportChoice.both)] : []) {
+            let button = NSButton(title: title, target: self, action: #selector(chose(_:)))
+            button.isBordered = false
+            button.font = .systemFont(ofSize: 13, weight: .medium)
+            button.contentTintColor = PaperTheme.ink
+            button.identifier = NSUserInterfaceItemIdentifier(switchChoice(choice))
+            stack.addArrangedSubview(button)
+        }
+        NSLayoutConstraint.activate([
+            backdrop.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            backdrop.topAnchor.constraint(equalTo: root.topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: root.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+        controller.view = root
+        contentViewController = controller
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    private func switchChoice(_ choice: ExportChoice) -> String {
+        switch choice {
+        case .midi: return "midi"
+        case .audio: return "audio"
+        case .both: return "both"
+        }
+    }
+
+    @objc private func chose(_ sender: NSButton) {
+        let id = sender.identifier?.rawValue ?? "midi"
+        performClose(nil)
+        switch id {
+        case "audio": onChoice(.audio)
+        case "both": onChoice(.both)
+        default: onChoice(.midi)
+        }
+    }
 }
 
 /// Shot diagnostics shared by every screen carrying the practice chrome:
@@ -181,9 +271,28 @@ final class ControlPanelLens: NSView {
     )
     private let listenButton = NSButton(title: "New session", target: nil, action: nil)
     private let exportButton = NSButton(title: "Export", target: nil, action: nil)
+    private let importButton = NSButton(title: "Import MIDI", target: nil, action: nil)
     /// the transport under the timer: play/pause the session in hand, stop it
     private let playPauseButton = NSButton(title: "Play", target: nil, action: nil)
     private let stopPlaybackButton = NSButton(title: "Stop", target: nil, action: nil)
+    /// the loop row, visible while a session plays: marks, toggle, rate
+    private let loopAButton = NSButton(title: "Set A", target: nil, action: nil)
+    private let loopBButton = NSButton(title: "Set B", target: nil, action: nil)
+    private let loopToggleButton = NSButton(title: "Loop", target: nil, action: nil)
+    private let ratePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private var loopRow: NSStackView?
+    /// the practice summary, revealed when the panel expands
+    private let practiceCaption = makeInkLabel(
+        "Practice",
+        font: .systemFont(ofSize: 11, weight: .medium),
+        color: PaperTheme.secondaryInk
+    )
+    private let practiceLabel = makeInkLabel(
+        "No practice recorded yet",
+        font: .systemFont(ofSize: 12, weight: .regular),
+        color: PaperTheme.secondaryInk
+    )
+    private var importButtons: NSStackView!
     private var latestSessions: [SessionRecord] = []
     private var latestPlaying: SessionRecord?
     /// true while the panel shows the per-session action rows
@@ -204,11 +313,16 @@ final class ControlPanelLens: NSView {
         // views and their relationships are built only after super.init on
         // this OS build: mutation before it orphans subtrees from the live
         // layout engine
-        for button in [listenButton, exportButton, playPauseButton, stopPlaybackButton] {
+        for button in [listenButton, exportButton, importButton, playPauseButton, stopPlaybackButton, loopAButton, loopBButton, loopToggleButton] {
             button.isBordered = false
-            button.font = .systemFont(ofSize: 13, weight: .medium)
+            button.font = .systemFont(ofSize: loopAButton == button ? 11 : 13, weight: .medium)
             button.contentTintColor = PaperTheme.ink
         }
+        ratePopup.addItems(withTitles: ["100%", "75%", "50%"])
+        ratePopup.font = .systemFont(ofSize: 11, weight: .medium)
+        ratePopup.contentTintColor = PaperTheme.ink
+        ratePopup.target = self
+        ratePopup.action = #selector(rateChanged)
 
         // on this OS build, pinning a view never auto-disables its
         // autoresizing mask: do it by hand or the view stays at zero
@@ -227,20 +341,38 @@ final class ControlPanelLens: NSView {
         let buttons = NSStackView(views: [listenButton, exportButton])
         buttons.orientation = .horizontal
         buttons.spacing = 20
+        importButtons = NSStackView(views: [importButton])
+        importButtons.orientation = .horizontal
+        importButtons.spacing = 20
         let playbackButtons = NSStackView(views: [playPauseButton, stopPlaybackButton])
         playbackButtons.orientation = .horizontal
         playbackButtons.spacing = 20
         playbackButtons.alignment = .firstBaseline
+        let loopRow = NSStackView(views: [loopAButton, loopBButton, loopToggleButton, ratePopup])
+        loopRow.orientation = .horizontal
+        loopRow.spacing = 10
+        loopRow.alignment = .firstBaseline
+        loopRow.isHidden = true
+        self.loopRow = loopRow
         addSubview(backdrop)
         addSubview(rows)
         rows.addArrangedSubview(Self.captionedRow("Session", timeLabel))
         rows.addArrangedSubview(playbackButtons)
+        rows.addArrangedSubview(loopRow)
         rows.addArrangedSubview(Self.captionedRow("Notes", countLabel))
         rows.addArrangedSubview(Self.captionedRow("Level", levelLine))
         rows.addArrangedSubview(divider)
+        rows.addArrangedSubview(practiceCaption)
+        rows.addArrangedSubview(practiceLabel)
         rows.addArrangedSubview(sessionsCaption)
         rows.addArrangedSubview(sessionRows)
         rows.addArrangedSubview(buttons)
+        rows.addArrangedSubview(importButtons)
+        // the docked panel stays compact: unfolding reveals the practice
+        // summary and the import action
+        importButtons.isHidden = true
+        practiceCaption.isHidden = true
+        practiceLabel.isHidden = true
         NSLayoutConstraint.activate([
             backdrop.leadingAnchor.constraint(equalTo: leadingAnchor),
             backdrop.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -258,10 +390,18 @@ final class ControlPanelLens: NSView {
         listenButton.action = #selector(listenTapped)
         exportButton.target = self
         exportButton.action = #selector(exportTapped)
+        importButton.target = self
+        importButton.action = #selector(importTapped)
         playPauseButton.target = self
         playPauseButton.action = #selector(playPauseTapped)
         stopPlaybackButton.target = self
         stopPlaybackButton.action = #selector(stopPlaybackTapped)
+        loopAButton.target = self
+        loopAButton.action = #selector(loopATapped)
+        loopBButton.target = self
+        loopBButton.action = #selector(loopBTapped)
+        loopToggleButton.target = self
+        loopToggleButton.action = #selector(loopToggleTapped)
         syncTransport()
     }
 
@@ -304,10 +444,16 @@ final class ControlPanelLens: NSView {
         let playing = transport.playingSession() != nil
         let paused = transport.playbackPaused()
         playPauseButton.title = playing ? (paused ? "Resume" : "Pause") : "Play"
-        playPauseButton.isEnabled = !listening && (playing || !latestSessions.isEmpty)
+        playPauseButton.isEnabled = listening ? playAlongRunning : (playing || !latestSessions.isEmpty)
         playPauseButton.contentTintColor = playing ? PaperTheme.stamp : PaperTheme.ink
         stopPlaybackButton.isEnabled = playing
+        loopRow?.isHidden = !(playing && expanded)
+        loopToggleButton.contentTintColor = transport.loopActive() ? PaperTheme.stamp : PaperTheme.ink
     }
+
+    /// true while a play-along (listening and playing together) runs; the
+    /// play/pause button serves it too.
+    var playAlongRunning = false
 
     func setSession(time: String, notes: String, level: Double, sounding: Bool) {
         timeLabel.stringValue = time
@@ -318,9 +464,18 @@ final class ControlPanelLens: NSView {
 
     /// Rebuilds the archive list: one quiet row per preserved session, the
     /// playing one carrying the stamp, none of them crowding the panel.
+    /// Also recomputes the practice summary and resets the loop buttons
+    /// when the playing session changed.
     func setSessions(_ sessions: [SessionRecord], playing: SessionRecord?) {
+        let playingChanged = playing?.id != latestPlaying?.id
         latestSessions = sessions
         latestPlaying = playing
+        practiceLabel.stringValue = Self.practiceSummary(sessions)
+        if playingChanged {
+            for button in [loopAButton, loopBButton, loopToggleButton] {
+                button.contentTintColor = PaperTheme.ink
+            }
+        }
         let playingID = playing?.id
         for view in sessionRows.arrangedSubviews {
             sessionRows.removeArrangedSubview(view)
@@ -357,6 +512,8 @@ final class ControlPanelLens: NSView {
                 for (title, action) in [
                     ("Rename", #selector(renameTapped(_:))),
                     ("Copy MIDI", #selector(copyTapped(_:))),
+                    ("Sheet", #selector(sheetTapped(_:))),
+                    ("Play along", #selector(playAlongTapped(_:))),
                     ("Export", #selector(exportSessionTapped(_:))),
                 ] {
                     let button = NSButton(title: title, target: self, action: action)
@@ -382,6 +539,39 @@ final class ControlPanelLens: NSView {
         syncTransport()
     }
 
+    /// The practice summary: time and note count of today, then the week.
+    static func practiceSummary(_ sessions: [SessionRecord]) -> String {
+        guard !sessions.isEmpty else { return "No practice recorded yet" }
+        let calendar = Calendar.current
+        let startOfToday = calendar.startOfDay(for: Date())
+        let startOfWeek = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: startOfToday)) ?? startOfToday
+        var todaySeconds = 0.0
+        var todayNotes = 0
+        var weekSeconds = 0.0
+        var weekNotes = 0
+        var weekSessions = 0
+        for session in sessions {
+            if session.startedAt >= startOfWeek {
+                weekSeconds += session.durationSeconds
+                weekNotes += session.noteCount
+                weekSessions += 1
+            }
+            if session.startedAt >= startOfToday {
+                todaySeconds += session.durationSeconds
+                todayNotes += session.noteCount
+            }
+        }
+        func minutes(_ seconds: Double) -> String {
+            Int(seconds / 60) >= 60
+                ? "\(Int(seconds / 3600)) h \(Int(seconds / 60) % 60) min"
+                : "\(max(1, Int(seconds / 60))) min"
+        }
+        if todaySeconds < 1, weekSeconds < 1 { return "No practice recorded yet" }
+        var line = todaySeconds >= 1 ? "Today \(minutes(todaySeconds)) · \(todayNotes) notes" : "Nothing today"
+        line += weekSessions > 0 ? " · week \(minutes(weekSeconds)) · \(weekNotes) notes" : ""
+        return line
+    }
+
     /// A tap on the panel's paper (the window delivers mouse events to the
     /// deepest view, so the buttons keep their own clicks as named
     /// shortcuts) asks the screen to open the big centered glass panel.
@@ -396,6 +586,9 @@ final class ControlPanelLens: NSView {
     func setExpanded(_ newValue: Bool) {
         guard expanded != newValue else { return }
         expanded = newValue
+        importButtons.isHidden = !newValue
+        practiceCaption.isHidden = !newValue
+        practiceLabel.isHidden = !newValue
         setSessions(latestSessions, playing: latestPlaying)
     }
 
@@ -423,32 +616,55 @@ final class ControlPanelLens: NSView {
         transport.copySessionMIDI(record)
     }
 
-    /// Export offers the MIDI file always, the audio recording when the
-    /// session kept one, as a small popover at the button.
+    /// Export asks what to hand over in the glass choice popover: the MIDI
+    /// file always, the audio recording when the session kept one, or both.
     @objc private func exportSessionTapped(_ sender: NSButton) {
         guard let record = record(for: sender) else { return }
-        let menu = NSMenu()
-        let midi = menu.addItem(withTitle: "MIDI file", action: #selector(exportMIDIChosen(_:)), keyEquivalent: "")
-        midi.target = self
-        midi.identifier = NSUserInterfaceItemIdentifier(record.id.uuidString)
-        if transport.sessionHasAudio(record) {
-            let audio = menu.addItem(withTitle: "Audio (.wav)", action: #selector(exportAudioChosen(_:)), keyEquivalent: "")
-            audio.target = self
-            audio.identifier = NSUserInterfaceItemIdentifier(record.id.uuidString)
+        let popover = ExportChoicesPopover(hasAudio: transport.sessionHasAudio(record)) { [weak self] choice in
+            guard let self else { return }
+            switch choice {
+            case .midi: self.transport.exportSessionMIDI(record)
+            case .audio: self.transport.exportSessionAudio(record)
+            case .both: self.transport.exportSessionBoth(record)
+            }
         }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY - 6), in: sender)
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
     }
 
-    @objc private func exportMIDIChosen(_ sender: NSMenuItem) {
-        guard let identifier = sender.identifier?.rawValue,
-              let record = latestSessions.first(where: { $0.id.uuidString == identifier }) else { return }
-        transport.exportSessionMIDI(record)
+    @objc private func sheetTapped(_ sender: NSButton) {
+        guard let record = record(for: sender) else { return }
+        transport.openSessionSheet(record)
     }
 
-    @objc private func exportAudioChosen(_ sender: NSMenuItem) {
-        guard let identifier = sender.identifier?.rawValue,
-              let record = latestSessions.first(where: { $0.id.uuidString == identifier }) else { return }
-        transport.exportSessionAudio(record)
+    @objc private func playAlongTapped(_ sender: NSButton) {
+        guard let record = record(for: sender) else { return }
+        transport.playAlong(record)
+    }
+
+    @objc private func importTapped() {
+        transport.importMIDI()
+    }
+
+    // MARK: loop and rate
+
+    @objc private func loopATapped() {
+        transport.setLoopPoint(true)
+        loopAButton.contentTintColor = PaperTheme.stamp
+    }
+
+    @objc private func loopBTapped() {
+        transport.setLoopPoint(false)
+        loopBButton.contentTintColor = PaperTheme.stamp
+    }
+
+    @objc private func loopToggleTapped() {
+        transport.toggleLoop()
+        loopToggleButton.contentTintColor = transport.loopActive() ? PaperTheme.stamp : PaperTheme.ink
+    }
+
+    @objc private func rateChanged() {
+        let title = ratePopup.titleOfSelectedItem ?? "100%"
+        transport.setPlaybackRate((Double(title.dropLast()) ?? 100) / 100.0)
     }
 
     /// Play starts the newest session when nothing is playing; while one
