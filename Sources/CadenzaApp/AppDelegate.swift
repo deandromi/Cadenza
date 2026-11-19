@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let publisher = MIDIPublisher()
     private let engine = TranscriptionEngine()
+    private var sheetController: SheetMusicController?
     private var cancellables: Set<AnyCancellable> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -79,7 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let root = NSView(frame: NSRect(origin: .zero, size: size))
         root.autoresizingMask = [.width, .height]
 
-        let screen = PracticeScreenView(transport: makeTransport())
+        let screen = PracticeScreenView(
+            transport: makeTransport(),
+            onSheetMusic: { [weak self] in self?.openSheetMusic() }
+        )
         root.addSubview(screen)
         NSLayoutConstraint.activate([
             screen.leadingAnchor.constraint(equalTo: root.leadingAnchor),
@@ -138,6 +142,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.present(error: error.localizedDescription)
             }
         }
+    }
+
+    // MARK: sheet music
+
+    /// Opens the sheet section on the current session: the choices step
+    /// frames the performance, then the engraver cuts it into measures.
+    private func openSheetMusic() {
+        guard !engine.notes.isEmpty else {
+            screen?.setStatus("Play something first, then make a sheet", error: false)
+            return
+        }
+        let notes = engine.notes
+        // chord symbols from the engine's sheet, one per change
+        var chords: [(seconds: Double, symbol: String)] = []
+        var lastSymbol = ""
+        for entry in engine.sheet.sorted(by: { $0.onset < $1.onset }) {
+            guard entry.chord.symbol != lastSymbol else { continue }
+            chords.append((entry.onset, entry.chord.symbol))
+            lastSymbol = entry.chord.symbol
+        }
+        let controller = SheetMusicController(notes: notes, chords: chords)
+        sheetController = controller
+        controller.show(relativeTo: window)
     }
 
     private func present(error: String?) {

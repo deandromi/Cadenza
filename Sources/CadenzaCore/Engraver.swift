@@ -104,6 +104,12 @@ public enum Engraver {
     /// toward their own pitch classes, so a piece that ends on C reads
     /// C major even when the harmony spent the middle on G7.
     public static func inferKey(_ notes: [NoteEvent]) -> KeySignature {
+        scoreKeyCandidates(notes).first ?? KeySignature(tonic: 0, isMinor: false)
+    }
+
+    /// Every key with its evidence score, best first: the alternatives the
+    /// app's choices step offers next to the inferred one.
+    public static func scoreKeyCandidates(_ notes: [NoteEvent]) -> [KeySignature] {
         let majorProfile: [Double] = [
             6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
         ]
@@ -132,14 +138,12 @@ public enum Engraver {
         let firstGroup = struck.first?.classes
         let lastGroup = struck.last?.classes
 
-        var bestTonic = 0
-        var bestMinor = false
-        var bestScore = -2.0
+        var ranked: [(key: KeySignature, score: Double)] = []
         for tonic in 0..<12 {
             var bias = 1.0
             if let firstGroup, firstGroup.contains(tonic) { bias *= 1.05 }
             if let lastGroup, lastGroup.contains(tonic) { bias *= 1.15 }
-            let scale = { (steps: [Int]) -> Double in
+            func scalePenalty(_ steps: [Int]) -> Double {
                 var outOfScale = 0.0
                 for pc in 0..<12 where !steps.contains((pc - tonic + 12) % 12) {
                     outOfScale += histogram[pc]
@@ -147,20 +151,14 @@ public enum Engraver {
                 return total > 0 ? exp(-1.5 * outOfScale / total) : 1.0
             }
             let rotated = (0..<12).map { histogram[($0 + tonic) % 12] }
-            let major = correlation(rotated, majorProfile) * bias * scale(majorScale)
-            let minor = correlation(rotated, minorProfile) * bias * scale(minorScale)
-            if major > bestScore {
-                bestScore = major
-                bestTonic = tonic
-                bestMinor = false
-            }
-            if minor > bestScore {
-                bestScore = minor
-                bestTonic = tonic
-                bestMinor = true
-            }
+            let major = correlation(rotated, majorProfile) * bias * scalePenalty(majorScale)
+            let minor = correlation(rotated, minorProfile) * bias * scalePenalty(minorScale)
+            ranked.append((KeySignature(tonic: tonic, isMinor: false), major))
+            ranked.append((KeySignature(tonic: tonic, isMinor: true), minor))
         }
-        return KeySignature(tonic: bestTonic, isMinor: bestMinor)
+        return ranked
+            .sorted { $0.score > $1.score }
+            .map(\.key)
     }
 
     private static func correlation(_ a: [Double], _ b: [Double]) -> Double {
@@ -328,14 +326,33 @@ public enum Engraver {
         notes: [NoteEvent],
         chords: [(seconds: Double, symbol: String)] = []
     ) -> Score? {
+        engraveApplying(notes: notes, chords: chords, framing: nil)
+    }
+
+    /// The same engraving with the framing the user chose in the choices
+    /// step instead of the inferred one: only the framing differs, the
+    /// quantization and measure cutting run identically.
+    public static func engrave(
+        notes: [NoteEvent],
+        chords: [(seconds: Double, symbol: String)] = [],
+        framing chosen: ScoreFraming
+    ) -> Score? {
+        engraveApplying(notes: notes, chords: chords, framing: chosen)
+    }
+
+    private static func engraveApplying(
+        notes: [NoteEvent],
+        chords: [(seconds: Double, symbol: String)],
+        framing chosen: ScoreFraming?
+    ) -> Score? {
         // the engraver owns its grouping: inference reads onset groups, so
         // a raw note list from any source becomes grouped first
         let grouped = groupedForInference(notes)
         guard let first = grouped.map(\.onset).min() else { return nil }
 
-        let tempo = inferTempo(grouped)
-        let key = inferKey(grouped)
-        let timeSignature = inferTimeSignature(grouped, tempo: tempo)
+        let tempo = chosen?.beatsPerMinute ?? inferTempo(grouped)
+        let key = chosen?.key ?? inferKey(grouped)
+        let timeSignature = chosen?.timeSignature ?? inferTimeSignature(grouped, tempo: tempo)
         let quarterSeconds = 60.0 / tempo
 
         // raw ticks relative to the first note, snapped to the sixteenth
@@ -412,16 +429,21 @@ public enum Engraver {
             ))
         }
 
-        let measures = noteGroups.keys.sorted().map { index in
+        // every measure index in the span exists, even the empty ones: a
+        // two-bar rest still prints as two measures of rests
+        let indices = noteGroups.keys.sorted()
+        let measures: [ScoreMeasure] = indices.isEmpty ? [] : (indices.first!...indices.last!).map { index in
             ScoreMeasure(
                 index: index,
                 startTick: index * measureTicks + phase,
-                notes: noteGroups[index]!.sorted { ($0.onsetTick, $0.pitch) < ($1.onsetTick, $1.pitch) }
+                notes: (noteGroups[index] ?? []).sorted { ($0.onsetTick, $0.pitch) < ($1.onsetTick, $1.pitch) }
             )
         }
         let chordSymbols = chords
             .sorted { $0.0 < $1.0 }
-            .map { ScoreChordSymbol(onsetTick: tick($0.0), symbol: $0.1) }
+            // chord ticks live in the same phase-adjusted space as the
+            // measures, or a pickup shifts them out of every measure
+            .map { ScoreChordSymbol(onsetTick: adjusted(tick($0.0)), symbol: $0.1) }
 
         return Score(
             framing: ScoreFraming(

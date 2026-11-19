@@ -402,6 +402,96 @@ midiParse2: do {
     expect(file.tempoChanges.count == 1 && abs(file.tempoChanges[0].bpm - 60) < 0.01, "tempo change recorded")
 }
 
+// MARK: ScoreLayout and the choices step
+
+expect(ScoreLayout.diatonicStep(60) == 28, "C4 is diatonic step 28")
+expect(ScoreLayout.diatonicStep(64) == 30, "E4 is step 30")
+expect(ScoreLayout.treblePosition(64) == 0, "E4 sits on the treble bottom line")
+expect(ScoreLayout.treblePosition(60) == -2, "middle C hangs a step below the treble staff")
+expect(ScoreLayout.bassPosition(43) == 0, "G2 sits on the bass bottom line")
+expect(ScoreLayout.isTreble(60) && !ScoreLayout.isTreble(59), "the staff split is at middle C")
+
+do {
+    let quarter = ScoreLayout.noteValue(480)
+    expect(quarter.head == .filled && quarter.stem && quarter.flags == 0 && quarter.dots == 0, "a quarter is a filled stemmed head")
+    let whole = ScoreLayout.noteValue(1920)
+    expect(whole.head == .whole && !whole.stem, "a whole note carries no stem")
+    expect(ScoreLayout.noteValue(240).flags == 1, "an eighth carries one flag")
+    expect(ScoreLayout.noteValue(120).flags == 2, "a sixteenth carries two")
+    expect(ScoreLayout.noteValue(720).dots == 1, "a dotted quarter carries a dot")
+}
+
+expect(ScoreLayout.keyGlyphs(1).count == 1 && ScoreLayout.keyGlyphs(1)[0].treblePosition == 8 && ScoreLayout.keyGlyphs(1)[0].accidental == .sharp, "G major shows one sharp on the treble top line")
+expect(ScoreLayout.keyGlyphs(-2).count == 2 && ScoreLayout.keyGlyphs(-2).allSatisfy { $0.accidental == .flat }, "two flats for a two-flat key")
+expect(ScoreLayout.keyGlyphs(0).isEmpty, "C major shows no key glyphs")
+expect(ScoreLayout.accidental(for: 65, fifths: 1) == .natural, "F natural against G major needs a natural sign")
+expect(ScoreLayout.accidental(for: 66, fifths: 1) == nil, "F sharp is covered by G major")
+expect(ScoreLayout.accidental(for: 66, fifths: 0) == .sharp, "F sharp against C major needs a sharp")
+expect(ScoreLayout.accidental(for: 65, fifths: 0) == nil, "F natural against C major needs nothing")
+
+layoutFixture: do {
+    // the same C major session as the engrave check above, plus a gap that
+    // leaves one measure empty so the rest filler has to speak
+    var session: [NoteEvent] = []
+    for i in 0..<4 {
+        let onset = Double(i) * 0.5
+        for pitch in [48, 60, 64, 67] {
+            session.append(NoteEvent(pitch: pitch, velocity: 100, onset: onset + Double(pitch % 4) * 0.01, duration: 0.45))
+        }
+    }
+    session.append(NoteEvent(pitch: 72, velocity: 70, onset: 4.0, duration: 0.4))
+
+    guard let score = Engraver.engrave(notes: session, chords: [(0.0, "C")]) else {
+        expect(false, "layout fixture engraves")
+        break layoutFixture
+    }
+
+    let keys = Engraver.scoreKeyCandidates(session)
+    expect(keys.count == 24, "all 24 keys are ranked")
+    expect(keys.first?.name == "C major", "key candidates rank C major first")
+
+    let overridden = Engraver.engrave(
+        notes: session,
+        framing: ScoreFraming(
+            beatsPerMinute: 90,
+            timeSignature: TimeSignature(beatsPerMeasure: 3, beatUnit: 4),
+            key: KeySignature(tonic: 7, isMinor: false)
+        )
+    )
+    expect(
+        overridden?.framing.beatsPerMinute == 90
+            && overridden?.framing.timeSignature == TimeSignature(beatsPerMeasure: 3, beatUnit: 4)
+            && overridden?.framing.key.name == "G major",
+        "engrave takes the framing the choices step picked"
+    )
+
+    let result = ScoreLayout.layout(score, width: 200)
+    expect(result.systems.count >= 2, "a narrow page wraps measures into systems")
+    expect(result.keyGlyphs.isEmpty, "C major lays out with no key glyphs")
+    let allMeasures = result.systems.flatMap(\.measures)
+    let first = allMeasures[0]
+    expect(first.showsFraming, "the first measure shows clef key and meter")
+    expect(
+        first.treble.contains { $0.pitch == 60 && $0.staffPosition == -2 && $0.ledgerPositions == [-2] },
+        "middle C hangs on a ledger line below the treble staff"
+    )
+    expect(
+        first.bass.contains { $0.pitch == 48 && $0.staffPosition == ScoreLayout.bassPosition(48) },
+        "the low chord notes land on the bass staff"
+    )
+    let highNote = allMeasures.flatMap(\.treble).first { $0.pitch == 72 }
+    expect(highNote?.stemUp == false, "a note above the middle line stems down")
+    expect(first.treble.first { $0.pitch == 60 }?.stemUp == true, "a low chord stems up")
+    expect(first.chord?.symbol == "C", "the chord symbol rides on the first measure")
+
+    let empty = allMeasures.first { $0.treble.isEmpty && $0.bass.isEmpty }
+    expect(empty?.trebleRest?.whole == true && empty?.bassRest?.whole == true, "an empty measure gets whole rests on both staves")
+
+    let wide = ScoreLayout.layout(score, width: 4000)
+    expect(wide.systems.count == 1, "a wide page keeps every measure on one system")
+    expect(wide.systems[0].measures[1].showsFraming == false, "later measures on the same system show no framing")
+}
+
 if failures == 0 {
     print("all \(checks) checks passed")
 } else {

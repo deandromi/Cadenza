@@ -57,17 +57,20 @@ until the sheet generator is done.
 
 ## Where the sheet generator stands
 
-- Framing logic (tempo, key, meter), quantization, the score model and a
-  MusicXML writer live in CadenzaCore, all testable from recorded note
-  events with no audio stack. `--score` replays a captured session and
-  engraves it offline.
-- `--midiscore <file.mid>` reads a standard MIDI file, engraves it, and
-  prints the framing next to the file's own meta events — used to compare
-  the engraver against published sheet music (see "MIDI vs published PDF"
-  below).
-- Still open: the score renderer in the app (ink-on-paper staff window
-  hanging off the Sheet music menu item), and the choices step the
-  roadmap's flow describes.
+- Framing logic (tempo, key, meter), quantization, the score model, a
+  MusicXML writer and the layout pass (`ScoreLayout`: systems, noteheads,
+  stems, flags, dots, accidentals, rests, key glyphs, chord symbols) live
+  in CadenzaCore, all testable from recorded note events with no audio
+  stack. `--score` replays a captured session and engraves it offline,
+  `--midiscore <file.mid>` does the same from a MIDI file, `--sheet` renders
+  the engraved sheet to /tmp/cadenza_sheet.png for inspection.
+- The app's Sheet music menu opens a paper window with the choices step —
+  tempo, meter and key as pop-ups fed by the engraver's ranked candidates
+  (`tempoCandidates`, `scoreMeterCandidates`, `scoreKeyCandidates`) — and an
+  Engrave action that cuts the session into measures and draws the grand
+  staff in ink. Export MusicXML writes the same score as .musicxml.
+- Engraving fills empty measures with whole rests, and chord symbols share
+  the measures' phase space (a pickup no longer orphans them).
 
 ## MIDI vs published PDF (research, two MuseScore files)
 

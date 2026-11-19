@@ -1,5 +1,7 @@
+import AppKit
 import AVFoundation
 import CadenzaCore
+import UniformTypeIdentifiers
 import CoreML
 import Foundation
 
@@ -611,6 +613,97 @@ enum SmokeMain {
         } catch {
             print("smoke FAILED: \(error)")
             exit(1)
+        }
+    }
+
+    /// Renders an engraved MIDI file's sheet to a PNG, offscreen, so the
+    /// notation can be inspected without opening a window: --sheet <mid>
+    static func runSheet(path: String) {
+        MainActor.assumeIsolated {
+            // the app renders its paper world in light mode; the offscreen
+            // render must resolve the same dynamic colors
+            NSApplication.shared.appearance = NSAppearance(named: .aqua)
+            guard let file = try? MidiReader.read(url: URL(fileURLWithPath: path)) else {
+                print("sheet: cannot read \(path)")
+                exit(1)
+            }
+            let grouped = assignOnsetGroups(file.notes)
+            var chords: [(seconds: Double, symbol: String)] = []
+            var lastSymbol = ""
+            let byGroup = Dictionary(grouping: grouped, by: { $0.onsetGroup })
+            for groupId in byGroup.keys.sorted() {
+                guard let chord = Chord.identify(in: grouped, group: groupId) else { continue }
+                guard chord.symbol != lastSymbol else { continue }
+                let onset = byGroup[groupId]?.map(\.onset).min() ?? 0
+                chords.append((onset, chord.symbol))
+                lastSymbol = chord.symbol
+            }
+            guard let score = Engraver.engrave(notes: file.notes, chords: chords) else {
+                print("sheet: nothing to engrave")
+                exit(1)
+            }
+            print("sheet: \(chords.count) chord symbols, first: \(score.chords.first.map { "\($0.onsetTick):\($0.symbol)" } ?? "none"), measure0 start \(score.measures.first?.startTick ?? -1)")
+            print("sheet: \(score.measures.count) measures, \(Int(score.framing.beatsPerMinute.rounded())) bpm, \(score.framing.timeSignature.beatsPerMeasure)/\(score.framing.timeSignature.beatUnit), \(score.framing.key.name)")
+
+            let layout = ScoreLayout.layout(score, width: 1000)
+            let withChord = layout.systems.flatMap(\.measures).filter { $0.chord != nil }
+            print("sheet layout: \(withChord.count) measures carry a chord symbol, first: \(withChord.first.map { "m\($0.index) \($0.chord!.symbol) @x\(Int($0.x))" } ?? "none")")
+            print("sheet layout: \(layout.systems.count) systems, \(Int(layout.width))x\(Int(layout.height))")
+
+            // optional third argument: cap the systems rendered, for close inspection
+            var render = layout
+            if let capArg = CommandLine.arguments.firstIndex(of: "--sheet").flatMap({ i -> String? in
+                CommandLine.arguments.count > i + 2 ? CommandLine.arguments[i + 2] : nil
+            }), let cap = Int(capArg), cap < layout.systems.count {
+                let kept = Array(layout.systems.prefix(cap))
+                let height = (kept.last.map { CGFloat($0.y) } ?? 0) + 4 * CGFloat(layout.lineGap) * 2 + 3.2 * CGFloat(layout.lineGap) + 40
+                render = ScoreLayout.Result(
+                    systems: kept,
+                    keyGlyphs: layout.keyGlyphs,
+                    fifths: layout.fifths,
+                    beatsPerMeasure: layout.beatsPerMeasure,
+                    beatUnit: layout.beatUnit,
+                    beatsPerMinute: layout.beatsPerMinute,
+                    lineGap: layout.lineGap,
+                    width: layout.width,
+                    height: Double(height)
+                )
+                print("sheet render: first \(cap) systems only, \(Int(render.width))x\(Int(render.height))")
+            }
+            let view = ScoreView(layout: render)
+            view.frame = NSRect(x: 0, y: 0, width: render.width, height: render.height)
+            let scale: CGFloat = 1.6
+            let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: Int(render.width * scale),
+                pixelsHigh: Int(render.height * scale),
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            )!
+            // paper behind the ink
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            if let ctx = NSGraphicsContext.current {
+                PaperTheme.paper.setFill()
+                NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh).fill()
+                ctx.cgContext.translateBy(x: 0, y: CGFloat(rep.pixelsHigh))
+                ctx.cgContext.scaleBy(x: scale, y: -scale)
+                view.draw(NSRect(x: 0, y: 0, width: render.width, height: render.height))
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            guard let cg = rep.cgImage,
+                  let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: "/tmp/cadenza_sheet.png") as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+                print("sheet: could not write png")
+                exit(1)
+            }
+            CGImageDestinationAddImage(dest, cg, nil)
+            CGImageDestinationFinalize(dest)
+            print("sheet: wrote /tmp/cadenza_sheet.png")
         }
     }
 

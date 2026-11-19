@@ -44,16 +44,17 @@ final class StampDot: NSView {
     }
 }
 
-/// Top-right glass pill opening the menu of future sections, shown disabled
-/// until those sections exist. The lens is a pure glass backdrop; the pill
-/// renders through the regular subview chain on top of it.
+/// Top-right glass pill opening the menu of the app's sections. Sheet music
+/// is live; the rest stay disabled until those sections exist.
 final class MenuLens: NSView {
     private let menuButton = NSButton(title: "Menu", target: nil, action: nil)
     private var pill: NSStackView?
     private var backdrop: NSView?
     private let menuItems = ["Sheet music", "Sessions", "MIDI routing", "Settings"]
+    private let onSheetMusic: (() -> Void)?
 
-    init() {
+    init(onSheetMusic: (() -> Void)? = nil) {
+        self.onSheetMusic = onSheetMusic
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         menuButton.isBordered = false
@@ -98,11 +99,22 @@ final class MenuLens: NSView {
     @objc private func openMenu() {
         let menu = NSMenu()
         for title in menuItems {
-            menu.addItem(withTitle: title, action: nil, keyEquivalent: "").isEnabled = false
+            let item = menu.addItem(withTitle: title, action: nil, keyEquivalent: "")
+            if title == "Sheet music" {
+                item.isEnabled = onSheetMusic != nil
+                item.target = self
+                item.action = #selector(sheetMusicTapped)
+            } else {
+                // items stay disabled: the sections are future work, the
+                // menu shows where they will live
+                item.isEnabled = false
+            }
         }
-        // items stay disabled: the sections are future work, the menu shows
-        // where they will live
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: menuButton.bounds.minY - 8), in: menuButton)
+    }
+
+    @objc private func sheetMusicTapped() {
+        onSheetMusic?()
     }
 }
 

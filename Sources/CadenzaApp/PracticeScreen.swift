@@ -12,7 +12,7 @@ final class PracticeScreenView: NSView {
     private let keybed = KeybedView()
     private let bloom = NoteBloomView()
     private let panel: ControlPanelLens
-    private let menuLens = MenuLens()
+    private let menuLens: MenuLens
     private let wordmark = makeInkLabel(
         "Cadenza",
         font: PaperTheme.displaySerif(27, weight: .semibold),
@@ -46,8 +46,9 @@ final class PracticeScreenView: NSView {
     /// a full chord in one cascade
     private static let strikeBatchWindow = 0.06
 
-    init(transport: PanelTransport) {
+    init(transport: PanelTransport, onSheetMusic: (() -> Void)? = nil) {
         panel = ControlPanelLens(transport: transport)
+        menuLens = MenuLens(onSheetMusic: onSheetMusic)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
