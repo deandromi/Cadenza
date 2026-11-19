@@ -66,6 +66,10 @@ cp "${repo_root}/Resources/Bravura.otf" "${app_dir}/Contents/Resources/Bravura.o
 cp "${repo_root}/Resources/Bravura-OFL.txt" "${app_dir}/Contents/Resources/Bravura-OFL.txt"
 cp "${repo_root}/Resources/AppIcon.icns" "${app_dir}/Contents/Resources/AppIcon.icns"
 
+# The Transkun model and its tensors ship inside the bundle so the app is
+# self-contained when installed from the DMG (no repo checkout needed).
+cp -R "${repo_root}/Models" "${app_dir}/Contents/Resources/Models"
+
 echo "Signing build/Cadenza.app (ad-hoc)"
 codesign --force -s - "${app_dir}"
 

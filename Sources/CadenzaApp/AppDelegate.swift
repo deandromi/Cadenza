@@ -255,9 +255,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Finds the model assets by walking up from the executable (release app
-    /// bundle) or the working directory (swift run).
+    /// Finds the model assets: first inside the app bundle's resources, then
+    /// by walking up from the executable or the working directory (swift run
+    /// from the repo checkout).
     nonisolated static func locateAssets() -> (tensors: URL, model: URL)? {
+        let fileManager = FileManager.default
+        if let resources = Bundle.main.resourceURL {
+            let tensors = resources.appendingPathComponent("Models/tensors", isDirectory: true)
+            let model = resources.appendingPathComponent("Models/TranskunBackbone.mlpackage", isDirectory: true)
+            if fileManager.fileExists(atPath: tensors.path), fileManager.fileExists(atPath: model.path) {
+                return (tensors, model)
+            }
+        }
         var roots: [URL] = []
         if let executable = Bundle.main.executableURL {
             roots.append(executable.deletingLastPathComponent())
@@ -268,7 +277,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for _ in 0..<6 {
                 let tensors = dir.appendingPathComponent("Models/tensors", isDirectory: true)
                 let model = dir.appendingPathComponent("Models/TranskunBackbone.mlpackage", isDirectory: true)
-                let fileManager = FileManager.default
                 if fileManager.fileExists(atPath: tensors.path), fileManager.fileExists(atPath: model.path) {
                     return (tensors, model)
                 }
