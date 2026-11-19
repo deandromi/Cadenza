@@ -449,7 +449,6 @@ final class KeyboardBloomDraft: NSView {
         wasSounding = moment.sounding
         panel.setSession(
             time: sessionTimeString(moment.seconds),
-            chord: moment.symbol,
             notes: "\(moment.noteCount) notes",
             level: moment.level,
             sounding: moment.sounding

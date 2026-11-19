@@ -11,7 +11,7 @@ import CadenzaCore
 @MainActor
 final class PracticeScreenView: NSView {
     private let keybed = KeybedView()
-    private let strip = EndlessStaffView()
+    private let staffLens: StaffLensView
     private let panel: ControlPanelLens
     private let menuLens: MenuLens
     private let wordmark = makeInkLabel(
@@ -29,8 +29,6 @@ final class PracticeScreenView: NSView {
 
     /// pitches sounding right now, from the engine's note events
     private var soundingPitches: Set<Int> = []
-    /// the last chord the engine heard, staying on the panel until replaced
-    private var chordSymbol: String?
     private var noteCount = 0
     /// the whisper next to the wordmark: an error, a save, a take
     private var statusText = ""
@@ -41,6 +39,8 @@ final class PracticeScreenView: NSView {
     init(transport: PanelTransport, onSheetMusic: (() -> Void)? = nil) {
         panel = ControlPanelLens(transport: transport)
         menuLens = MenuLens(onSheetMusic: onSheetMusic)
+        // the measure opens the engraved sheet: same door as the menu
+        staffLens = StaffLensView(onOpen: onSheetMusic ?? {})
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -56,7 +56,7 @@ final class PracticeScreenView: NSView {
         ])
 
         addSubview(keybed)
-        addSubview(strip)
+        addSubview(staffLens)
 
         wordmark.translatesAutoresizingMaskIntoConstraints = false
         addSubview(wordmark)
@@ -75,10 +75,10 @@ final class PracticeScreenView: NSView {
             keybed.bottomAnchor.constraint(equalTo: bottomAnchor),
             keybed.heightAnchor.constraint(equalToConstant: 118),
 
-            strip.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 36),
-            strip.trailingAnchor.constraint(lessThanOrEqualTo: panel.leadingAnchor, constant: -48),
-            strip.topAnchor.constraint(equalTo: wordmark.bottomAnchor, constant: 14),
-            strip.bottomAnchor.constraint(equalTo: keybed.topAnchor, constant: -34),
+            staffLens.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 36),
+            staffLens.trailingAnchor.constraint(lessThanOrEqualTo: panel.leadingAnchor, constant: -48),
+            staffLens.topAnchor.constraint(equalTo: wordmark.bottomAnchor, constant: 14),
+            staffLens.bottomAnchor.constraint(equalTo: keybed.topAnchor, constant: -34),
 
             wordmark.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 38),
             wordmark.topAnchor.constraint(equalTo: topAnchor, constant: 22),
@@ -100,9 +100,9 @@ final class PracticeScreenView: NSView {
             menuLens.topAnchor.constraint(equalTo: topAnchor, constant: 20),
 
             panel.widthAnchor.constraint(equalToConstant: 240),
-            panel.heightAnchor.constraint(equalToConstant: 251),
+            panel.heightAnchor.constraint(equalToConstant: 372),
             panel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -30),
-            panel.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -26),
+            panel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
         refresh()
     }
@@ -117,7 +117,7 @@ final class PracticeScreenView: NSView {
     func noteStruck(_ event: NoteEvent) {
         soundingPitches.insert(event.pitch)
         keybed.soundingPitches = soundingPitches
-        strip.noteStruck(pitch: event.pitch)
+        staffLens.stripView.noteStruck(pitch: event.pitch)
         refresh()
     }
 
@@ -125,13 +125,12 @@ final class PracticeScreenView: NSView {
     func noteReleased(_ event: NoteEvent) {
         soundingPitches.remove(event.pitch)
         keybed.soundingPitches = soundingPitches
-        strip.noteReleased(pitch: event.pitch)
+        staffLens.stripView.noteReleased(pitch: event.pitch)
         refresh()
     }
 
-    func setChord(_ symbol: String?) {
-        chordSymbol = symbol
-        refresh()
+    func setSessions(_ sessions: [SessionRecord], playing: SessionRecord?) {
+        panel.setSessions(sessions, playing: playing)
     }
 
     func setNoteCount(_ count: Int) {
@@ -169,7 +168,7 @@ final class PracticeScreenView: NSView {
         sessionStart = nil
         soundingPitches = []
         keybed.soundingPitches = []
-        strip.clear()
+        staffLens.stripView.clear()
         refresh()
     }
 
@@ -185,7 +184,6 @@ final class PracticeScreenView: NSView {
     private func refresh() {
         panel.setSession(
             time: sessionTimeString(sessionSeconds),
-            chord: chordSymbol ?? "—",
             notes: "\(noteCount) notes",
             level: levelTarget,
             sounding: !soundingPitches.isEmpty

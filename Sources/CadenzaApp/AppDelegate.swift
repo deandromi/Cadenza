@@ -12,8 +12,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let publisher = MIDIPublisher()
     private let engine = TranscriptionEngine()
+    private let store = SessionStore()
     private var sheetController: SheetMusicController?
     private var cancellables: Set<AnyCancellable> = []
+    private var sessionStartedAt: Date?
+    private var playbackTask: Task<Void, Never>?
+    private var playingRecord: SessionRecord?
+    private var playbackCount = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // the practice screen is a paper world: it renders in light mode,
@@ -55,13 +60,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.activate(ignoringOtherApps: true)
         self.window = window
 
-        engine.$sheet
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.screen?.setChord(self?.engine.currentChord?.symbol)
-            }
-            .store(in: &cancellables)
-
         engine.$lastError
             .receive(on: RunLoop.main)
             .sink { [weak self] error in
@@ -96,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             screen.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
         self.screen = screen
+        refreshSessions()
         return root
     }
 
@@ -106,8 +105,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             isListening: { [weak self] in self?.engine.isRunning ?? false },
             toggleListening: { [weak self] in self?.toggleListening() },
             exportEnabled: { [weak self] in !(self?.engine.notes.isEmpty ?? true) },
-            export: { [weak self] in self?.exportMIDI() }
+            export: { [weak self] in self?.exportMIDI() },
+            playSession: { [weak self] record in self?.togglePlayback(of: record) },
+            playingSession: { [weak self] in self?.playingRecord }
         )
+    }
+
+    /// The archive lands on the panel after every change, with whoever is
+    /// playing carrying the stamp.
+    private func refreshSessions() {
+        screen?.setSessions(store.sessions, playing: playingRecord)
     }
 
     // MARK: transport actions
@@ -121,17 +128,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             screen?.sessionStopped()
             screen?.syncTransport()
             sheetController?.sessionEnded()
+            if let startedAt = sessionStartedAt {
+                let record = store.saveSession(
+                    notes: engine.notes,
+                    startedAt: startedAt,
+                    durationSeconds: Date().timeIntervalSince(startedAt))
+                if record != nil {
+                    screen?.setStatus("Saved session to the archive", error: false)
+                }
+            }
+            sessionStartedAt = nil
+            refreshSessions()
         } else {
+            stopPlayback()
             guard let assets = Self.locateAssets() else {
                 present(error: "Model files not found next to the app")
                 return
             }
             engine.start(tensorsDir: assets.tensors, modelURL: assets.model)
+            sessionStartedAt = Date()
             screen?.sessionStarted()
             screen?.syncTransport()
             sheetController?.reset()
         }
         present(error: engine.lastError)
+    }
+
+    // MARK: session playback
+
+    /// Plays a preserved session through the live MIDI path, the keybed and
+    /// the endless measure dancing along; a second press stops it.
+    private func togglePlayback(of record: SessionRecord) {
+        if playingRecord?.id == record.id {
+            stopPlayback()
+            refreshSessions()
+            return
+        }
+        guard !engine.isRunning else {
+            present(error: "Stop listening before playing a session")
+            return
+        }
+        stopPlayback()
+        guard let notes = store.notes(for: record) else {
+            present(error: "Couldn't read the session file")
+            return
+        }
+        playingRecord = record
+        refreshSessions()
+        playbackCount = 0
+        screen?.sessionStopped()
+        playbackTask = Task { [weak self] in
+            var previous = 0.0
+            for note in notes.sorted(by: { $0.onset < $1.onset }) {
+                let wait = max(0, note.onset - previous)
+                previous = note.onset
+                if wait > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                }
+                guard !Task.isCancelled else { return }
+                self?.playbackCount += 1
+                self?.publisher.noteStruck(note)
+                self?.screen?.noteStruck(note)
+                self?.screen?.setNoteCount(self?.playbackCount ?? 0)
+                let held = note
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(max(held.duration, 0.05) * 1_000_000_000))
+                    guard !Task.isCancelled else { return }
+                    self?.publisher.noteReleased(held)
+                    self?.screen?.noteReleased(held)
+                }
+            }
+            // let the last note ring, then hand the keys back
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled else { return }
+            self?.stopPlayback()
+            self?.refreshSessions()
+        }
+    }
+
+    private func stopPlayback() {
+        playbackTask?.cancel()
+        playbackTask = nil
+        if playingRecord != nil {
+            publisher.panic()
+        }
+        playingRecord = nil
+        screen?.sessionStopped()
     }
 
     private func exportMIDI() {

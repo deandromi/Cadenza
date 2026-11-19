@@ -40,6 +40,14 @@ final class EndlessStaffView: NSView {
 
     private var notes: [StripNote] = []
     private var displayTimer: Timer?
+    /// the lens hovers: the playhead warms up
+    var nowLineHighlighted: Bool = false {
+        didSet { needsDisplay = true }
+    }
+    /// the measure is pressed: the playhead carries the stamp for a beat
+    var pressed: Bool = false {
+        didSet { needsDisplay = true }
+    }
 
     /// The now line rides at this x: fresh notes arrive at or left of it.
     private var nowX: CGFloat { bounds.width - rightMargin }
@@ -150,8 +158,11 @@ final class EndlessStaffView: NSView {
         drawGlyph(Glyph.gClef, baselineAt: NSPoint(x: clefX, y: yOnTreble(2)), font: musicFont, color: ink.withAlphaComponent(0.8))
         drawGlyph(Glyph.fClef, baselineAt: NSPoint(x: clefX, y: yOnBass(6)), font: musicFont, color: ink.withAlphaComponent(0.8))
 
-        // the now line: where the pipeline's freshest word lands
-        let nowLine = ink.withAlphaComponent(0.30)
+        // the now line: where the pipeline's freshest word lands. Resting
+        // warm under the pointer, stamp while pressed - the lens breathes
+        let nowLine = pressed ? PaperTheme.stamp
+            : nowLineHighlighted ? ink.withAlphaComponent(0.6)
+            : ink.withAlphaComponent(0.30)
         nowLine.setStroke()
         let path = NSBezierPath()
         path.move(to: NSPoint(x: nowPoint, y: top - 7))
@@ -247,3 +258,89 @@ final class EndlessStaffView: NSView {
     }
 }
 
+
+/// The endless measure wrapped in a living glass lens: the notation rides on
+/// liquid glass like the panel and menu do, the lens is interactive the way
+/// the system intends, hovering brightens the playhead, and a click opens
+/// the engraved sheet of everything the session has played.
+@MainActor
+final class StaffLensView: NSView {
+    private let backdrop: NSGlassEffectView
+    private let strip = EndlessStaffView()
+    private let onOpen: () -> Void
+    private var hover: Bool = false
+
+    init(onOpen: @escaping () -> Void) {
+        self.onOpen = onOpen
+        backdrop = makeGlassBackdrop(cornerRadius: 22, interactive: true)
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(backdrop)
+        addSubview(strip)
+        NSLayoutConstraint.activate([
+            backdrop.leadingAnchor.constraint(equalTo: leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: trailingAnchor),
+            backdrop.topAnchor.constraint(equalTo: topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: bottomAnchor),
+            strip.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            strip.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
+            strip.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            strip.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    var stripView: EndlessStaffView { strip }
+
+    // the hover state reads in the playhead: the now line warms while the
+    // pointer rests on the measure
+    var isHovered: Bool {
+        get { hover }
+        set {
+            guard hover != newValue else { return }
+            hover = newValue
+            strip.nowLineHighlighted = newValue
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas where area.userInfo?["staff"] != nil {
+            removeTrackingArea(area)
+        }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .cursorUpdate, .inVisibleRect],
+            owner: self,
+            userInfo: ["staff": true]
+        ))
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.pointingHand.set()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        NSCursor.arrow.set()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // the press speaks once: the playhead pins itself stamp for a beat
+        strip.pressed = true
+        onOpen()
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            strip.pressed = false
+        }
+    }
+}

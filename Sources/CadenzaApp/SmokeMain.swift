@@ -754,7 +754,11 @@ enum SmokeMain {
                 onSheetMusic: {}
             )
             screen.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
-            screen.setChord("F Maj 7")
+            screen.setSessions([
+                SessionRecord(id: UUID(), startedAt: Date().addingTimeInterval(-3600), durationSeconds: 96, noteCount: 214),
+                SessionRecord(id: UUID(), startedAt: Date().addingTimeInterval(-7200), durationSeconds: 41, noteCount: 88),
+                SessionRecord(id: UUID(), startedAt: Date().addingTimeInterval(-90000), durationSeconds: 154, noteCount: 531),
+            ], playing: nil)
             screen.setNoteCount(12)
             screen.sessionStarted()
             for (pitch, age) in [(48, 8.6), (55, 8.5), (72, 6.4), (76, 6.3),
