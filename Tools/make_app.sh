@@ -8,7 +8,7 @@ set -euo pipefail
 
 # Single place to bump the bundle version. Both version keys in the Info.plist
 # template carry the ${CADENZA_VERSION} placeholder.
-version="1.1.0"
+version="1.2.1"
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 build_dir="${repo_root}/build"
