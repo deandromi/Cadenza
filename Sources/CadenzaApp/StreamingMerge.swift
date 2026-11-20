@@ -64,7 +64,14 @@ struct StreamingMerge {
 
     /// The merged note history in confirmation order, like the engine
     /// published before.
-    var notes: [NoteEvent] { history }
+    /// The performance as it stands. Stubs left behind by a re-strike are
+    /// filtered out here rather than at the source: when a strike replaces a
+    /// live note, the note it replaces is clipped to almost nothing, and a
+    /// few-millisecond note is neither playable nor writable, but it would
+    /// still count as a note on the sheet, in the MIDI file and in the score.
+    var notes: [NoteEvent] {
+        SingleStrikes.merge(history.filter { $0.duration >= WindowGeometry.minimumNoteDuration })
+    }
 
     /// The notes still sounding, for stop-time release.
     var livePitches: [Int] {

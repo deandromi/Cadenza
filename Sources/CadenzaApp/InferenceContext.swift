@@ -12,6 +12,10 @@ final class InferenceContext: @unchecked Sendable {
     /// extends decoded note ends to where the audio actually stops sounding;
     /// the backbone undershoots short and mid-length notes by hundreds of ms
     private let refiner = NoteLengthRefiner()
+    /// finds the bass notes the model is blind to, from the signal itself
+    private let bassDetector = LowRegisterDetector()
+    /// CDZ_LOW=0 turns the bass pass off, for A/B runs
+    private static let detectsBass = ProcessInfo.processInfo.environment["CDZ_LOW"] != "0"
     /// CDZ_REFINER=0 turns the audio-evidence length pass off, for A/B runs
     private static let refinesLengths = ProcessInfo.processInfo.environment["CDZ_REFINER"] != "0"
 
@@ -158,6 +162,10 @@ final class InferenceContext: @unchecked Sendable {
             events = Self.refinedByAudio(events, samples: at44100, windowBegin: beginTime,
                                          frameDuration: plan.frameDuration, refiner: refiner)
         }
+        if Self.detectsBass {
+            events = Self.bassNotes(events, samples: at44100, windowBegin: beginTime,
+                                    detector: bassDetector)
+        }
         let headsWall = CACurrentMediaTime() - decodeStart - melWall - predWall - crfWall
         print("[inference] window \(windowIndex): \(events.count) events decoded in \(String(format: "%.2f", CACurrentMediaTime() - decodeStart)) s "
             + "(mel \(String(format: "%.2f", melWall)), model \(String(format: "%.2f", predWall)), crf \(String(format: "%.2f", crfWall)), heads \(String(format: "%.2f", headsWall)), units \(Self.computeUnits))")
@@ -196,6 +204,43 @@ final class InferenceContext: @unchecked Sendable {
                 hasOnset: event.hasOnset,
                 hasOffset: true
             )
+        }
+        return result
+    }
+
+    /// Adds the notes the signal holds below C2, which the backbone cannot
+    /// hear: the model's own mel filterbank has several semitones per band
+    /// down there, and the reference model misses them identically.
+    private static func bassNotes(
+        _ events: [WindowResult.Event],
+        samples: [Float],
+        windowBegin: Double,
+        detector: LowRegisterDetector
+    ) -> [WindowResult.Event] {
+        let existing = events.map { event in
+            LowRegisterDetector.Span(pitch: event.pitch, onset: event.onsetSeconds,
+                                     offset: event.offsetSeconds, velocity: event.velocity)
+        }
+        let found = detector.detect(samples: samples, windowBegin: windowBegin, existing: existing)
+        guard !found.isEmpty else { return events }
+        var result = events
+        for span in found {
+            let startFrame = max(0, Int(((span.onset - windowBegin) / (1.0 / 100)).rounded()))
+            result.append(WindowResult.Event(
+                pitch: span.pitch,
+                velocity: span.velocity,
+                startFrame: startFrame,
+                endFrame: startFrame,
+                onsetSeconds: span.onset,
+                offsetSeconds: span.offset,
+                hasOnset: true,
+                hasOffset: true
+            ))
+        }
+        result.sort { a, b in
+            if a.onsetSeconds != b.onsetSeconds { return a.onsetSeconds < b.onsetSeconds }
+            if a.offsetSeconds != b.offsetSeconds { return a.offsetSeconds < b.offsetSeconds }
+            return a.pitch < b.pitch
         }
         return result
     }

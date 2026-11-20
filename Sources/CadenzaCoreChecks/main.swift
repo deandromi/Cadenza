@@ -392,6 +392,95 @@ noteLengthRefiner: do {
     expect(unaffected[0].offset <= 2.1, "a later chord does not stretch an already quiet note")
 }
 
+// MARK: SingleStrikes
+
+singleStrikes: do {
+    // The same key reported twice within a clock tick is one strike, and the
+    // longer interval is the one that was heard.
+    let twice = [
+        NoteEvent(pitch: 31, velocity: 78, onset: 15.997, duration: 0.709),
+        NoteEvent(pitch: 31, velocity: 84, onset: 15.999, duration: 1.033)
+    ]
+    let merged = SingleStrikes.merge(twice)
+    expect(merged.count == 1, "one key struck twice within a tick is one note")
+    expect(abs(merged[0].duration - 1.035) < 0.01, "the longer interval survives")
+    expect(merged[0].velocity == 84, "the stronger strike sets the velocity")
+
+    // A real repetition is left alone: a bass note every eighth at 120 bpm.
+    let repeated = (0..<4).map { index in
+        NoteEvent(pitch: 31, velocity: 70, onset: Double(index) * 0.25, duration: 0.24)
+    }
+    expect(SingleStrikes.merge(repeated).count == 4, "a repeated bass note stays repeated")
+
+    // Different pitches at the same instant are a chord, not a duplicate.
+    let chord = [
+        NoteEvent(pitch: 60, velocity: 70, onset: 1.0, duration: 0.5),
+        NoteEvent(pitch: 64, velocity: 70, onset: 1.0, duration: 0.5),
+        NoteEvent(pitch: 67, velocity: 70, onset: 1.0, duration: 0.5)
+    ]
+    expect(SingleStrikes.merge(chord).count == 3, "a chord is untouched")
+}
+
+// MARK: LowRegisterDetector
+
+lowRegisterDetector: do {
+    // The model cannot hear below C2, so the signal has to: a struck G1 has
+    // to come back with its onset and its length, and a room-tone window has
+    // to stay empty.
+    let rate = 44100.0
+    func bass(_ pitch: Int, start: Double, end: Double, seconds: Double) -> [Float] {
+        var samples = [Float](repeating: 0, count: Int(seconds * rate))
+        let frequency = 440.0 * pow(2.0, Double(pitch - 69) / 12.0)
+        let first = Int(start * rate)
+        let last = min(samples.count, Int(end * rate))
+        for index in first..<last {
+            let t = Double(index - first) / rate
+            let envelope = exp(-t / 1.4) * min(1.0, t / 0.004)
+            var value = 0.0
+            for harmonic in 1...6 {
+                value += sin(2 * Double.pi * frequency * Double(harmonic) * t) / Double(harmonic)
+            }
+            samples[index] = Float(value * envelope * 0.35)
+        }
+        return samples
+    }
+    let detector = LowRegisterDetector(rate: rate)
+    let solo = bass(31, start: 0.3, end: 1.5, seconds: 2.4)
+    let found = detector.detect(samples: solo, windowBegin: 0, existing: [])
+    expect(found.contains { $0.pitch == 31 }, "a struck G1 is found in the signal")
+    if let note = found.first(where: { $0.pitch == 31 }) {
+        expect(abs(note.onset - 0.3) < 0.09, "the bass note keeps its onset")
+        expect(note.offset > 1.1 && note.offset < 1.8, "the bass note keeps its length")
+        expect(note.velocity > 24 && note.velocity <= 110, "the bass note gets a playable velocity")
+    }
+
+    // A note the model already decoded is not added a second time.
+    let covered = [LowRegisterDetector.Span(pitch: 31, onset: 0.3, offset: 1.5, velocity: 60)]
+    let again = detector.detect(samples: solo, windowBegin: 0, existing: covered)
+    expect(!again.contains { $0.pitch == 31 && abs($0.onset - 0.3) < 0.075 },
+           "a bass note the model found is not duplicated")
+
+    // Nothing in silence, and nothing in noise: the detector only adds notes
+    // where a low fundamental actually holds.
+    let silence: [Float] = [Float](repeating: 0, count: Int(2.4 * rate))
+    expect(detector.detect(samples: silence, windowBegin: 0, existing: []).isEmpty,
+           "silence gives no bass notes")
+    var noise = [Float](repeating: 0, count: Int(2.4 * rate))
+    var seed: UInt64 = 0x9E3779B97F4A7C15
+    for index in noise.indices {
+        seed = seed &* 6364136223846793005 &+ 1442695040888963407
+        noise[index] = Float(Double(seed >> 40) / Double(1 << 24) - 0.5) * 0.06
+    }
+    expect(detector.detect(samples: noise, windowBegin: 0, existing: []).isEmpty,
+           "room tone invents no bass notes")
+
+    // Above the detector's own range the model is in charge: a C4 alone is
+    // not its business.
+    let middle = bass(60, start: 0.3, end: 1.5, seconds: 2.4)
+    expect(detector.detect(samples: middle, windowBegin: 0, existing: []).isEmpty,
+           "the detector leaves the model's register alone")
+}
+
 // MARK: MidiReader
 
 /// Builds a tiny standard MIDI file in memory: format 0, 480 ppqn, one

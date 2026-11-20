@@ -304,6 +304,44 @@ The broader reading of the same measurements: precision is already 0.92-0.99,
 recall is 0.80-0.88. The next accuracy work belongs to **missed notes**, not
 to note lengths or false notes.
 
+### Found and fixed: the model is deaf below C2
+
+Isolated bass notes exposed it. A single G1 at any velocity, a C2 at full
+velocity, a D2 in some contexts: the backbone returns nothing at all, while
+G2 and every note above it decode reliably. The reference PyTorch model on
+the same audio misses them identically, so this is not a porting fault: the
+checkpoint's mel filterbank has two to four semitones per band below C2 (the
+lowest bands sit at 38, 43, 54, 65, 71, 77 Hz), and pitch that never reached
+the features cannot come back out.
+
+`Sources/CadenzaCore/LowRegisterDetector.swift` takes that register from the
+signal instead, and only there: peaks are picked in a long, high-resolution
+window (8192 samples, 5.4 Hz per bin), tracked frame to frame, and a peak
+becomes a note only when it holds for 120 ms, keeps its pitch within half a
+semitone, stands out in the whole spectrum, and — the gate noise cannot pass
+— repeats itself in the waveform at the period its pitch claims. Octave
+phantoms are refused by ratio, so a G2 does not also become a G1.
+
+Measured at `CDZ_FIXED_STEP=0.9`, precision / recall / F1:
+
+| piece | before | after |
+| --- | --- | --- |
+| isolated bass notes at three velocities | 0.667 / 0.333 / 0.444 | 0.857 / 1.000 / 0.923 |
+| bass chords and melodies below C2 | 0.875 / 0.500 / 0.636 | 0.929 / 0.929 / 0.929 |
+| Je te veux (Satie) | 0.993 / 0.800 / 0.886 | 0.955 / 0.851 / 0.900 |
+| Hey Bulldog | 0.959 / 0.877 / 0.916 | 0.954 / 0.922 / 0.938 |
+| note lengths (`durations2`) | 1.000 / 1.000 / 1.000 | 1.000 / 1.000 / 1.000 |
+
+The length of a detector note comes from its own energy, so bass notes are
+now the most accurately timed notes in the output (2 s median offset error,
+13 of 13 within 10%).
+
+Two smaller fixes came with it. The streaming merge now filters the stub a
+re-strike leaves behind (a note clipped to a few milliseconds is neither
+playable nor writable), and `SingleStrikes.merge` collapses a key reported
+twice inside 60 ms — a piano key cannot strike twice that fast — keeping the
+longer interval. Both are checked.
+
 ## Small levers, in rough order
 
 - A level meter on the session meta lens, wired to the existing tap state.
