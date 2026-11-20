@@ -31,6 +31,16 @@ public final class MelFrontEnd {
 
     private let fftSetup: FFTSetup
 
+    /// Whether to divide each window by its own mean and standard deviation.
+    /// Transkun's own pipeline does not: it scales int16 PCM by 2^15 and lets
+    /// the mel levels stay absolute, which is what the trained confidence is
+    /// calibrated against. Kept on: measured on the 30 s Debussy capture the
+    /// faithful path scores F1 0,783 versus 0,792 for window normalization,
+    /// and window normalization is level-invariant, so a quiet room cannot
+    /// sink the features. CADENZA_MEL_ABS=1 switches to the absolute path.
+    public static nonisolated(unsafe) var normalizesWindows =
+        ProcessInfo.processInfo.environment["CADENZA_MEL_ABS"] != "1"
+
     public init(tensorsDir: URL) throws {
         let windowsData = try Data(contentsOf: tensorsDir.appendingPathComponent("windows.f32"))
         let filterData = try Data(contentsOf: tensorsDir.appendingPathComponent("freq2mels.f32"))
@@ -77,6 +87,10 @@ public final class MelFrontEnd {
         var padded = [Float](repeating: 0, count: lPad + samples.count + rPad)
         padded.replaceSubrange(lPad..<(lPad + samples.count), with: samples)
 
+        guard MelFrontEnd.normalizesWindows else {
+            return self.spectrogram(padded, nFrames: nFrames)
+        }
+
         // scalar gain normalization over the framed view (overlapping samples
         // counted once per frame), matching torch mean/std over the framed tensor
         var mean: Float = 0
@@ -94,7 +108,11 @@ public final class MelFrontEnd {
         variance /= total
         let invStd = 1.0 / (sqrt(variance) + 1e-8)
         for i in 0..<padded.count { padded[i] = (padded[i] - mean) * invStd }
+        return self.spectrogram(padded, nFrames: nFrames)
+    }
 
+    /// The framed, windowed, mel-projected log features of a padded signal.
+    private func spectrogram(_ padded: [Float], nFrames: Int) -> [Float] {
         var out = [Float](repeating: 0, count: nFrames * MelFrontEnd.nMels * MelFrontEnd.nChannels)
         var frame = [Float](repeating: 0, count: MelFrontEnd.windowSize)
         var re = [Float](repeating: 0, count: MelFrontEnd.windowSize / 2)

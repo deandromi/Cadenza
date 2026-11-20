@@ -100,6 +100,24 @@ if let index = CommandLine.arguments.firstIndex(of: "--probe-short"), CommandLin
     exit(0)
 }
 
+if let index = CommandLine.arguments.firstIndex(of: "--decode-dump"), CommandLine.arguments.count > index + 3 {
+    SmokeMain.runDecodeDump(
+        audioPath: CommandLine.arguments[index + 1],
+        deviceRate: Double(CommandLine.arguments[index + 2]) ?? 48000,
+        edge: Double(CommandLine.arguments[index + 3]) ?? 16
+    )
+    exit(0)
+}
+
+if let index = CommandLine.arguments.firstIndex(of: "--mel-probe"), CommandLine.arguments.count > index + 3 {
+    SmokeMain.runMelProbe(
+        audioPath: CommandLine.arguments[index + 1],
+        deviceRate: Double(CommandLine.arguments[index + 2]) ?? 48000,
+        at: Double(CommandLine.arguments[index + 3]) ?? 0
+    )
+    exit(0)
+}
+
 if let index = CommandLine.arguments.firstIndex(of: "--synth-midi"), CommandLine.arguments.count > index + 2 {
     SmokeMain.runSynthMidi(
         path: CommandLine.arguments[index + 1],

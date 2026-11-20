@@ -624,6 +624,29 @@ do {
     expect(result.fifths == 0, "no notes guess the key of C")
 }
 
+midiProgramChange: do {
+    // A program change carries one data byte. Reading two desynchronises the
+    // rest of the track, which silently corrupts every imported MIDI file.
+    let midi = syntheticMidi(events: [
+        (0, [0xC0, 0x05]),          // program change, one data byte
+        (0, [0x90, 60, 80]),        // C4 on
+        (480, [0x80, 60, 0]),       // C4 off at 0.5 s
+        (0, [0xC1, 0x10]),          // a second channel's program change
+        (0, [0x91, 67, 70]),        // G4 on channel 1
+        (480, [0x81, 67, 0]),       // G4 off at 1.0 s
+        (0, [0xFF, 0x2F, 0x00]),
+    ])
+    let file = try? MidiReader.read(midi)
+    expect(file != nil, "program-change midi parses")
+    if let file {
+        expect(file.notes.count == 2, "program changes do not swallow notes")
+        let pitches = file.notes.map { $0.pitch }.sorted()
+        expect(pitches == [60, 67], "the notes after program changes keep their pitch")
+        expect(abs((file.notes.last?.onset ?? 0) - 0.5) < 1e-9,
+               "the note after a program change keeps its time")
+    }
+}
+
 pedalChecks: do {
     // CC64 spans: a note released under the pedal rings to the lift, and
     // the reader keeps the pedal spans themselves for the engraver.

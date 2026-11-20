@@ -70,9 +70,17 @@ final class InferenceContext: @unchecked Sendable {
         let predWall = CACurrentMediaTime() - predStart
 
         let symbolCount = WindowGeometry.symbols.count
-        let score = copy(scoreArray)
-        let skip = copy(skipArray)
-        let context = copy(contextArray)
+        // the score tensor is 172 MB for a 16 s window: read it in place
+        // rather than copying it once per decode
+        let score = UnsafeBufferPointer(
+            start: scoreArray.dataPointer.assumingMemoryBound(to: Float.self),
+            count: scoreArray.count)
+        let skip = UnsafeBufferPointer(
+            start: skipArray.dataPointer.assumingMemoryBound(to: Float.self),
+            count: skipArray.count)
+        let context = UnsafeBufferPointer(
+            start: contextArray.dataPointer.assumingMemoryBound(to: Float.self),
+            count: contextArray.count)
         let crfStart = CACurrentMediaTime()
         // every symbol's suffix DP is independent: spread them over the cores
         var intervals = [[FrameInterval]](repeating: [], count: symbolCount)

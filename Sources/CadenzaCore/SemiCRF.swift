@@ -18,6 +18,24 @@ public enum SemiCRFDecoder {
         symbolCount P: Int,
         forcedStartPos: [Int]? = nil
     ) -> [[FrameInterval]] {
+        score.withUnsafeBufferPointer { scoreBuffer in
+            skip.withUnsafeBufferPointer { skipBuffer in
+                decode(score: scoreBuffer, skip: skipBuffer, frameCount: T,
+                       symbolCount: P, forcedStartPos: forcedStartPos)
+            }
+        }
+    }
+
+    /// The buffer form: the backbone's score tensor is 172 MB for a 16 s
+    /// window, so the app decodes straight from CoreML's output memory
+    /// instead of copying it first.
+    public static func decode(
+        score: UnsafeBufferPointer<Float>,
+        skip: UnsafeBufferPointer<Float>,
+        frameCount T: Int,
+        symbolCount P: Int,
+        forcedStartPos: [Int]? = nil
+    ) -> [[FrameInterval]] {
         var result: [[FrameInterval]] = Array(repeating: [], count: P)
         for p in 0..<P {
             result[p] = decodeSymbol(score: score, skip: skip, T: T, P: P, p: p,
@@ -31,6 +49,17 @@ public enum SemiCRFDecoder {
     /// result depends only on the inputs, never on scheduling.
     public static func decodeSymbol(
         score: [Float], skip: [Float], T: Int, P: Int, p: Int, start: Int
+    ) -> [FrameInterval] {
+        score.withUnsafeBufferPointer { scoreBuffer in
+            skip.withUnsafeBufferPointer { skipBuffer in
+                decodeSymbol(score: scoreBuffer, skip: skipBuffer, T: T, P: P, p: p, start: start)
+            }
+        }
+    }
+
+    public static func decodeSymbol(
+        score: UnsafeBufferPointer<Float>, skip: UnsafeBufferPointer<Float>,
+        T: Int, P: Int, p: Int, start: Int
     ) -> [FrameInterval] {
         var q = [Float](repeating: 0, count: T)
         var ptr = [Int](repeating: -1, count: T)

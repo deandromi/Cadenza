@@ -476,6 +476,80 @@ enum SmokeMain {
         print("probe-short total strikes over \(index) crops: \(total)")
     }
 
+    /// Dumps the raw decode of one window, unfiltered: every symbol interval
+    /// the semi-CRF chose, with the onset/offset and presence flags the
+    /// merge would see. The diagnostic for "is a note decoded at all".
+    /// Usage: --decode-dump <audio.f32> <rate> <edgeSeconds>
+    static func runDecodeDump(audioPath: String, deviceRate: Double, edge: Double) {
+        let context: InferenceContext
+        do {
+            context = try InferenceContext(tensorsDir: AppDelegate.locateAssets()!.tensors,
+                                           modelURL: AppDelegate.locateAssets()!.model)
+        } catch {
+            print("decode-dump FAILED: \(error)")
+            exit(1)
+        }
+        let data = (try? Data(contentsOf: URL(fileURLWithPath: audioPath))) ?? Data()
+        let input = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        let plan = WindowPlan.standard
+        let tapState = AudioTapState()
+        tapState.reset(rate: deviceRate, plan: plan)
+        var fed = 0
+        Self.feed(tapState, from: input, fed: &fed, upTo: Int((edge * deviceRate).rounded()))
+        guard let window = tapState.takeStreamWindow(edgeSeconds: edge) else {
+            print("decode-dump: no window")
+            exit(1)
+        }
+        let forced = Array(repeating: 0, count: WindowGeometry.symbols.count)
+        guard let result = context.run(windowIndex: 0, edgeSeconds: edge, samples: window,
+                                       deviceRate: deviceRate, forcedStartPos: forced, plan: plan) else {
+            print("decode-dump: decode error")
+            exit(1)
+        }
+        print(String(format: "decode-dump window %.1f-%.1f s: %d events", edge - plan.segmentSeconds, edge, result.events.count))
+        for event in result.events {
+            print(String(format: "raw %d @%.3f-%.3f v%d on%d off%d", event.pitch,
+                         event.onsetSeconds - (edge - plan.segmentSeconds),
+                         event.offsetSeconds - (edge - plan.segmentSeconds),
+                         event.velocity, event.hasOnset ? 1 : 0, event.hasOffset ? 1 : 0))
+        }
+    }
+
+    /// Prints the mel front end's view of one instant: the strongest bands
+    /// and their values, so "no energy up there" can be separated from "the
+    /// model ignores it". Usage: --mel-probe <audio.f32> <rate> <seconds>
+    static func runMelProbe(audioPath: String, deviceRate: Double, at seconds: Double) {
+        guard let tensors = AppDelegate.locateAssets()?.tensors,
+              let mel = try? MelFrontEnd(tensorsDir: tensors) else {
+            print("mel-probe FAILED: no tensors")
+            exit(1)
+        }
+        let data = (try? Data(contentsOf: URL(fileURLWithPath: audioPath))) ?? Data()
+        let all = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        let count = min(all.count, Int(16 * deviceRate))
+        let window = Array(all.suffix(count))
+        let flat = mel.compute(window)
+        let bands = MelFrontEnd.nMels
+        let channels = MelFrontEnd.nChannels
+        let frames = flat.count / (bands * channels)
+        let covered = Double(count) / deviceRate
+        let offset = seconds - (16.0 - covered)
+        let frameIndex = offset * WindowGeometry.sampleRate / Double(MelFrontEnd.hopSize)
+        let wanted = min(frames - 1, max(0, Int(frameIndex)))
+        var row: [(Int, Float)] = []
+        for b in 0..<bands {
+            row.append((b, flat[(wanted * bands + b) * channels]))
+        }
+        let top = row.sorted { $0.1 > $1.1 }.prefix(8)
+        print(String(format: "mel-probe frame %d of %d (t %.2f s)", wanted, frames, Double(count) / deviceRate - 16 + seconds))
+        for (b, v) in top {
+            print(String(format: "band %d value %.4f", b, v))
+        }
+        for b in stride(from: 40, through: 120, by: 10) {
+            print(String(format: "band %d value %.4f", b, flat[(wanted * bands + b) * channels]))
+        }
+    }
+
     /// A sibling mlpackage by file name, for the probe diagnostics.
     static func modelByName(_ name: String) -> URL? {
         guard let assets = AppDelegate.locateAssets() else { return nil }

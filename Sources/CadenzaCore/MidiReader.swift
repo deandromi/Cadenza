@@ -95,17 +95,15 @@ public enum MidiReader {
                 }
 
                 switch status {
-                case 0x80...0x8F, 0x90...0x9F, 0xA0...0xBF, 0xE0...0xEF:
+                case 0x80...0xEF:
+                    // every channel message carries one or two data bytes:
+                    // program change (0xC) and channel pressure (0xD) carry
+                    // one, the rest carry two. Reading the wrong count
+                    // desynchronises the track for the rest of the file.
                     let channel = status & 0x0F
                     let kind = status & 0xF0
                     let data1 = reader.u8()
-                    let data2: UInt8
-                    if kind == 0xC0 || kind == 0xD0 {
-                        data2 = 0
-                        reader.offset -= 1
-                    } else {
-                        data2 = reader.u8()
-                    }
+                    let data2: UInt8 = (kind == 0xC0 || kind == 0xD0) ? 0 : reader.u8()
                     if kind == 0x90 && data2 > 0 {
                         open[(Int(channel) << 8) | Int(data1), default: []].append((tick, Int(data2)))
                     } else if kind == 0x80 || (kind == 0x90 && data2 == 0) {
