@@ -9,6 +9,9 @@ final class InferenceContext: @unchecked Sendable {
     private let model: MLModel
     private let mel: MelFrontEnd
     private let heads: AttributeHeads
+    /// extends decoded note ends to where the audio actually stops sounding;
+    /// the backbone undershoots short and mid-length notes by hundreds of ms
+    private let refiner = NoteLengthRefiner()
 
     init(tensorsDir: URL, modelURL: URL) throws {
         mel = try MelFrontEnd(tensorsDir: tensorsDir)
@@ -149,10 +152,48 @@ final class InferenceContext: @unchecked Sendable {
             if a.offsetSeconds != b.offsetSeconds { return a.offsetSeconds < b.offsetSeconds }
             return a.pitch < b.pitch
         }
+        events = Self.refinedByAudio(events, samples: at44100, windowBegin: beginTime,
+                                     frameDuration: plan.frameDuration, refiner: refiner)
         let headsWall = CACurrentMediaTime() - decodeStart - melWall - predWall - crfWall
         print("[inference] window \(windowIndex): \(events.count) events decoded in \(String(format: "%.2f", CACurrentMediaTime() - decodeStart)) s "
             + "(mel \(String(format: "%.2f", melWall)), model \(String(format: "%.2f", predWall)), crf \(String(format: "%.2f", crfWall)), heads \(String(format: "%.2f", headsWall)), units \(Self.computeUnits))")
         return WindowResult(windowIndex: windowIndex, beginSeconds: beginTime, events: events, lastP: lastP)
+    }
+
+    /// Runs the audio-evidence length refiner over one window's events.
+    /// Continuations (intervals that start at the window edge because the
+    /// note began earlier) are left alone: their attack is not in this audio,
+    /// so there is no peak to measure a tail against.
+    private static func refinedByAudio(
+        _ events: [WindowResult.Event],
+        samples: [Float],
+        windowBegin: Double,
+        frameDuration: Double,
+        refiner: NoteLengthRefiner
+    ) -> [WindowResult.Event] {
+        guard !events.isEmpty else { return events }
+        let spans = events.map { event in
+            NoteLengthRefiner.Span(pitch: event.pitch, onset: event.onsetSeconds,
+                                   offset: event.offsetSeconds, hasOffset: event.hasOffset)
+        }
+        let refined = refiner.refine(spans, samples: samples, windowBegin: windowBegin)
+        guard refined.count == events.count else { return events }
+        var result = events
+        for index in events.indices where refined[index].offset > events[index].offsetSeconds + 1e-6 {
+            let event = events[index]
+            guard event.hasOnset else { continue }
+            result[index] = WindowResult.Event(
+                pitch: event.pitch,
+                velocity: event.velocity,
+                startFrame: event.startFrame,
+                endFrame: event.endFrame,
+                onsetSeconds: event.onsetSeconds,
+                offsetSeconds: refined[index].offset,
+                hasOnset: event.hasOnset,
+                hasOffset: true
+            )
+        }
+        return result
     }
 
     private func copy(_ array: MLMultiArray) -> [Float] {

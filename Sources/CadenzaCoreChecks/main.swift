@@ -323,6 +323,44 @@ do {
     }
 }
 
+// MARK: NoteLengthRefiner
+
+noteLengthRefiner: do {
+    // A held note whose decoded interval collapsed to a blip: the audio says
+    // the pitch keeps sounding, so the refiner must move the end out to the
+    // release, and must not touch a note the model already measured.
+    let rate = 44100.0
+    func tone(pitch: Int, start: Double, end: Double, seconds: Double = 3.0) -> [Float] {
+        var samples = [Float](repeating: 0, count: Int(seconds * rate))
+        let frequency = 440.0 * pow(2.0, Double(pitch - 69) / 12.0)
+        let first = Int(start * rate)
+        let last = min(samples.count, Int(end * rate))
+        for index in first..<last {
+            let t = Double(index - first) / rate
+            let envelope = exp(-t / 0.8)
+            samples[index] = Float(sin(2 * Double.pi * frequency * t) * envelope * 0.4)
+        }
+        return samples
+    }
+    let refiner = NoteLengthRefiner(rate: rate)
+    let audio = tone(pitch: 69, start: 0.5, end: 1.3)
+    let collapsed = [NoteLengthRefiner.Span(pitch: 69, onset: 0.5, offset: 0.55, hasOffset: true)]
+    let fixed = refiner.refine(collapsed, samples: audio, windowBegin: 0)
+    expect(fixed.count == 1, "the refiner keeps one span per note")
+    expect(fixed[0].offset > 0.95, "a blip decoded on a held note grows to the release")
+    expect(fixed[0].offset < 1.45, "the refiner does not run past the sound")
+
+    // a note the model already measured is left exactly as it decoded
+    let measured = [NoteLengthRefiner.Span(pitch: 69, onset: 0.5, offset: 0.95, hasOffset: true)]
+    let untouched = refiner.refine(measured, samples: audio, windowBegin: 0)
+    expect(untouched[0].offset == 0.95, "a plausible length is not second-guessed")
+
+    // silence around the note must never invent a tail
+    let quiet: [Float] = [Float](repeating: 0, count: Int(3.0 * rate))
+    let nothing = refiner.refine(collapsed, samples: quiet, windowBegin: 0)
+    expect(nothing[0].offset == 0.55, "silence leaves the decoded length alone")
+}
+
 // MARK: MidiReader
 
 /// Builds a tiny standard MIDI file in memory: format 0, 480 ppqn, one
