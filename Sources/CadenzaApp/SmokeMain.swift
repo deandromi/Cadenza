@@ -336,6 +336,7 @@ enum SmokeMain {
         // a window's decode starts when its edge arrived AND a decoder is
         // free, and its strikes publish when that decode finishes.
         var edge = plan.streamingWarmup
+        var step = plan.streamingStep
         var index = 0
         var emissionCount = 0
         // per window: its edge, its (later filled) decode wall, and the
@@ -376,7 +377,9 @@ enum SmokeMain {
             }
             schedule.append((edge: edge, decodeWall: decodeWall, onsets: onsets))
             index += 1
-            edge += plan.streamingStep
+            // the live engine stretches its step until two decoders keep up
+            step = min(WindowGeometry.stepCeiling, max(plan.streamingStep, decodeWall * 0.6))
+            edge += step
           }
         }
 

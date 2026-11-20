@@ -54,6 +54,10 @@ final class TranscriptionEngine: ObservableObject {
     private var windowIndex = 0
     /// content seconds at which the next window's trailing edge sits
     private var nextEdge = WindowPlan.standard.streamingWarmup
+    /// the live streaming step: the plan's floor until the measured decode
+    /// time says a tighter pace cannot be kept, then whatever keeps two
+    /// decoders ahead of the player
+    private var currentStep = WindowPlan.standard.streamingStep
     /// the streaming merge state: anchors, live notes, merged history
     private var merge = StreamingMerge(symbolCount: WindowGeometry.symbols.count)
     /// when the current capture session began, for the silence watchdog
@@ -125,6 +129,7 @@ final class TranscriptionEngine: ObservableObject {
             tapState.startRecording(url: Self.recordingTempURL())
             windowIndex = 0
             nextEdge = plan.streamingWarmup
+            currentStep = plan.streamingStep
             lastDecodeWall = 0
             pendingWindows = [:]
             nextWindowToAbsorb = 0
@@ -229,7 +234,7 @@ final class TranscriptionEngine: ObservableObject {
             decoderBusy[slot] = true
             submitWindow(index: windowIndex, edge: edge, slot: slot)
             windowIndex += 1
-            nextEdge = edge + plan.streamingStep
+            nextEdge = edge + currentStep
             guardCount += 1
             if guardCount > 64 { break }
         }
@@ -276,6 +281,12 @@ final class TranscriptionEngine: ObservableObject {
                 guard let self else { return }
                 self.decoderBusy[slot] = false
                 self.lastDecodeWall = decodeWall
+                // two decoders run in parallel, so one window per half a
+                // decode wall is the pace that keeps the queue drained;
+                // 1.2x on top leaves room for the jitter
+                let pace = decodeWall * 0.6
+                self.currentStep = min(WindowGeometry.stepCeiling,
+                                       max(self.plan.streamingStep, pace))
                 if let result {
                     self.pendingWindows[index] = result
                     self.drainPending()

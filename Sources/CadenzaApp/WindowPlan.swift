@@ -13,6 +13,13 @@ enum WindowGeometry {
     /// low register, and they poison chords and MIDI output. Real staccato
     /// notes ring longer.
     static let minimumNoteDuration = 0.055
+
+    /// The ceiling for the adaptive streaming step. A 16 s window costs about
+    /// 1.2 s of decode on the GPU, so a fixed 0.45 s step asks for four times
+    /// the throughput the machine has and the pipeline falls minutes behind
+    /// the player. The engine stretches the step until two decoders keep up,
+    /// and never beyond this.
+    static let stepCeiling = 4.0
 }
 
 /// The window geometry of one transcription tier. The CoreML backbone is
