@@ -1,0 +1,46 @@
+{
+  "name": "Libre Studio Grand",
+  "licence": "CC0-1.0",
+  "samples": [
+    {
+      "pitch": 24,
+      "file": "24.wav",
+      "rate": 44100
+    },
+    {
+      "pitch": 36,
+      "file": "36.wav",
+      "rate": 44100
+    },
+    {
+      "pitch": 48,
+      "file": "48.wav",
+      "rate": 44100
+    },
+    {
+      "pitch": 60,
+      "file": "60.wav",
+      "rate": 44100
+    },
+    {
+      "pitch": 67,
+      "file": "67.wav",
+      "rate": 44100
+    },
+    {
+      "pitch": 78,
+      "file": "78.wav",
+      "rate": 44100
+    },
+    {
+      "pitch": 93,
+      "file": "93.wav",
+      "rate": 44100
+    },
+    {
+      "pitch": 103,
+      "file": "103.wav",
+      "rate": 44100
+    }
+  ]
+}

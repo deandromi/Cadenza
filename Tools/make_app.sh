@@ -65,6 +65,7 @@ mkdir -p "${app_dir}/Contents/Resources"
 cp "${repo_root}/Resources/Bravura.otf" "${app_dir}/Contents/Resources/Bravura.otf"
 cp "${repo_root}/Resources/Bravura-OFL.txt" "${app_dir}/Contents/Resources/Bravura-OFL.txt"
 cp "${repo_root}/Resources/AppIcon.icns" "${app_dir}/Contents/Resources/AppIcon.icns"
+cp -R "${repo_root}/Resources/Piano" "${app_dir}/Contents/Resources/Piano"
 
 # The Transkun model and its tensors ship inside the bundle so the app is
 # self-contained when installed from the DMG (no repo checkout needed).

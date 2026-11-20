@@ -41,6 +41,14 @@ if CommandLine.arguments.contains("--screen-shot") {
     SmokeMain.runScreenShot()
     exit(0)
 }
+if CommandLine.arguments.contains("--piano-play") {
+    PianoProbe.play()
+    exit(0)
+}
+if CommandLine.arguments.contains("--piano-probe") {
+    PianoProbe.run()
+    exit(0)
+}
 if CommandLine.arguments.contains("--ui-timings") {
     UITimings.run()
     exit(0)

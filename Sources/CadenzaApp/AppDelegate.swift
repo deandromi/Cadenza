@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let publisher = MIDIPublisher()
     private let engine = TranscriptionEngine()
+    /// the session piano: playback sounds inside Cadenza instead of only
+    /// leaving the app over the virtual MIDI source
+    private let piano = PianoSampler()
     private let store = SessionStore(directory: SettingsKeys.sessionDirectory)
     private var sheetController: SheetMusicController?
     /// the sheet section opened from an archived session's row
@@ -541,6 +544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 playbackPaused = true
                 // hanging notes would drone on in other apps: release all
                 publisher.panic()
+                piano.silence()
                 screen?.sessionStopped()
             }
         } else if let newest = store.sessions.first {
@@ -568,6 +572,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let sorted = notes.sorted(by: { $0.onset < $1.onset })
         let rate = max(0.25, min(2.0, playbackRate))
+        // the instrument loads its samples before the first note, never
+        // inside one: a start that hitches reads as a broken transport
+        piano.prepare()
         let looping = loopEnabled, loopA = loopA, loopB = loopB
         screen?.sessionStopped()
         playbackTask = Task { [weak self] in
@@ -594,6 +601,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.playbackPreviousOnset = previous
                 self?.playbackCount += 1
                 self?.publisher.noteStruck(note)
+                self?.piano.noteOn(pitch: note.pitch, velocity: note.velocity)
                 self?.screen?.noteStruck(note)
                 self?.screen?.setNoteCount(self?.playbackCount ?? 0)
                 let held = note
@@ -604,6 +612,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // outer task was cancelled (pause or stop), let it go
                     guard self?.playbackTask?.isCancelled == false else { return }
                     self?.publisher.noteReleased(held)
+                    self?.piano.noteOff(pitch: held.pitch)
                     self?.screen?.noteReleased(held)
                 }
                 index += 1
@@ -632,6 +641,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if playingRecord != nil {
             publisher.panic()
         }
+        piano.park()
         playingRecord = nil
         // loop points belong to the stopped playback; the next one starts clean
         loopA = nil
@@ -728,5 +738,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             engine.stop()
             publisher.panic()
         }
+        piano.silence()
     }
 }
