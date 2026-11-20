@@ -51,6 +51,11 @@ if [[ -e "${app_dir}" ]]; then
 			;;
 	esac
 fi
+# The bundle under build/ is a build product, not an installation: keep
+# Spotlight (and therefore Launchpad) from indexing it, or the same app shows
+# up twice next to the copy in /Applications.
+printf '' > "${build_dir}/.metadata_never_index"
+
 mkdir -p "${app_dir}/Contents/MacOS"
 
 cp "${binary_src}" "${app_dir}/Contents/MacOS/Cadenza"
