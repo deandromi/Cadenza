@@ -581,6 +581,17 @@ enum SmokeMain {
         let score = Self.scoreNotes(detected: notes, truth: truth)
         var line = String(format: "precision %.3f, recall %.3f, F1 %.3f (match %d, detected %d, truth %d)",
                           score.precision, score.recall, score.f1, score.matches, notes.count, truth.count)
+        // note lengths: the second half of a transcription, scored only over
+        // matched pairs, and relative to how long the note actually was
+        if !score.offsetErrors.isEmpty {
+            let magnitudes = score.offsetErrors.map { abs($0) }.sorted()
+            let median = magnitudes[magnitudes.count / 2]
+            let p90 = magnitudes[Int(Double(magnitudes.count - 1) * 0.9)]
+            let accurate = zip(score.offsetErrors, score.offsetTolerances)
+                .filter { abs($0.0) <= $0.1 }.count
+            line += String(format: ", offset |err| median %.2f s, p90 %.2f s, within 10%% %d/%d",
+                           median, p90, accurate, score.offsetErrors.count)
+        }
         if !latencies.isEmpty {
             let sorted = latencies.sorted()
             let median = sorted[sorted.count / 2]
@@ -594,10 +605,12 @@ enum SmokeMain {
     /// Greedy per-pitch onset matching of detected notes against ground
     /// truth: a detection matches the nearest unmatched truth note of the
     /// same pitch within the onset window.
-    static func scoreNotes(detected: [NoteEvent], truth: [NoteEvent], onsetWindow: Double = 0.075) -> (precision: Double, recall: Double, f1: Double, matches: Int) {
+    static func scoreNotes(detected: [NoteEvent], truth: [NoteEvent], onsetWindow: Double = 0.075) -> (precision: Double, recall: Double, f1: Double, matches: Int, offsetErrors: [Double], offsetTolerances: [Double]) {
         var matched = 0
         var usedTruth = Set<Int>()
         var usedDetected = Set<Int>()
+        var offsetErrors: [Double] = []
+        var offsetTolerances: [Double] = []
         let byPitch = Dictionary(grouping: truth.enumerated().map { ($0.offset, $0.element) }, by: { $0.1.pitch })
         for note in detected.sorted(by: { $0.onset < $1.onset }) {
             let candidates = byPitch[note.pitch] ?? []
@@ -614,6 +627,9 @@ enum SmokeMain {
                 usedTruth.insert(candidates[index].0)
                 usedDetected.insert(detected.firstIndex(of: note)!)
                 matched += 1
+                let truthNote = candidates[index].1
+                offsetErrors.append(note.offset - truthNote.offset)
+                offsetTolerances.append(max(0.05, min(0.2, truthNote.duration * 0.1)))
             }
         }
         if ProcessInfo.processInfo.environment["CDZ_DUMP_MISMATCH"] == "1" {
@@ -628,7 +644,7 @@ enum SmokeMain {
         let precision = detected.isEmpty ? 0 : Double(matched) / Double(detected.count)
         let recall = truth.isEmpty ? 0 : Double(matched) / Double(truth.count)
         let f1 = precision + recall > 0 ? 2 * precision * recall / (precision + recall) : 0
-        return (precision, recall, f1, matched)
+        return (precision, recall, f1, matched, offsetErrors, offsetTolerances)
     }
 
     /// Synthesizes a MIDI file into a raw f32 mono capture at the given rate:
