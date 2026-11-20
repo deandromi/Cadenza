@@ -140,8 +140,7 @@ final class StatsController: NSObject {
         rows.addArrangedSubview(line("\(PracticeStats.timeString(totalSeconds)) · \(totalNotes) notes in \(sessions.count) sessions"))
         rows.addArrangedSubview(hairline())
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "EEE d MMM"
+        let formatter = SessionStamp.day
         let days = PracticeStats.dayTotals(sessions).suffix(7)
         if days.isEmpty {
             rows.addArrangedSubview(line("No practice recorded yet"))

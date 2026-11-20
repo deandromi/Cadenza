@@ -282,9 +282,7 @@ final class PracticeScreenView: NSView {
         sessionSeconds = 0
         refresh()
         guard clockTimer == nil else { return }
-        clockTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tickClock() }
-        }
+        clockTimer = Clock.every(1.0) { [weak self] in self?.tickClock() }
     }
 
     /// Listening ended: the clock settles, nothing stays lit, the running

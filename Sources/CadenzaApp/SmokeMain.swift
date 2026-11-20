@@ -36,12 +36,10 @@ enum SmokeMain {
         }
         engine.start(tensorsDir: assets.tensors, modelURL: assets.model)
         let began = Date()
-        let timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
-            MainActor.assumeIsolated {
-                let wall = Date().timeIntervalSince(began)
-                print(String(format: "capture: wall %.1f s, content %.1f s, level %.4f, notes %d, running %@", wall, engine.capturedSeconds, engine.level, engine.noteCount, engine.isRunning ? "yes" : "no"))
-                if let error = engine.lastError { print("error: \(error)") }
-            }
+        let timer = Clock.every(2.0) {
+            let wall = Date().timeIntervalSince(began)
+            print(String(format: "capture: wall %.1f s, content %.1f s, level %.4f, notes %d, running %@", wall, engine.capturedSeconds, engine.level, engine.noteCount, engine.isRunning ? "yes" : "no"))
+            if let error = engine.lastError { print("error: \(error)") }
         }
         RunLoop.main.run(until: Date().addingTimeInterval(24))
         timer.invalidate()

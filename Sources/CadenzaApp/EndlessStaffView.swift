@@ -104,9 +104,7 @@ final class EndlessStaffView: NSView {
 
     private func startClock() {
         guard displayTimer == nil else { return }
-        displayTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
-        }
+        displayTimer = Clock.every(1.0 / 30.0) { [weak self] in self?.tick() }
     }
 
     private func stopClock() {
@@ -128,7 +126,7 @@ final class EndlessStaffView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard bounds.width > 40, bounds.height > 60 else { return }
-        let ink = PaperTheme.ink
+        let ink = self.ink
         let now = CACurrentMediaTime()
         let nowPoint = nowX
 
@@ -143,26 +141,28 @@ final class EndlessStaffView: NSView {
         func yOnBass(_ position: Int) -> CGFloat { bassBottom - CGFloat(position) * gap / 2 }
 
         // staff lines fade toward both edges: notation breathes, the paper
-        // underneath never changes
-        let lineColor = ink.withAlphaComponent(0.42)
-        lineColor.setStroke()
+        // underneath never changes. One path for all ten of them.
+        ink.line.setStroke()
+        let staff = NSBezierPath()
         for line in 0...4 {
             let y1 = top + CGFloat(line) * gap
             let y2 = bassTop + CGFloat(line) * gap
-            strokeHorizontal(y1)
-            strokeHorizontal(y2)
+            staff.move(to: NSPoint(x: 0, y: y1))
+            staff.line(to: NSPoint(x: bounds.width, y: y1))
+            staff.move(to: NSPoint(x: 0, y: y2))
+            staff.line(to: NSPoint(x: bounds.width, y: y2))
         }
+        staff.lineWidth = 0.8
+        staff.stroke()
 
         // clefs hold their post at the strip's left edge
         let clefX: CGFloat = 8
-        drawGlyph(Glyph.gClef, baselineAt: NSPoint(x: clefX, y: yOnTreble(2)), font: musicFont, color: ink.withAlphaComponent(0.8))
-        drawGlyph(Glyph.fClef, baselineAt: NSPoint(x: clefX, y: yOnBass(6)), font: musicFont, color: ink.withAlphaComponent(0.8))
+        drawGlyph(Glyph.gClef, baselineAt: NSPoint(x: clefX, y: yOnTreble(2)), font: musicFont, color: ink.clef)
+        drawGlyph(Glyph.fClef, baselineAt: NSPoint(x: clefX, y: yOnBass(6)), font: musicFont, color: ink.clef)
 
         // the now line: where the pipeline's freshest word lands. Resting
         // warm under the pointer, stamp while pressed - the lens breathes
-        let nowLine = pressed ? PaperTheme.stamp
-            : nowLineHighlighted ? ink.withAlphaComponent(0.6)
-            : ink.withAlphaComponent(0.30)
+        let nowLine = pressed ? ink.nowStamp : nowLineHighlighted ? ink.nowWarm : ink.nowCalm
         nowLine.setStroke()
         let path = NSBezierPath()
         path.move(to: NSPoint(x: nowPoint, y: top - 7))
@@ -170,63 +170,130 @@ final class EndlessStaffView: NSView {
         path.lineWidth = 1
         path.stroke()
 
+        // ledgers and stems accumulate: one stroke each for the whole strip
+        // instead of two bezier paths per note per frame
+        let ledgers = NSBezierPath()
+        let soundingStems = NSBezierPath()
+        let releasedStems = NSBezierPath()
+
         let horizon = now - Double(bounds.width + 80) / Double(pixelsPerSecond)
         for note in notes where note.bornAt >= horizon {
             let age = CGFloat(now - note.bornAt)
             let x = nowPoint - age * pixelsPerSecond
             let sounding = note.releasedAt == nil
-            let alpha: CGFloat = sounding ? 1.0 : 0.55
 
             let treble = ScoreLayout.isTreble(note.pitch)
             let position = treble ? ScoreLayout.treblePosition(note.pitch) : ScoreLayout.bassPosition(note.pitch)
             let cy = treble ? yOnTreble(position) : yOnBass(position)
 
             // accidentals in front of the head
-            if let accidental = ScoreLayout.accidental(for: note.pitch, fifths: 0) {
-                let codepoint = accidental == .sharp ? Glyph.accidentalSharp
-                    : accidental == .flat ? Glyph.accidentalFlat : Glyph.accidentalNatural
-                let width = MusicFont.info(codepoint).map { $0.width * fontSize } ?? gap
+            if let (codepoint, width) = accidental(for: note.pitch) {
                 drawGlyph(codepoint, baselineAt: NSPoint(x: x - width - 0.7 * gap, y: cy),
-                          font: musicFont, color: ink.withAlphaComponent(alpha * 0.85))
+                          font: musicFont,
+                          color: sounding ? ink.accidentalOn : ink.accidentalOff)
             }
 
             // ledger lines beyond the staff
             if position < 0 || position > 8 {
-                lineColor.setStroke()
-                var ledgers: [Int] = []
-                if position < 0 {
-                    var p = -2
-                    while p >= position { ledgers.append(p); p -= 2 }
-                } else {
-                    var p = 10
-                    while p <= position { ledgers.append(p); p += 2 }
-                }
-                for p in ledgers {
+                var p = position < 0 ? -2 : 10
+                while position < 0 ? p >= position : p <= position {
                     let y = treble ? yOnTreble(p) : yOnBass(p)
-                    let line = NSBezierPath()
-                    line.move(to: NSPoint(x: x - 1.35 * gap, y: y))
-                    line.line(to: NSPoint(x: x + 1.35 * gap, y: y))
-                    line.lineWidth = 0.8
-                    line.stroke()
+                    ledgers.move(to: NSPoint(x: x - 1.35 * gap, y: y))
+                    ledgers.line(to: NSPoint(x: x + 1.35 * gap, y: y))
+                    p += position < 0 ? -2 : 2
                 }
             }
 
             // the head
-            let headWidth = MusicFont.info(Glyph.noteheadBlack).map { $0.width * fontSize } ?? 1.18 * gap
             drawGlyph(Glyph.noteheadBlack, baselineAt: NSPoint(x: x - headWidth / 2, y: cy),
-                      font: musicFont, color: ink.withAlphaComponent(alpha))
+                      font: musicFont, color: sounding ? ink.headOn : ink.headOff)
 
             // the stem: up below the staff's middle line, down above it
             let stemUp = position < 4
             let stemX = stemUp ? x + 0.5 * gap : x - 0.5 * gap
             let startDistance: CGFloat = 0.5
             let endpoint = stemUp ? cy - 3.25 * gap : cy + 3.25 * gap
-            let stem = NSBezierPath()
+            let stem = sounding ? soundingStems : releasedStems
             stem.move(to: NSPoint(x: stemX, y: cy + (stemUp ? startDistance : -startDistance)))
             stem.line(to: NSPoint(x: stemX, y: endpoint))
-            stem.lineWidth = 0.55 * gap / 4
-            ink.withAlphaComponent(alpha).setStroke()
-            stem.stroke()
+        }
+
+        if !ledgers.isEmpty {
+            ink.line.setStroke()
+            ledgers.lineWidth = 0.8
+            ledgers.stroke()
+        }
+        let stemWidth = 0.55 * gap / 4
+        if !soundingStems.isEmpty {
+            ink.headOn.setStroke()
+            soundingStems.lineWidth = stemWidth
+            soundingStems.stroke()
+        }
+        if !releasedStems.isEmpty {
+            ink.headOff.setStroke()
+            releasedStems.lineWidth = stemWidth
+            releasedStems.stroke()
+        }
+    }
+
+    /// Ink shades and glyph metrics, resolved once: the strip redraws thirty
+    /// times a second and used to rebuild both on every frame.
+    private struct Ink {
+        let line: NSColor
+        let clef: NSColor
+        let nowCalm: NSColor
+        let nowWarm: NSColor
+        let nowStamp: NSColor
+        let headOn: NSColor
+        let headOff: NSColor
+        let accidentalOn: NSColor
+        let accidentalOff: NSColor
+    }
+
+    private lazy var ink = Ink(
+        line: PaperTheme.ink.withAlphaComponent(0.42),
+        clef: PaperTheme.ink.withAlphaComponent(0.8),
+        nowCalm: PaperTheme.ink.withAlphaComponent(0.30),
+        nowWarm: PaperTheme.ink.withAlphaComponent(0.6),
+        nowStamp: PaperTheme.stamp,
+        headOn: PaperTheme.ink,
+        headOff: PaperTheme.ink.withAlphaComponent(0.55),
+        accidentalOn: PaperTheme.ink.withAlphaComponent(0.85),
+        accidentalOff: PaperTheme.ink.withAlphaComponent(0.85 * 0.55)
+    )
+
+    /// Glyph metrics of the four shapes the strip engraves, measured once at
+    /// its own size; a dictionary lookup per note per frame added up.
+    private struct Metrics {
+        let headWidth: CGFloat
+        let sharpWidth: CGFloat
+        let flatWidth: CGFloat
+        let naturalWidth: CGFloat
+    }
+
+    private lazy var metrics: Metrics = {
+        let fontSize = self.fontSize
+        func width(_ codepoint: UInt32, fallback: CGFloat) -> CGFloat {
+            MusicFont.info(codepoint).map { $0.width * fontSize } ?? fallback
+        }
+        return Metrics(
+            headWidth: width(Glyph.noteheadBlack, fallback: 1.18 * gap),
+            sharpWidth: width(Glyph.accidentalSharp, fallback: gap),
+            flatWidth: width(Glyph.accidentalFlat, fallback: gap),
+            naturalWidth: width(Glyph.accidentalNatural, fallback: gap)
+        )
+    }()
+
+    private var headWidth: CGFloat { metrics.headWidth }
+
+    /// The accidental a black key needs, and how far in front of the head it
+    /// sits. Natural pitches carry none.
+    private func accidental(for pitch: Int) -> (UInt32, CGFloat)? {
+        switch ScoreLayout.accidental(for: pitch, fifths: 0) {
+        case .sharp: return (Glyph.accidentalSharp, metrics.sharpWidth)
+        case .flat: return (Glyph.accidentalFlat, metrics.flatWidth)
+        case .natural: return (Glyph.accidentalNatural, metrics.naturalWidth)
+        case .none: return nil
         }
     }
 

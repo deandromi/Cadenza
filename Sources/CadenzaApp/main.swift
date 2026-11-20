@@ -1,19 +1,5 @@
 import AppKit
 
-if CommandLine.arguments.contains("--designs") {
-    freopen("/tmp/cadenza_designs.log", "a", stdout)
-    freopen("/tmp/cadenza_designs.log", "a", stderr)
-    setvbuf(stdout, nil, _IONBF, 0)
-    let app = NSApplication.shared
-    let gallery = DesignGalleryController()
-    app.delegate = gallery
-    app.setActivationPolicy(.regular)
-    // the window must be born inside the run loop, like the main app's:
-    // views built before it never join the live layout engine
-    app.run()
-    exit(0)
-}
-
 if CommandLine.arguments.contains("--smoke") {
     SmokeMain.run(audioPath: nil)
     exit(0)
@@ -53,6 +39,10 @@ if CommandLine.arguments.contains("--morph-shot") {
 }
 if CommandLine.arguments.contains("--screen-shot") {
     SmokeMain.runScreenShot()
+    exit(0)
+}
+if CommandLine.arguments.contains("--ui-timings") {
+    UITimings.run()
     exit(0)
 }
 if CommandLine.arguments.contains("--strip-shot") {

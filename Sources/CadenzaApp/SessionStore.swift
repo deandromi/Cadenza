@@ -28,10 +28,8 @@ struct SessionRecord: Codable, Identifiable, Sendable, Equatable {
     /// was, how long, how big.
     var label: String {
         if let name, !name.isEmpty { return name }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "d MMM HH:mm"
         let duration = sessionTimeString(durationSeconds)
-        return "\(formatter.string(from: startedAt)) · \(duration) · \(noteCount) notes"
+        return "\(SessionStamp.panel.string(from: startedAt)) · \(duration) · \(noteCount) notes"
     }
 }
 
@@ -272,5 +270,20 @@ final class SessionStore {
             return
         }
         sessions = records.sorted { $0.startedAt > $1.startedAt }
+    }
+}
+
+/// The app's date stamps, built once. A DateFormatter is expensive to make and
+/// cheap to use, so the panel rows and the statistics window share these
+/// instead of minting one per label; `string(from:)` is safe to call from any
+/// thread, which is the only thing that ever happens to them.
+enum SessionStamp {
+    nonisolated(unsafe) static let panel: DateFormatter = make("d MMM HH:mm")
+    nonisolated(unsafe) static let day: DateFormatter = make("EEE d MMM")
+
+    private static func make(_ format: String) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateFormat = format
+        return formatter
     }
 }

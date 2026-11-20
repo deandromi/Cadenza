@@ -143,9 +143,7 @@ final class LevelLineView: NSView {
 
     private func startTimerIfNeeded() {
         guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.ease() }
-        }
+        timer = Clock.every(1.0 / 60.0) { [weak self] in self?.ease() }
     }
 
     /// easing per frame at 60 fps: the bar settles in roughly 150 ms
@@ -201,114 +199,6 @@ func padForLens(
         top: vertical, left: horizontal, bottom: vertical, right: horizontal
     )
     return stack
-}
-
-/// One glass lens: NSGlassEffectView with the language's defaults, hosted in
-/// an NSGlassEffectContainerView by the caller.
-@MainActor
-func makeLens(
-    style: NSGlassEffectView.Style,
-    interactive: Bool,
-    cornerRadius: CGFloat,
-    contentView: NSView
-) -> NSGlassEffectView {
-    let lens = NSGlassEffectView()
-    lens.style = style
-    lens.cornerRadius = cornerRadius
-    lens.contentView = contentView
-    if #available(macOS 27.0, *) {
-        lens.effectIsInteractive = interactive
-    }
-    return lens
-}
-
-/// Drives the draft with a plausible live session: chords land every few
-/// seconds and sound, the level breathes, and every view reacts to the
-/// same moments. Listen on the panel toggles it, record tints the panel.
-@MainActor
-final class DesignSessionClock {
-    struct Moment {
-        let seconds: Double
-        let symbol: String
-        let sounding: Bool
-        let level: Double
-        let noteCount: Int
-        /// MIDI pitches of the voicing behind the current chord
-        let pitches: [Int]
-    }
-
-    static let chorus: [String] = [
-        "C", "Am7", "Fmaj7", "G", "Em7", "Dm7", "Cmaj7", "G7", "F", "C",
-    ]
-
-    /// Piano voicings for the chorus, the keys that sound per chord.
-    static let voicings: [String: [Int]] = [
-        "C": [48, 60, 64, 67, 72],
-        "Am7": [45, 57, 60, 64, 67],
-        "Fmaj7": [41, 53, 57, 60, 64],
-        "G": [43, 55, 59, 62, 67],
-        "Em7": [40, 52, 55, 59, 62],
-        "Dm7": [38, 50, 53, 57, 60],
-        "Cmaj7": [48, 60, 64, 67, 71],
-        "G7": [43, 55, 59, 62, 65],
-        "F": [41, 53, 57, 60, 65],
-    ]
-
-    /// notes already struck when the gallery opens, so drafts open
-    /// mid-session
-    private(set) var noteCount = 10
-    private var timer: Timer?
-    private var seconds: Double = 47
-    private var index = 2
-    private var nextStrike: Double = 0
-    private var soundingUntil: Double = 0
-
-    /// set by the gallery once the drafts exist; fired every tick
-    var onUpdate: ((Moment) -> Void)?
-
-    var isRunning: Bool { timer != nil }
-    var sounding: Bool { seconds < soundingUntil }
-    var symbol: String { Self.chorus[index] }
-
-    init() {
-        nextStrike = seconds + 1.2
-        soundingUntil = seconds + 1.5
-    }
-
-    func start() {
-        guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
-        }
-    }
-
-    func toggleRunning() {
-        if timer == nil {
-            start()
-        } else {
-            timer?.invalidate()
-            timer = nil
-        }
-    }
-
-    private func tick() {
-        seconds += 0.1
-        if seconds >= nextStrike {
-            index = (index + 1) % Self.chorus.count
-            noteCount += 1
-            soundingUntil = seconds + 1.15
-            nextStrike = seconds + 2.9 + Double((index % 3)) * 0.5
-        }
-        let level = 0.35 + 0.2 * sin(seconds * 1.7) + 0.08 * sin(seconds * 0.43)
-        onUpdate?(Moment(
-            seconds: seconds,
-            symbol: symbol,
-            sounding: sounding,
-            level: max(0.1, min(1, level)),
-            noteCount: noteCount,
-            pitches: Self.voicings[symbol] ?? []
-        ))
-    }
 }
 
 func sessionTimeString(_ seconds: Double) -> String {
