@@ -108,7 +108,7 @@ final class SettingsController: NSObject, NSApplicationDelegate {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let size = NSSize(width: 420, height: 372)
+        let size = NSSize(width: 420, height: 396)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable],
@@ -233,6 +233,15 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         rows.addArrangedSubview(gainRow)
         rows.addArrangedSubview(tuningRow)
         rows.addArrangedSubview(tuningNote)
+
+        // the build's version, straight from the bundle so it can never
+        // drift from the release it shipped in
+        let versionText = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+        let versionLabel = makeInkLabel(
+            "Cadenza \(versionText)",
+            font: .systemFont(ofSize: 11, weight: .regular),
+            color: PaperTheme.secondaryInk)
+        rows.addArrangedSubview(versionLabel)
 
         NSLayoutConstraint.activate([
             paper.leadingAnchor.constraint(equalTo: root.leadingAnchor),
