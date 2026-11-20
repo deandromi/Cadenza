@@ -85,6 +85,9 @@ public final class NoteLengthRefiner {
 
         // Only spans the model collapsed need help, and only they are safe to
         // touch: a note it already gave a plausible length to is left alone.
+        // Only spans the model collapsed need help. Widening this to a third
+        // of a second changed nothing on either benchmark or on a real session,
+        // so it stays where the evidence is: the notes it provably mangles.
         let collapsed = spans.map { $0.offset - $0.onset < 0.12 }
         guard collapsed.contains(true) else { return spans }
 
