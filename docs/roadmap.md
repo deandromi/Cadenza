@@ -278,6 +278,32 @@ Directions agreed on, waiting for their turn:
   genuinely usable next to other apps (and in the browser, once the Web
   MIDI visibility bug above is fixed).
 
+### Measured and set aside: chord completion from the attack spectrum
+
+The idea: a chord the model half-heard can be completed by asking one
+spectrum, taken at the attack, which other pitches' harmonic series it still
+carries. Built and measured on three pieces at `CDZ_FIXED_STEP=0.9`.
+
+- Hey Bulldog (synth, 30 s): precision 0.959 unchanged, recall 0.877 -> 0.884,
+  F1 0.916 -> 0.920 at the best threshold pair.
+- Je te veux (Satie, pedalled and legato): precision 0.993 -> 0.719 at first,
+  and still only 0.921 after subtracting every sounding note's partials,
+  requiring a spectral peak, and refusing octave ratios. Every added note was
+  a phantom: on pedalled music an undetected ringing note explains a pitch an
+  octave or a fifth above itself, and the residual cannot tell that from a
+  note nobody played.
+- The threshold that is safe on the Satie piece (1.5x the weakest decoded
+  note) adds nothing anywhere.
+
+Conclusion: the recoverable chord members are too few to pay for the phantoms
+they bring, so the completer was removed rather than shipped behind a flag.
+It can come back only with a test that separates a struck note from a
+ringing partial, such as onset coherence across several frames.
+
+The broader reading of the same measurements: precision is already 0.92-0.99,
+recall is 0.80-0.88. The next accuracy work belongs to **missed notes**, not
+to note lengths or false notes.
+
 ## Small levers, in rough order
 
 - A level meter on the session meta lens, wired to the existing tap state.
@@ -293,5 +319,8 @@ Directions agreed on, waiting for their turn:
 - `--synth-midi <file.mid> <out.f32>` renders a MIDI file to clean synthetic
   audio and prints ground-truth notes; match against `--replay-stream`
   output for best-case precision/recall/F1.
+- `Tools/corpus_eval.sh <outdir> <seconds> <midi...>` does both for a folder
+  of pieces and writes one eval line per piece, so a change can be judged on
+  slow pedalled music as well as on dense pop.
 - `Tools/segment_sweep.py` and `Tools/probe_compute_units.py` answer window
   and hardware questions if the latency work returns.

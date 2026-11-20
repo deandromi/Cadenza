@@ -583,6 +583,14 @@ enum SmokeMain {
         let truth = file.notes.filter { $0.onset < audioSeconds - 0.05 }
         let (notes, latencies, _) = streamRun(path: audioPath, deviceRate: deviceRate,
                                               plan: WindowPlan.standard, modelURL: nil, printEvents: false)
+        if ProcessInfo.processInfo.environment["CDZ_COMPLETE_DUMP"] == "1" {
+            for note in notes {
+                print(String(format: "det %.3f %d", note.onset, note.pitch))
+            }
+            for note in truth {
+                print(String(format: "truth %.3f %d", note.onset, note.pitch))
+            }
+        }
         let score = Self.scoreNotes(detected: notes, truth: truth)
         var line = String(format: "precision %.3f, recall %.3f, F1 %.3f (match %d, detected %d, truth %d)",
                           score.precision, score.recall, score.f1, score.matches, notes.count, truth.count)
