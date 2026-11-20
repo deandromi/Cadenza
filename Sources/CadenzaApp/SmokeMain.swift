@@ -336,7 +336,10 @@ enum SmokeMain {
         // a window's decode starts when its edge arrived AND a decoder is
         // free, and its strikes publish when that decode finishes.
         var edge = plan.streamingWarmup
-        var step = plan.streamingStep
+        // accuracy runs pin the step so two builds are compared on the same
+        // windows instead of on whatever the machine's load happened to allow
+        let fixedStep = ProcessInfo.processInfo.environment["CDZ_FIXED_STEP"].flatMap(Double.init)
+        var step = fixedStep ?? plan.streamingStep
         var index = 0
         var emissionCount = 0
         // per window: its edge, its (later filled) decode wall, and the
@@ -378,7 +381,9 @@ enum SmokeMain {
             schedule.append((edge: edge, decodeWall: decodeWall, onsets: onsets))
             index += 1
             // the live engine stretches its step until two decoders keep up
-            step = min(WindowGeometry.stepCeiling, max(plan.streamingStep, decodeWall * 0.6))
+            if fixedStep == nil {
+                step = min(WindowGeometry.stepCeiling, max(plan.streamingStep, decodeWall * 0.6))
+            }
             edge += step
           }
         }
@@ -585,12 +590,14 @@ enum SmokeMain {
         // matched pairs, and relative to how long the note actually was
         if !score.offsetErrors.isEmpty {
             let magnitudes = score.offsetErrors.map { abs($0) }.sorted()
+            let signed = score.offsetErrors.sorted()
             let median = magnitudes[magnitudes.count / 2]
+            let bias = signed[signed.count / 2]
             let p90 = magnitudes[Int(Double(magnitudes.count - 1) * 0.9)]
             let accurate = zip(score.offsetErrors, score.offsetTolerances)
                 .filter { abs($0.0) <= $0.1 }.count
-            line += String(format: ", offset |err| median %.2f s, p90 %.2f s, within 10%% %d/%d",
-                           median, p90, accurate, score.offsetErrors.count)
+            line += String(format: ", offset bias %+.2f s, |err| median %.2f s, p90 %.2f s, within 10%% %d/%d",
+                           bias, median, p90, accurate, score.offsetErrors.count)
         }
         if !latencies.isEmpty {
             let sorted = latencies.sorted()

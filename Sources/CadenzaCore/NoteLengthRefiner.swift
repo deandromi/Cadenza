@@ -104,7 +104,13 @@ public final class NoteLengthRefiner {
                     && other.onset < span.onset + 0.12
                     && other.offset > span.onset - 0.12
             }.count
-            let gain = neighbours >= 2 ? options.denseMaximumGain : options.maximumGain
+            var gain = neighbours >= 2 ? options.denseMaximumGain : options.maximumGain
+            // never reach across the next strike of the same key: the drop it
+            // makes is that note's release, not this one's
+            if let next = spans.filter({ $0.pitch == span.pitch && $0.onset > span.onset + 0.05 })
+                .map({ $0.onset }).min() {
+                gain = min(gain, max(0, next - 0.02 - span.offset))
+            }
             guard let release = releaseFrame(energy, onsetFrame: onsetFrame,
                                             offsetFrame: offsetFrame, frameCount: frameCount,
                                             maximumGain: gain) else { continue }

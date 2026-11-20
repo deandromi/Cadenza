@@ -1,4 +1,5 @@
 import CadenzaCore
+import Foundation
 
 /// The streaming merge layer: turns a sequence of sliding window decodes into
 /// a growing note history plus emission events for the live MIDI path.
@@ -132,6 +133,7 @@ struct StreamingMerge {
                     if let prior = releasedSlot(of: note) {
                         history[prior] = note
                     } else {
+                        Self.trace("append-before-live", note)
                         history.append(note)
                         emissions.append(Emission(kind: .struck, event: note))
                     }
@@ -143,6 +145,7 @@ struct StreamingMerge {
                     // its tail event, but never re-sound it
                     history[prior] = note
                 } else {
+                    Self.trace("append-new", note)
                     history.append(note)
                     liveIndex[event.pitch] = history.count - 1
                     emissions.append(Emission(kind: .struck, event: note))
@@ -176,6 +179,14 @@ struct StreamingMerge {
         }
         vanishStreak = [:]
         return emissions
+    }
+
+    /// Diagnostics for duplicate strikes, off unless asked for.
+    static let traces = ProcessInfo.processInfo.environment["CDZ_MERGE_DEBUG"] == "1"
+    static func trace(_ site: String, _ note: NoteEvent) {
+        guard traces else { return }
+        print(String(format: "merge %@: %d @%.3f-%.3f v%d", site, note.pitch,
+                     note.onset, note.offset, note.velocity))
     }
 
     private func clipped(_ value: Double, to note: NoteEvent) -> Double {
@@ -248,6 +259,7 @@ struct StreamingMerge {
                 emissions.append(Emission(kind: .released, event: released))
                 liveIndex[pitch] = nil
             }
+            Self.trace("append-restrike", candidate)
             history.append(candidate)
             liveIndex[pitch] = history.count - 1
             emissions.append(Emission(kind: .struck, event: candidate))

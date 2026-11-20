@@ -12,6 +12,8 @@ final class InferenceContext: @unchecked Sendable {
     /// extends decoded note ends to where the audio actually stops sounding;
     /// the backbone undershoots short and mid-length notes by hundreds of ms
     private let refiner = NoteLengthRefiner()
+    /// CDZ_REFINER=0 turns the audio-evidence length pass off, for A/B runs
+    private static let refinesLengths = ProcessInfo.processInfo.environment["CDZ_REFINER"] != "0"
 
     init(tensorsDir: URL, modelURL: URL) throws {
         mel = try MelFrontEnd(tensorsDir: tensorsDir)
@@ -152,8 +154,10 @@ final class InferenceContext: @unchecked Sendable {
             if a.offsetSeconds != b.offsetSeconds { return a.offsetSeconds < b.offsetSeconds }
             return a.pitch < b.pitch
         }
-        events = Self.refinedByAudio(events, samples: at44100, windowBegin: beginTime,
-                                     frameDuration: plan.frameDuration, refiner: refiner)
+        if Self.refinesLengths {
+            events = Self.refinedByAudio(events, samples: at44100, windowBegin: beginTime,
+                                         frameDuration: plan.frameDuration, refiner: refiner)
+        }
         let headsWall = CACurrentMediaTime() - decodeStart - melWall - predWall - crfWall
         print("[inference] window \(windowIndex): \(events.count) events decoded in \(String(format: "%.2f", CACurrentMediaTime() - decodeStart)) s "
             + "(mel \(String(format: "%.2f", melWall)), model \(String(format: "%.2f", predWall)), crf \(String(format: "%.2f", crfWall)), heads \(String(format: "%.2f", headsWall)), units \(Self.computeUnits))")
