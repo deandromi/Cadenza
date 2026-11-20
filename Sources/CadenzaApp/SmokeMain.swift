@@ -103,6 +103,11 @@ enum SmokeMain {
             } else {
                 forcedStart = lastP.map { max($0 - plan.stepFrames, 0) }
             }
+            // a CLI main() never returns to the run loop, so drain the
+            // autorelease pool around each decode: CoreML temporaries would
+            // otherwise pile up over a long recording until the process eats
+            // gigabytes
+            autoreleasepool {
             guard let result = context.run(windowIndex: windowIndex, edgeSeconds: Double(windowIndex) * plan.stepWallSeconds
                                               - plan.padSeconds + plan.segmentSeconds,
                                           samples: samples,
@@ -131,6 +136,7 @@ enum SmokeMain {
                     history.append(note)
                     liveIndex[event.pitch] = history.count - 1
                 }
+            }
             }
             windowIndex += 1
         }
@@ -337,9 +343,14 @@ enum SmokeMain {
         // per window: its edge, its (later filled) decode wall, and the
         // onsets it struck
         var schedule: [(edge: Double, decodeWall: Double, onsets: [Double])] = []
-        while edge * deviceRate <= Double(input.count) {
+        var done = false
+        while !done && edge * deviceRate <= Double(input.count) {
+          // a CLI main() never returns to the run loop, so the autorelease
+          // pool would never drain and every window's CoreML temporaries
+          // would pile up until the process eats gigabytes; drain per window
+          autoreleasepool {
             Self.feed(tapState, from: input, fed: &fed, upTo: Int((edge * deviceRate).rounded()))
-            guard let window = tapState.takeStreamWindow(edgeSeconds: edge) else { break }
+            guard let window = tapState.takeStreamWindow(edgeSeconds: edge) else { done = true; return }
             let forcedStart = merge.forcedStart(for: edge - plan.segmentSeconds)
             let decodeStart = CACurrentMediaTime()
             guard let result = context.run(windowIndex: index, edgeSeconds: edge, samples: window,
@@ -368,6 +379,7 @@ enum SmokeMain {
             schedule.append((edge: edge, decodeWall: decodeWall, onsets: onsets))
             index += 1
             edge += plan.streamingStep
+          }
         }
 
         // the two-decoder queue: each window takes the earlier-free decoder
@@ -510,6 +522,7 @@ enum SmokeMain {
     static func scoreNotes(detected: [NoteEvent], truth: [NoteEvent], onsetWindow: Double = 0.075) -> (precision: Double, recall: Double, f1: Double, matches: Int) {
         var matched = 0
         var usedTruth = Set<Int>()
+        var usedDetected = Set<Int>()
         let byPitch = Dictionary(grouping: truth.enumerated().map { ($0.offset, $0.element) }, by: { $0.1.pitch })
         for note in detected.sorted(by: { $0.onset < $1.onset }) {
             let candidates = byPitch[note.pitch] ?? []
@@ -524,7 +537,17 @@ enum SmokeMain {
             }
             if let index = bestIndex {
                 usedTruth.insert(candidates[index].0)
+                usedDetected.insert(detected.firstIndex(of: note)!)
                 matched += 1
+            }
+        }
+        if ProcessInfo.processInfo.environment["CDZ_DUMP_MISMATCH"] == "1" {
+            for (i, note) in detected.enumerated() where !usedDetected.contains(i) {
+                print(String(format: "FP pitch %d @%.3f-%.3f v%d", note.pitch, note.onset, note.offset, note.velocity))
+            }
+            let sortedTruth = truth.enumerated().sorted { $0.element.onset < $1.element.onset }
+            for (i, note) in sortedTruth where !usedTruth.contains(i) {
+                print(String(format: "FN pitch %d @%.3f-%.3f v%d", note.pitch, note.onset, note.offset, note.velocity))
             }
         }
         let precision = detected.isEmpty ? 0 : Double(matched) / Double(detected.count)

@@ -73,4 +73,13 @@ cp -R "${repo_root}/Models" "${app_dir}/Contents/Resources/Models"
 echo "Signing build/Cadenza.app (ad-hoc)"
 codesign --force -s - "${app_dir}"
 
-echo "You can run: open build/Cadenza.app"
+# Install into /Applications so Launchpad, the Dock and `open -a Cadenza`
+# always land on the fresh build instead of a stale copy.
+if [ -d /Applications/Cadenza.app ]; then
+  echo "Replacing /Applications/Cadenza.app with the fresh build"
+  rm -rf /Applications/Cadenza.app
+fi
+cp -R "${app_dir}" /Applications/Cadenza.app
+codesign --force -s - /Applications/Cadenza.app
+
+echo "You can run: open build/Cadenza.app (or open -a Cadenza)"
