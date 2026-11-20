@@ -52,6 +52,14 @@ public final class NoteLengthRefiner {
         /// partials feed this pitch's band, so a long extension there is far
         /// more likely to be somebody else's sound than this note ringing.
         public var denseMaximumGain = 0.35
+        /// A chord or a pedal holds many notes at once and then damps them
+        /// together. That global drop is trustworthy in a way a single
+        /// pitch's energy is not, so a note with no release of its own may
+        /// follow it this far.
+        public var dampingMaximumGain = 2.0
+        /// How hard the whole spectrum has to fall in two frames to count as
+        /// a damping event.
+        public var dampingDropFraction: Float = 0.45
         /// Gaps this long (in frames) end a note even if energy returns.
         public var releaseGapFrames = 4
         public var minimumDuration = 0.05
@@ -92,6 +100,8 @@ public final class NoteLengthRefiner {
         guard collapsed.contains(true) else { return spans }
 
         let magnitudes = spectrogram(samples, frameCount: frameCount)
+        let broadband = broadbandEnergy(magnitudes, frameCount: frameCount)
+        let dampings = dampingFrames(broadband, frameCount: frameCount)
         var refined = spans
         for index in refined.indices {
             let span = refined[index]
@@ -114,15 +124,77 @@ public final class NoteLengthRefiner {
                 .map({ $0.onset }).min() {
                 gain = min(gain, max(0, next - 0.02 - span.offset))
             }
-            guard let release = releaseFrame(energy, onsetFrame: onsetFrame,
-                                            offsetFrame: offsetFrame, frameCount: frameCount,
-                                            maximumGain: gain) else { continue }
+            var release = releaseFrame(energy, onsetFrame: onsetFrame,
+                                       offsetFrame: offsetFrame, frameCount: frameCount,
+                                       maximumGain: gain)
+            if release == nil {
+                // the pitch shows no release because a chord or the pedal is
+                // holding it: follow the next moment the whole sound damps,
+                // provided this note is still audible there
+                release = dampingRelease(energy, onsetFrame: onsetFrame, offsetFrame: offsetFrame,
+                                         dampings: dampings, frameCount: frameCount)
+            }
+            guard let release else { continue }
             let target = windowBegin + Double(release) * frameDuration
             guard target > span.offset + options.minimumGain else { continue }
             refined[index].offset = max(span.offset, target)
             refined[index].hasOffset = true
         }
         return refined
+    }
+
+    /// Summed magnitude over the whole spectrum, one value per frame: the
+    /// sound of everything at once, which is what a pedal lift damps.
+    private func broadbandEnergy(_ magnitudes: [Float], frameCount: Int) -> [Float] {
+        let bins = options.windowSize / 2 + 1
+        var energy = [Float](repeating: 0, count: frameCount)
+        for frame in 0..<frameCount {
+            let base = frame * bins
+            var sum: Float = 0
+            for bin in 0..<bins { sum += magnitudes[base + bin] }
+            energy[frame] = sum
+        }
+        return energy
+    }
+
+    /// Frames where the whole spectrum falls away in two frames: a pedal lift,
+    /// a released chord, the end of a phrase. Loud moments only, so a quiet
+    /// gap between notes does not qualify.
+    private func dampingFrames(_ broadband: [Float], frameCount: Int) -> [Int] {
+        guard frameCount > 4 else { return [] }
+        // a damping has to happen while the music is still sounding: a window
+        // whose loudest moment dwarfs the frame before the drop means the drop
+        // came out of a decaying tail, not a release
+        let loudest = broadband.max() ?? 0
+        let floor = loudest * 0.05
+        var frames: [Int] = []
+        for frame in 2..<frameCount {
+            let before = broadband[frame - 2]
+            guard before > floor, before > 0 else { continue }
+            let drop = (before - broadband[frame]) / before
+            if drop >= options.dampingDropFraction { frames.append(frame - 1) }
+        }
+        return frames
+    }
+
+    /// The first global damping after the note's onset at which the note is
+    /// still audible. nil when the note was already gone before it.
+    private func dampingRelease(_ energy: [Float], onsetFrame: Int, offsetFrame: Int,
+                                dampings: [Int], frameCount: Int) -> Int? {
+        let frameDuration = Double(options.hopSize) / rate
+        let limit = min(frameCount - 1, offsetFrame + Int((options.dampingMaximumGain / frameDuration).rounded()))
+        var peak: Float = 0
+        for frame in max(0, onsetFrame - 1)...min(frameCount - 1, onsetFrame + 3) {
+            peak = max(peak, energy[frame])
+        }
+        guard peak > 0 else { return nil }
+        let audible = peak * powf(10, options.floorDecibels / 20)
+        for frame in dampings where frame > offsetFrame && frame <= limit {
+            // still sounding just before the damping: this note was held with
+            // the rest of them, so it ends there too
+            if energy[frame - 1] > audible { return frame - 1 }
+        }
+        return nil
     }
 
     /// Where the note stops: a release damps the string in a few frames, so

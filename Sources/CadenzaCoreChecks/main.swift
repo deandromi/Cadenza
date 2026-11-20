@@ -359,6 +359,37 @@ noteLengthRefiner: do {
     let quiet: [Float] = [Float](repeating: 0, count: Int(3.0 * rate))
     let nothing = refiner.refine(collapsed, samples: quiet, windowBegin: 0)
     expect(nothing[0].offset == 0.55, "silence leaves the decoded length alone")
+
+    // A note held under a chord or the pedal has no release of its own: its
+    // band fades instead of dropping. The whole sound damps at 2 s, so that is
+    // where the note ends, even though it lies outside the local search.
+    func fadingTone(pitch: Int, start: Double, end: Double, seconds: Double) -> [Float] {
+        var samples = [Float](repeating: 0, count: Int(seconds * rate))
+        let frequency = 440.0 * pow(2.0, Double(pitch - 69) / 12.0)
+        let first = Int(start * rate)
+        let last = min(samples.count, Int(end * rate))
+        for index in first..<last {
+            let t = Double(index - first) / rate
+            samples[index] = Float(sin(2 * Double.pi * frequency * t) * exp(-t / 1.2) * 0.4)
+        }
+        return samples
+    }
+    let held = fadingTone(pitch: 69, start: 0.4, end: 2.0, seconds: 2.6)
+    let longBlip = [NoteLengthRefiner.Span(pitch: 69, onset: 0.4, offset: 0.45, hasOffset: true)]
+    let damped = refiner.refine(longBlip, samples: held, windowBegin: 0)
+    expect(damped[0].offset > 1.5, "a note held with the rest follows the global damping")
+    expect(damped[0].offset < 2.1, "the global damping never invents a tail past the sound")
+
+    // The same note cut short and a chord sounding much later: the note is
+    // already silent when that chord damps, so nothing extends it.
+    var later: [Float] = held
+    for index in Int(1.5 * rate)..<Int(2.0 * rate) {
+        let t = Double(index - Int(1.5 * rate)) / rate
+        later[index] += Float(sin(2 * Double.pi * 523.25 * t) * 0.4)
+    }
+    let cut = [NoteLengthRefiner.Span(pitch: 69, onset: 0.4, offset: 0.45, hasOffset: true)]
+    let unaffected = refiner.refine(cut, samples: later, windowBegin: 0)
+    expect(unaffected[0].offset <= 2.1, "a later chord does not stretch an already quiet note")
 }
 
 // MARK: MidiReader
