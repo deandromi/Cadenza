@@ -7,14 +7,17 @@ final class MenuLens: NSView {
     private let menuButton = NSButton(title: "Menu", target: nil, action: nil)
     private var pill: NSStackView?
     private var backdrop: NSView?
-    private let menuItems = ["Sheet music", "Sessions", "Statistics", "MIDI routing", "Settings"]
+    private let menuItems = ["Sheet music", "Sessions", "Statistics", "Refresh MIDI port", "Settings"]
     private let onSheetMusic: (() -> Void)?
     private let onStatistics: (() -> Void)?
+    private let onRefreshMIDI: (() -> Void)?
     private let onSettings: (() -> Void)?
 
-    init(onSheetMusic: (() -> Void)? = nil, onStatistics: (() -> Void)? = nil, onSettings: (() -> Void)? = nil) {
+    init(onSheetMusic: (() -> Void)? = nil, onStatistics: (() -> Void)? = nil,
+         onRefreshMIDI: (() -> Void)? = nil, onSettings: (() -> Void)? = nil) {
         self.onSheetMusic = onSheetMusic
         self.onStatistics = onStatistics
+        self.onRefreshMIDI = onRefreshMIDI
         self.onSettings = onSettings
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
@@ -69,6 +72,13 @@ final class MenuLens: NSView {
                 item.isEnabled = onStatistics != nil
                 item.target = self
                 item.action = #selector(statisticsTapped)
+            } else if title == "Refresh MIDI port" {
+                // a page that enumerated its MIDI devices when it loaded only
+                // notices the port when it comes back: this republishes it,
+                // which the browser reports as a device state change
+                item.isEnabled = onRefreshMIDI != nil
+                item.target = self
+                item.action = #selector(refreshMIDITapped)
             } else if title == "Settings" {
                 item.isEnabled = onSettings != nil
                 item.target = self
@@ -88,6 +98,10 @@ final class MenuLens: NSView {
 
     @objc private func statisticsTapped() {
         onStatistics?()
+    }
+
+    @objc private func refreshMIDITapped() {
+        onRefreshMIDI?()
     }
 
     @objc private func settingsTapped() {

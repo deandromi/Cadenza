@@ -102,13 +102,21 @@ final class SettingsController: NSObject, NSApplicationDelegate {
     /// Called after the session directory changed so the app shell can point
     /// the session store at the new folder.
     var onSessionDirectoryChanged: ((URL) -> Void)?
+    /// What the rest of the system calls the virtual MIDI port, and a way to
+    /// republish it without restarting the app.
+    var publishedMIDIPort: (() -> String?)?
+    var onRefreshMIDI: (() -> Void)?
+    private let midiLabel = makeInkLabel(
+        "checking…",
+        font: .systemFont(ofSize: 12, weight: .regular),
+        color: PaperTheme.secondaryInk)
 
     func show(relativeTo parent: NSWindow?) {
         if let window {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let size = NSSize(width: 420, height: 396)
+        let size = NSSize(width: 420, height: 484)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable],
@@ -237,6 +245,17 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         rows.addArrangedSubview(tuningRow)
         rows.addArrangedSubview(tuningNote)
 
+        // the virtual port every other app and web page listens to
+        let refreshMIDI = NSButton(title: "Republish", target: self, action: #selector(refreshMIDITapped))
+        refreshMIDI.isBordered = false
+        refreshMIDI.font = .systemFont(ofSize: 12, weight: .medium)
+        refreshMIDI.contentTintColor = PaperTheme.stamp
+        rows.addArrangedSubview(settingRow(caption("MIDI port"), midiLabel, accessory: refreshMIDI))
+        rows.addArrangedSubview(makeInkLabel(
+            "Websites need a browser with Web MIDI: Chrome or Edge. Safari has none.",
+            font: .systemFont(ofSize: 11, weight: .regular), color: PaperTheme.secondaryInk))
+        refreshMIDIState()
+
         // the build's version, straight from the bundle so it can never
         // drift from the release it shipped in
         let versionText = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
@@ -256,6 +275,26 @@ final class SettingsController: NSObject, NSApplicationDelegate {
             rows.topAnchor.constraint(equalTo: root.topAnchor),
         ])
         return root
+    }
+
+    /// Shows the port the system currently sees, so "not listed in my browser"
+    /// can be told apart from "not published at all".
+    private func refreshMIDIState() {
+        if let name = publishedMIDIPort?() {
+            midiLabel.stringValue = name
+            midiLabel.textColor = PaperTheme.ink
+        } else {
+            midiLabel.stringValue = "Not published"
+            midiLabel.textColor = PaperTheme.stamp
+        }
+    }
+
+    @objc private func refreshMIDITapped() {
+        onRefreshMIDI?()
+        // the republished endpoint lands a moment later
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.refreshMIDIState()
+        }
     }
 
     @objc private func chooseDirectory() {

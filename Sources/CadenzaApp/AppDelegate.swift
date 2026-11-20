@@ -111,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             transport: makeTransport(),
             onSheetMusic: { [weak self] in self?.openSheetMusic() },
             onStatistics: { [weak self] in self?.openStats() },
+            onRefreshMIDI: { [weak self] in self?.republishMIDIPort() },
             onSettings: { [weak self] in self?.openSettings() }
         )
         root.addSubview(screen)
@@ -197,6 +198,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openSettings() {
         if settingsController == nil {
             let controller = SettingsController()
+            controller.publishedMIDIPort = { [weak self] in self?.publisher.publishedName }
+            controller.onRefreshMIDI = { [weak self] in self?.republishMIDIPort() }
             controller.onSessionDirectoryChanged = { [weak self] url in
                 self?.store.setDirectory(url)
                 self?.refreshSessions()
@@ -744,11 +747,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
+    /// Republishes the virtual MIDI port on request: open web apps receive a
+    /// device state change and can pick Cadenza up without a reload.
+    private func republishMIDIPort() {
+        let published = publisher.refresh()
+        screen?.setStatus(published ? "MIDI port refreshed" : "Couldn't publish the MIDI port",
+                          error: !published)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         if engine.isRunning {
             engine.stop()
             publisher.panic()
         }
         piano.silence()
+        // take the virtual port down with the app instead of leaving a dead
+        // endpoint in every open web page's device list
+        publisher.shutdown()
     }
 }

@@ -53,6 +53,10 @@ if CommandLine.arguments.contains("--piano-play") {
     PianoProbe.play()
     exit(0)
 }
+if CommandLine.arguments.contains("--midi-check") {
+    exit(MIDILoopbackCheck.run() ? 0 : 1)
+}
+
 if CommandLine.arguments.contains("--piano-probe") {
     PianoProbe.run()
     exit(0)
