@@ -77,6 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = "Cadenza"
         window.minSize = NSSize(width: 900, height: 620)
+        // the delegate owns this window; AppKit must not release it on close
+        window.isReleasedWhenClosed = false
         window.contentView = makeContent(size: size)
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -418,11 +420,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// engraving leaves the session intact without it: nothing saved twice.
     private func engraveSessionPDF(_ record: SessionRecord, notes: [NoteEvent]) {
         guard !notes.isEmpty else { return }
-        do {
-            try SheetPDF.write(notes: notes, to: store.folderURL(for: record).appendingPathComponent("sheet.pdf"))
-            store.markHasPDF(record)
-        } catch {
-            print("[pdf] \(error.localizedDescription)")
+        let url = store.folderURL(for: record).appendingPathComponent("sheet.pdf")
+        // Engraving is the slowest thing a stop used to do, and the print
+        // pipeline can stall behind the printing services: let the transport
+        // answer first, then engrave on the next turn of the run loop.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            let began = Date()
+            do {
+                try SheetPDF.write(notes: notes, to: url)
+                self.store.markHasPDF(record)
+                print(String(format: "[pdf] engraved in %.0f ms", Date().timeIntervalSince(began) * 1000))
+            } catch {
+                print("[pdf] \(error.localizedDescription)")
+            }
         }
     }
 

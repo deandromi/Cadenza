@@ -25,6 +25,26 @@ enum SheetPDF {
         let operation = NSPrintOperation(view: view, printInfo: info)
         operation.showsPrintPanel = false
         operation.showsProgressPanel = false
-        operation.run()
+        guard operation.run() else {
+            throw PDFError.printPipelineRefused
+        }
+        // the pipeline reports success before the file lands on disk
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw PDFError.nothingWritten(url)
+        }
+    }
+}
+
+enum PDFError: LocalizedError {
+    case printPipelineRefused
+    case nothingWritten(URL)
+
+    var errorDescription: String? {
+        switch self {
+        case .printPipelineRefused:
+            return "The print pipeline refused the engraving"
+        case .nothingWritten(let url):
+            return "No PDF was written to \(url.lastPathComponent)"
+        }
     }
 }

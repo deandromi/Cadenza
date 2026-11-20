@@ -37,6 +37,13 @@ final class SheetMusicController: NSObject {
     }
 
     func show(relativeTo parent: NSWindow?) {
+        // a new window comes with new content views; the ones the previous
+        // window owned are gone with it, and a redraft that still pointed at
+        // them painted into a closed window and left this one blank
+        contentHost = nil
+        scoreView = nil
+        tempoPopup = nil
+        meterPopup = nil
         let size = NSSize(width: 980, height: 720)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
@@ -46,6 +53,9 @@ final class SheetMusicController: NSObject {
         )
         window.title = "Sheet music"
         window.minSize = NSSize(width: 760, height: 540)
+        // the controller owns this window; without this AppKit releases it on
+        // close as well and the next touch of the pointer is a use-after-free
+        window.isReleasedWhenClosed = false
         window.contentView = makeContent(size: size)
         if let parent {
             let frame = window.frame
@@ -111,12 +121,20 @@ final class SheetMusicController: NSObject {
         let view = ScoreView(result: result)
         let scroll = NSScrollView(frame: host.bounds)
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.autoresizingMask = [.width, .height]
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
         scroll.drawsBackground = false
         scroll.documentView = view
         host.addSubview(scroll)
+        // constraints, not a frame: on the first redraft the host has not
+        // been laid out yet, so its bounds are zero and a frame carries that
+        // zero forever - the sheet engraved into nothing
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: host.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
         scoreView = view
     }
 

@@ -41,6 +41,14 @@ if CommandLine.arguments.contains("--screen-shot") {
     SmokeMain.runScreenShot()
     exit(0)
 }
+if CommandLine.arguments.contains("--sheet-window-probe") {
+    SheetBench.windowProbe()
+    exit(0)
+}
+if CommandLine.arguments.contains("--draft-bench") {
+    SheetBench.run()
+    exit(0)
+}
 if CommandLine.arguments.contains("--piano-play") {
     PianoProbe.play()
     exit(0)

@@ -115,6 +115,9 @@ final class SettingsController: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
+        // the controller owns this window; AppKit releasing it on close
+        // as well would leave a dangling reference behind
+        window.isReleasedWhenClosed = false
         window.title = "Settings"
         window.contentView = makeContent(size: size)
         if let parent {

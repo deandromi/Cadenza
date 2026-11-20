@@ -106,6 +106,62 @@ conversion close to real time with near-perfect note capture.
 - **Transport shortcuts** — keyboard shortcuts for the panel's named
   functions: play/pause, stop, new session, export.
 
+## Free playing: catch it, understand it, make something of it
+
+Approved. This is the Cadenza half of the product: you sit down, you play
+whatever you play, and the app turns that into something you can keep,
+understand or send. Nothing here grades the player; the learning section
+below is a separate door.
+
+### Catch it
+
+- **Retroactive capture** — a rolling buffer keeps the last minute of
+  playing, so hitting one key puts what was just played into a session. No
+  record button needed before the moment happens.
+- **Time machine** — scrub back and forth through a session with the sheet
+  redrawing and the audio following. Scrubbing only: the export flow stays
+  the session export, so there is exactly one way out of a session.
+
+### Understand it
+
+- **The take describes itself** — after stopping, a short deterministic
+  description: key, tempo curve, harmonic rhythm, phrases, cadences,
+  texture, register use. Generated from note events in CadenzaCore, no model
+  involved.
+- **Split the voices** — melody, accompaniment and bass separated into their
+  own staves, MIDI tracks and part exports. Not a default view: a toggle,
+  because most takes read better as one grand staff.
+
+### Make something of it
+
+- **Re-orchestrate** — one action turns a take into a four-part chorale, a
+  piano reduction or a string-quartet sketch, from voice-leading rules
+  alone.
+- **Accompaniment under your own melody** — bass and chords written under
+  what was played, in the take's key and tempo, as a second staff and a
+  second MIDI track. A toggle that runs after the session stops, never by
+  default.
+- **Loop and overdub** — loop a region, play over it with separate hands,
+  and Cadenza merges the passes into one MIDI and one sheet.
+
+### Send it
+
+- **Performance card** — one file holding MIDI, audio and analysis that
+  opens on another Mac in Cadenza, ideally with a browser view so a take can
+  be listened to without installing anything.
+- **Repertoire shelf with musical search** — play a fragment and the app
+  finds the take or the idea that contains that motif.
+- **Recital booklet** — selected takes become one PDF: titles, dates,
+  durations, analysis and the engraved sheet, as a programme to give away.
+- **Image export** — sheet plus audio rendered as a clean recording with a
+  fixed composition, so a take can be shared without a screen capture.
+
+Where this lands: retroactive capture, the time machine, image export and
+the performance card are app-layer work on top of the existing session
+store; the take's description, voice splitting, re-orchestration,
+accompaniment and musical search are CadenzaCore work, testable from
+recorded note events with no audio stack.
+
 ## Sheet music generation
 
 The next large block. The flow the product wants:

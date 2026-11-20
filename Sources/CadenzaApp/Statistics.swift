@@ -82,6 +82,9 @@ final class StatsController: NSObject {
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false)
+            // the controller owns this window; AppKit releasing it on close
+            // as well would leave a dangling reference behind
+            window.isReleasedWhenClosed = false
             window.title = "Statistics"
             window.contentView = content(sessions: sessions, size: size)
             if let parent {
