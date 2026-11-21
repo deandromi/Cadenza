@@ -37,6 +37,10 @@ if CommandLine.arguments.contains("--morph-shot") {
     SmokeMain.runMorphShot()
     exit(0)
 }
+if CommandLine.arguments.contains("--menu-check") {
+    SmokeMain.runMenuCheck()
+    exit(0)
+}
 if CommandLine.arguments.contains("--overlay-shot") {
     SmokeMain.runOverlayShot()
     exit(0)

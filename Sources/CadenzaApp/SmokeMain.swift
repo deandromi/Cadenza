@@ -1200,6 +1200,37 @@ enum SmokeMain {
         }
     }
 
+    /// Proves the menu bar really carries the section shortcuts: builds the
+    /// same menu the app installs and asks it to handle each key equivalent.
+    static func runMenuCheck() {
+        MainActor.assumeIsolated {
+            NSApplication.shared.setActivationPolicy(.regular)
+            let delegate = AppDelegate()
+            delegate.installMainMenu()
+            guard let menu = NSApplication.shared.mainMenu else {
+                print("menu-check: no main menu")
+                return
+            }
+            func titlePath() -> String {
+                menu.items.compactMap { $0.submenu?.items }
+                    .flatMap { $0 }
+                    .map { "\($0.title) [\($0.keyEquivalent)]" }
+                    .joined(separator: ", ")
+            }
+            print("menu-check: \(titlePath())")
+            for key in ["1", "2", "3", "4"] {
+                guard let event = NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [.command],
+                    timestamp: 0, windowNumber: 0, context: nil,
+                    characters: key, charactersIgnoringModifiers: key, isARepeat: false,
+                    keyCode: 0
+                ) else { continue }
+                let handled = menu.performKeyEquivalent(with: event)
+                print("menu-check: command-\(key) handled=\(handled)")
+            }
+        }
+    }
+
     /// Renders the in-window sections — the archive and the settings card —
     /// into PNGs through the real overlay host, so layout and the frozen
     /// glass can be inspected without a screen recording of the live app.

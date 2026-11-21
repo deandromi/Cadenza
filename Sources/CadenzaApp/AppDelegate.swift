@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// App shell: the paper practice screen fills the window, its panel lens
 /// carrying the transport, the engine and the MIDI publisher wired beneath.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var window: NSWindow?
     private var screen: PracticeScreenView?
 
@@ -54,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MusicFont.register()
 
         publisher.setup()
+        installMainMenu()
         installShortcuts()
         engine.onNoteEvent = { [weak self] event, kind in
             guard let self else { return }
@@ -165,40 +166,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    // MARK: keyboard shortcuts
+    // MARK: menu and shortcuts
 
-    /// Space toggles play and pause while the practice window is frontmost,
-    /// command N starts a new session, everything else passes through to
-    /// the normal key handling.
+    /// The app's menu bar. Until now the app had none, which is why no
+    /// command shortcut could reach an action: a key equivalent has to live
+    /// on a menu item for AppKit to route it, and the menu also gives the
+    /// app its standard Quit, Hide and Settings doors.
+    func installMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu(title: "Cadenza")
+        appItem.submenu = appMenu
+        let about = NSMenuItem(title: "About Cadenza",
+                               action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                               keyEquivalent: "")
+        about.target = NSApplication.shared
+        appMenu.addItem(about)
+        appMenu.addItem(.separator())
+        let settings = NSMenuItem(title: "Settings…", action: #selector(menuSettings), keyEquivalent: ",")
+        settings.target = self
+        appMenu.addItem(settings)
+        appMenu.addItem(.separator())
+        let hide = NSMenuItem(title: "Hide Cadenza", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        hide.target = NSApplication.shared
+        appMenu.addItem(hide)
+        let quit = NSMenuItem(title: "Quit Cadenza", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApplication.shared
+        appMenu.addItem(quit)
+
+        let sessionItem = NSMenuItem()
+        mainMenu.addItem(sessionItem)
+        let sessionMenu = NSMenu(title: "Session")
+        sessionItem.submenu = sessionMenu
+        let newSession = NSMenuItem(title: "New session",
+                                    action: #selector(menuNewSession), keyEquivalent: "n")
+        newSession.target = self
+        sessionMenu.addItem(newSession)
+        let playPause = NSMenuItem(title: "Play or pause",
+                                   action: #selector(menuPlayPause), keyEquivalent: "p")
+        playPause.target = self
+        sessionMenu.addItem(playPause)
+        let refresh = NSMenuItem(title: "Refresh MIDI port",
+                                 action: #selector(menuRefreshMIDI), keyEquivalent: "r")
+        refresh.target = self
+        sessionMenu.addItem(refresh)
+
+        let viewItem = NSMenuItem()
+        mainMenu.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        viewItem.submenu = viewMenu
+        let doors: [(String, Selector, String)] = [
+            ("Sessions", #selector(menuSessions), "1"),
+            ("Sheet music", #selector(menuSheet), "2"),
+            ("Statistics", #selector(menuStats), "3"),
+            ("Settings", #selector(menuSettings), "4"),
+        ]
+        for (title, action, key) in doors {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.target = self
+            viewMenu.addItem(item)
+        }
+
+        let windowItem = NSMenuItem()
+        mainMenu.addItem(windowItem)
+        let windowMenu = NSMenu(title: "Window")
+        windowItem.submenu = windowMenu
+        let close = NSMenuItem(title: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(close)
+        let minimize = NSMenuItem(title: "Minimize",
+                                  action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(minimize)
+
+        NSApplication.shared.mainMenu = mainMenu
+        NSApplication.shared.windowsMenu = windowMenu
+    }
+
+    /// Space toggles play and pause while the practice window is frontmost.
+    /// Everything else is a menu key equivalent, so it also works while a
+    /// section card has focus. Typing in a text field keeps its keys.
     private func installShortcuts() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.window else { return event }
-            guard self.window?.firstResponder is NSView else { return event }
-            // AppKit carries four user-visible modifiers; mask to them so
-            // caps-lock or the function keys never change a shortcut
-            switch (event.keyCode, event.modifierFlags.intersection([.command, .shift, .option, .control])) {
-            case (49, []):
-                self.togglePlayPause()
-                return nil
-            case (45, [.command]):
-                self.toggleListening()
-                return nil
-            case (18, [.command]):
-                self.openSessions()
-                return nil
-            case (19, [.command]):
-                self.openSheetMusic()
-                return nil
-            case (20, [.command]):
-                self.openStats()
-                return nil
-            case (21, [.command]):
-                self.openSettings()
-                return nil
-            default:
-                return event
-            }
+            guard event.keyCode == 49,
+                  event.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty
+            else { return event }
+            // a field editor is typing: space is a character, not transport
+            if let responder = self.window?.firstResponder,
+               responder is NSTextView || responder is NSTextField { return event }
+            guard NSApplication.shared.modalWindow == nil else { return event }
+            self.togglePlayPause()
+            return nil
         }
+    }
+
+    // MARK: menu actions
+
+    @objc private func menuNewSession() { toggleListening() }
+    @objc private func menuPlayPause() { togglePlayPause() }
+    @objc private func menuRefreshMIDI() { republishMIDIPort() }
+    @objc private func menuSessions() { openSessions() }
+    @objc private func menuSheet() { openSheetMusic() }
+    @objc private func menuStats() { openStats() }
+    @objc private func menuSettings() { openSettings() }
+
+    /// Menu items read the live state: the session door says Stop while a
+    /// take runs, and a section that needs a take stays enabled regardless
+    /// (its own empty state explains itself).
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(menuNewSession) {
+            item.title = engine.isRunning ? "Stop session" : "New session"
+        }
+        if item.action == #selector(menuPlayPause) {
+            return playingRecord != nil || !store.sessions.isEmpty || !engine.notes.isEmpty
+        }
+        return true
     }
 
     // MARK: settings
