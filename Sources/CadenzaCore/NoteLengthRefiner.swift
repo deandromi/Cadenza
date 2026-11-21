@@ -62,9 +62,20 @@ public final class NoteLengthRefiner {
         public var dampingDropFraction: Float = 0.45
         /// Gaps this long (in frames) end a note even if energy returns.
         public var releaseGapFrames = 4
+        /// Only notes the model collapsed to a blip get the pass by default:
+        /// widening it to a third of a second changed nothing on either
+        /// benchmark, so it stays where the evidence was. A posed run can
+        /// widen it to every note to see what the audio says about the rest.
+        public var onlyCollapsed = true
+        /// Follow a note into the silence it dies into, for the held keys the
+        /// model reports as blips and no release edge explains.
+        public var silenceTail = true
         public var minimumDuration = 0.05
         public init() {}
     }
+
+    /// Diagnostics: spans the widening pass looked at, for the A/B line.
+    nonisolated(unsafe) public static var refinedCount = 0
 
     private let rate: Double
     private let options: Options
@@ -97,7 +108,9 @@ public final class NoteLengthRefiner {
         // of a second changed nothing on either benchmark or on a real session,
         // so it stays where the evidence is: the notes it provably mangles.
         let collapsed = spans.map { $0.offset - $0.onset < 0.12 }
-        guard collapsed.contains(true) else { return spans }
+        guard !options.onlyCollapsed || collapsed.contains(true) else { return spans }
+        // how many spans the pass actually had work for, for the A/B line
+        if !options.onlyCollapsed { Self.refinedCount += spans.count }
 
         let magnitudes = spectrogram(samples, frameCount: frameCount)
         let broadband = broadbandEnergy(magnitudes, frameCount: frameCount)
@@ -105,7 +118,7 @@ public final class NoteLengthRefiner {
         var refined = spans
         for index in refined.indices {
             let span = refined[index]
-            guard collapsed[index] else { continue }
+            guard !options.onlyCollapsed || collapsed[index] else { continue }
             let localOnset = (span.onset - windowBegin) / frameDuration
             let localOffset = (span.offset - windowBegin) / frameDuration
             let onsetFrame = max(0, min(frameCount - 1, Int(localOnset.rounded())))
@@ -133,6 +146,12 @@ public final class NoteLengthRefiner {
                 // provided this note is still audible there
                 release = dampingRelease(energy, onsetFrame: onsetFrame, offsetFrame: offsetFrame,
                                          dampings: dampings, frameCount: frameCount)
+            }
+            if release == nil, options.silenceTail {
+                // and a key simply left to die away has no edge at all: the
+                // note ends where its band falls into the room and stays
+                release = silenceRelease(energy, onsetFrame: onsetFrame, offsetFrame: offsetFrame,
+                                         frameCount: frameCount)
             }
             guard let release else { continue }
             let target = windowBegin + Double(release) * frameDuration
@@ -175,6 +194,50 @@ public final class NoteLengthRefiner {
             if drop >= options.dampingDropFraction { frames.append(frame - 1) }
         }
         return frames
+    }
+
+    /// Where a note that simply dies away ends: its own band falls to the
+    /// room floor and stays there.
+    ///
+    /// This is the case the other two rules cannot see. The model reports a
+    /// held key as a 50 ms blip (measured: a lone C4 held four seconds comes
+    /// back as 47 ms while an A4 in the same window comes back as 3.15 s),
+    /// and a smooth decay has no release edge to find. What is left is the
+    /// moment the sound is gone — the band drops into the room noise and
+    /// does not return — and that is exactly where the note ended.
+    private func silenceRelease(_ energy: [Float], onsetFrame: Int, offsetFrame: Int,
+                                frameCount: Int) -> Int? {
+        let frameDuration = Double(options.hopSize) / rate
+        var peak: Float = 0
+        for frame in max(0, onsetFrame - 1)...min(frameCount - 1, onsetFrame + 3) {
+            peak = max(peak, energy[frame])
+        }
+        guard peak > 0 else { return nil }
+        // the band's own floor: the quietest tenth of the window in these
+        // bins, which is the room rather than the note
+        let sorted = energy.sorted()
+        let room = sorted[min(sorted.count - 1, sorted.count / 10)]
+        // gone means near the room and far below this note's own attack,
+        // whichever of the two is stricter
+        let threshold = max(room * 3, peak * powf(10, -45 / 20))
+        guard threshold < peak else { return nil }
+        let gap = options.releaseGapFrames
+        let limit = min(frameCount - 1, offsetFrame + Int((options.maximumTail / frameDuration).rounded()))
+        guard limit > offsetFrame + gap else { return nil }
+        var frame = max(onsetFrame + 2, offsetFrame)
+        while frame <= limit {
+            if energy[frame] <= threshold {
+                var quiet = true
+                for probe in frame...min(frameCount - 1, frame + gap) where energy[probe] > threshold {
+                    quiet = false
+                    break
+                }
+                // the frame before the silence is the last one still ringing
+                if quiet { return frame - 1 }
+            }
+            frame += 1
+        }
+        return nil
     }
 
     /// The first global damping after the note's onset at which the note is

@@ -473,6 +473,32 @@ extension SmokeMain {
         }
         print("== eval " + (midiPath as NSString).lastPathComponent)
         print(line)
+        if ProcessInfo.processInfo.environment["CDZ_DUMP_OFFSETS"] == "1" {
+            // the pairs, worst first: what the length error actually is,
+            // not just how big it is on average
+            var pairs: [(error: Double, detected: NoteEvent, truth: NoteEvent)] = []
+            var usedTruth = Set<Int>()
+            for note in notes.sorted(by: { $0.onset < $1.onset }) {
+                var best: (index: Int, distance: Double)?
+                for (index, candidate) in truth.enumerated() where !usedTruth.contains(index) {
+                    guard candidate.pitch == note.pitch else { continue }
+                    let distance = abs(candidate.onset - note.onset)
+                    if distance <= 0.075, distance < (best?.distance ?? .infinity) {
+                        best = (index, distance)
+                    }
+                }
+                if let best {
+                    usedTruth.insert(best.index)
+                    pairs.append((note.offset - truth[best.index].offset, note, truth[best.index]))
+                }
+            }
+            for pair in pairs.sorted(by: { abs($0.error) > abs($1.error) }).prefix(12) {
+                print(String(format: "len %+.2f s · pitch %d · detected %.2f-%.2f (%.2f) · truth %.2f-%.2f (%.2f)",
+                             pair.error, pair.detected.pitch,
+                             pair.detected.onset, pair.detected.offset, pair.detected.duration,
+                             pair.truth.onset, pair.truth.offset, pair.truth.duration))
+            }
+        }
     }
 
     /// Greedy per-pitch onset matching of detected notes against ground

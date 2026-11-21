@@ -11,7 +11,16 @@ final class InferenceContext: @unchecked Sendable {
     private let heads: AttributeHeads
     /// extends decoded note ends to where the audio actually stops sounding;
     /// the backbone undershoots short and mid-length notes by hundreds of ms
-    private let refiner = NoteLengthRefiner()
+    private let refiner = NoteLengthRefiner(options: InferenceContext.refinerOptions)
+    /// CDZ_REFINE_SCOPE=all widens the length pass past collapsed blips, so
+    /// the duration question can be judged on the same take both ways
+    private static let refinerOptions: NoteLengthRefiner.Options = {
+        var options = NoteLengthRefiner.Options()
+        options.onlyCollapsed = ProcessInfo.processInfo.environment["CDZ_REFINE_SCOPE"] != "all"
+        // CDZ_REFINE_SILENCE=0 turns the die-away rule off, for A/B runs
+        options.silenceTail = ProcessInfo.processInfo.environment["CDZ_REFINE_SILENCE"] != "0"
+        return options
+    }()
     /// finds the bass notes the model is blind to, from the signal itself
     private let bassDetector = LowRegisterDetector()
     /// Off by default, and measured off: with recorded piano samples the

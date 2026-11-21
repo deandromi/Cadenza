@@ -1052,6 +1052,62 @@ do {
     expect(abs(idle.step - 0.5) < 1e-9, "an idle pipeline returns to the floor, got \(idle.step)")
 }
 
+// MARK: note lengths from the audio
+
+do {
+    // a lone C4 held two seconds, left to die into the room: the model calls
+    // this a 50 ms blip (measured on the sample renderer), the audio says the
+    // note is still sounding at 2 s
+    let rate = 44100.0
+    let seconds = 4.0
+    let count = Int(rate * seconds)
+    var signal = [Float](repeating: 0, count: count)
+    let f0 = 261.63
+    for index in 0..<count {
+        let t = Double(index) / rate
+        guard t >= 0.5, t < 2.5 else { continue }
+        // six harmonics, decaying the way a struck string does
+        let age = t - 0.5
+        let envelope = Float(exp(-age * 1.1)) * 0.28
+        var sample: Float = 0
+        for harmonic in 1...6 {
+            sample += Float(sin(2 * Double.pi * f0 * Double(harmonic) * t)) * envelope / Float(harmonic)
+        }
+        signal[index] = sample
+    }
+    // the room is never digital silence
+    var seed: UInt64 = 12345
+    for index in 0..<count {
+        seed = seed &* 6364136223846793005 &+ 1442695040888963407
+        let noise = Float(Int64(bitPattern: seed >> 33) % 1000) / 1_000_000
+        signal[index] += noise
+    }
+
+    let refiner = NoteLengthRefiner(rate: rate)
+    let blip = NoteLengthRefiner.Span(pitch: 60, onset: 0.5, offset: 0.547, hasOffset: true)
+    let refined = refiner.refine([blip], samples: signal, windowBegin: 0)
+    expect(refined.count == 1, "one span in, one span out")
+    expect(refined[0].offset > 2.0, "a held note that dies away is followed to 2 s, got \(refined[0].offset)")
+    expect(refined[0].offset < 2.75, "and not a frame past where the sound stopped, got \(refined[0].offset)")
+
+    // the negative: the same band never stops sounding, so nothing is proven
+    // and the model's end stands
+    var held = signal
+    for index in 0..<count {
+        let t = Double(index) / rate
+        guard t >= 0.5 else { continue }
+        held[index] += Float(sin(2 * Double.pi * f0 * t)) * 0.2
+    }
+    let steady = refiner.refine([blip], samples: held, windowBegin: 0)
+    expect(abs(steady[0].offset - blip.offset) < 1e-9,
+           "a note that never stops sounding keeps the model's end, got \(steady[0].offset)")
+
+    // a span the model already gave a length is untouched by the default pass
+    let plausible = NoteLengthRefiner.Span(pitch: 60, onset: 0.5, offset: 2.4, hasOffset: true)
+    let kept = refiner.refine([plausible], samples: signal, windowBegin: 0)
+    expect(abs(kept[0].offset - 2.4) < 1e-9, "a plausible length is left alone")
+}
+
 if failures == 0 {
     print("all \(checks) checks passed")
 } else {

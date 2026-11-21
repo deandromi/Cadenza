@@ -434,9 +434,45 @@ Two harness facts came out of this and are worth remembering:
   piece (211 rendered notes against 231 truth notes in the same 30 s), which
   sinks a piece's scores to F1 ≈ 0.14 regardless of the model. Cross-piece
   averages from that pair are not comparable until the two readers agree.
-- The metric is streaming, so the note *lengths* carry a −3.2 s bias: the
-  playback path compensates latency for onsets but not for offsets. That is the
-  next measurable thing in the length work, not in the threshold.
+- Note *lengths* on the Debussy take carry a −3.2 s bias against the MIDI.
+  Measured where it comes from: the truth file holds the opening chord for
+  12.9 s (the score ties it), while the audio itself only rings for one to two
+  seconds. That half of the bias is a *notation* question — pedal-held ties —
+  not a detection miss, and it belongs with the sheet work.
+
+### Note lengths: the held key that comes back as a blip
+
+Measured on the sample renderer, one note at a time, four seconds held in
+silence (window 0–16 s, no other sound):
+
+| note | model + refiner before | after | truth |
+|---|---|---|---|
+| C4 at 2.0 s | 0.047 s | 3.95 s | 4.0 s |
+| A4 at 7.0 s | 3.15 s | 3.15 s | 4.0 s |
+| D3 at 12.0 s | 3.16 s | 3.16 s | 4.0 s |
+
+A lone held C4 came back as a 47 ms blip while an A4 in the same window came
+back as 3.15 s. Neither of the two existing rules could see it: there is no
+release edge in a smooth decay, and no chord or pedal damps a note that sounds
+alone. The third rule added to `NoteLengthRefiner` follows the note's own band
+into the silence it dies into and ends it at the frame before that silence
+starts, bounded by `maximumTail` and gated on the band being both near the
+window's room floor and far below the note's own attack.
+
+On the Debussy take, same binary, same step (1.2 s), A/B:
+
+| | rule off | rule on |
+|---|---|---|
+| precision | 0.937 | 0.940 |
+| recall | 0.766 | 0.814 |
+| F1 | 0.843 | 0.872 |
+| matched | 177 | 188 |
+| offset bias | −3.16 s | −2.94 s |
+
+The extended notes also change what the merge does with them: a note that
+stays live instead of releasing as a blip is no longer re-appended as a fresh
+strike, so eleven more true notes survive the merge with no precision cost.
+`CDZ_REFINE_SILENCE=0` poses the old behavior for the next A/B.
 
 ### Where the misses are now
 
