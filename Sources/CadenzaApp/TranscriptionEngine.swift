@@ -62,10 +62,14 @@ final class TranscriptionEngine: ObservableObject {
     private var windowIndex = 0
     /// content seconds at which the next window's trailing edge sits
     private var nextEdge = WindowPlan.standard.streamingWarmup
-    /// the live streaming step: the plan's floor until the measured decode
-    /// time says a tighter pace cannot be kept, then whatever keeps two
-    /// decoders ahead of the player
-    private var currentStep = WindowPlan.standard.streamingStep
+    /// the pace the windows are cut at: the pacer measures each decode and
+    /// moves the step between the plan's floor and the ceiling
+    private var pacer = DecodePacer(floorStep: WindowPlan.standard.streamingStep,
+                                   ceilingStep: WindowGeometry.stepCeiling)
+    private var currentStep: Double { pacer.step }
+    /// the edge of the last window that made it into the history: what the
+    /// pacer reads the backlog against
+    private var absorbedEdge = WindowPlan.standard.streamingWarmup
     /// the streaming merge state: anchors, live notes, merged history
     private var merge = StreamingMerge(symbolCount: WindowGeometry.symbols.count)
     /// when the current capture session began, for the silence watchdog
@@ -137,7 +141,8 @@ final class TranscriptionEngine: ObservableObject {
             tapState.startRecording(url: Self.recordingTempURL())
             windowIndex = 0
             nextEdge = plan.streamingWarmup
-            currentStep = plan.streamingStep
+            pacer = DecodePacer(floorStep: plan.streamingStep, ceilingStep: WindowGeometry.stepCeiling)
+            absorbedEdge = plan.streamingWarmup
             lastDecodeWall = 0
             pendingWindows = [:]
             nextWindowToAbsorb = 0
@@ -308,12 +313,11 @@ final class TranscriptionEngine: ObservableObject {
                 guard let self else { return }
                 self.decoderBusy[slot] = false
                 self.lastDecodeWall = decodeWall
-                // two decoders run in parallel, so one window per half a
-                // decode wall is the pace that keeps the queue drained;
-                // 1.2x on top leaves room for the jitter
-                let pace = decodeWall * 0.6
-                self.currentStep = min(WindowGeometry.stepCeiling,
-                                       max(self.plan.streamingStep, pace))
+                // the pacer reads what the pipeline is carrying, not what
+                // one decode looked like on one machine
+                self.pacer.record(wall: decodeWall,
+                                  backlog: self.tapState.receivedSeconds() - self.absorbedEdge,
+                                  decoders: self.decoderBusy.count)
                 if let result {
                     self.pendingWindows[index] = result
                     self.drainPending()
@@ -345,21 +349,15 @@ final class TranscriptionEngine: ObservableObject {
             }
             onNoteEvent?(emission.event, kind)
         }
+        absorbedEdge = max(absorbedEdge, result.edgeSeconds)
         notes = merge.notes
         noteCount = merge.notes.count
         recomputeChords()
     }
 
     private func recomputeChords() {
-        let grouped = assignOnsetGroups(notes)
-        var entries: [SheetEntry] = []
-        var seen = Set<Int>()
-        for note in grouped where !seen.contains(note.onsetGroup) {
-            seen.insert(note.onsetGroup)
-            if let chord = Chord.identify(in: grouped, group: note.onsetGroup) {
-                entries.append(SheetEntry(onset: note.onset, chord: chord))
-            }
-        }
+        let entries = ChordSheet.entries(for: notes)
+            .map { SheetEntry(onset: $0.onset, chord: $0.chord) }
         sheet = entries
         currentChord = entries.last?.chord
     }

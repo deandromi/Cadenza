@@ -992,6 +992,66 @@ do {
     expect(TakeAnalysis.describe(notes: []) == nil, "an empty take has no description")
 }
 
+// MARK: the chord sheet
+
+do {
+    // a C major triad, then a G7 sharing one strike, then a bare two-note
+    // interval that spells nothing
+    let take = [
+        NoteEvent(pitch: 60, velocity: 80, onset: 0.00, duration: 1),
+        NoteEvent(pitch: 64, velocity: 80, onset: 0.02, duration: 1),
+        NoteEvent(pitch: 67, velocity: 80, onset: 0.03, duration: 1),
+        NoteEvent(pitch: 55, velocity: 80, onset: 1.00, duration: 1),
+        NoteEvent(pitch: 59, velocity: 80, onset: 1.01, duration: 1),
+        NoteEvent(pitch: 62, velocity: 80, onset: 1.02, duration: 1),
+        NoteEvent(pitch: 65, velocity: 80, onset: 1.03, duration: 1),
+        NoteEvent(pitch: 72, velocity: 80, onset: 2.00, duration: 1),
+        NoteEvent(pitch: 76, velocity: 80, onset: 2.01, duration: 1),
+    ]
+    let sheet = ChordSheet.entries(for: take)
+    expect(sheet.count == 2, "two of the three strikes spell a chord, got \(sheet.count)")
+    expect(sheet.first?.chord.root == "C", "the sheet opens on C, got \(sheet.first?.chord.root ?? "-")")
+    expect(sheet.last?.chord.root == "G", "the dominant reads as G, got \(sheet.last?.chord.root ?? "-")")
+    expect(sheet.last?.chord.quality.name == "7", "the dominant keeps its seventh")
+    expect(sheet.first?.onset == 0.0, "an entry sits on its group's first onset")
+    expect(ChordSheet.entries(for: []).isEmpty, "an empty take has an empty sheet")
+
+    // the sheet agrees with the per-group read it replaces
+    let grouped = take.assignOnsetGroups()
+    let groups = Set(grouped.map(\.onsetGroup)).sorted()
+    let legacy = groups.compactMap { Chord.identify(in: grouped, group: $0) }
+    expect(legacy.map(\.root) == sheet.map(\.chord.root), "the one-pass sheet matches the filtered read")
+}
+
+// MARK: the streaming pace
+
+do {
+    let cheap = { () -> DecodePacer in
+        DecodePacer(floorStep: 0.5, ceilingStep: 4.0)
+    }
+    var fast = cheap()
+    var step = fast.record(wall: 0.20, backlog: 0.1, decoders: 2)
+    expect(abs(step - 0.5) < 1e-9, "a fast machine stays at the plan's floor, got \(step)")
+
+    // one slow machine: the floor moves up to what it can sustain
+    var slow = cheap()
+    step = slow.record(wall: 3.0, backlog: 3.0, decoders: 2)
+    expect(step >= 3.0 / 2 * 1.15 - 1e-9, "a 3 s decode across two decoders lifts the pace, got \(step)")
+    expect(step <= 4.0, "the pace never passes the ceiling, got \(step)")
+    for _ in 0..<40 { _ = slow.record(wall: 3.0, backlog: 3.0, decoders: 2) }
+    expect(abs(slow.step - 4.0) < 1e-9, "a pile-up pushes the pace to the ceiling, got \(slow.step)")
+
+    // the same decode on one decoder: no pretending two run at once
+    var single = cheap()
+     _ = single.record(wall: 3.0, backlog: 2.0, decoders: 1)
+    expect(single.step >= 3.0 * 1.15 - 1e-9, "one decoder lifts the pace further, got \(single.step)")
+
+    // an idle pipeline buys resolution back, but never past its floor
+    var idle = DecodePacer(floorStep: 0.5, ceilingStep: 4.0)
+    for _ in 0..<80 { _ = idle.record(wall: 0.2, backlog: 0.05, decoders: 2) }
+    expect(abs(idle.step - 0.5) < 1e-9, "an idle pipeline returns to the floor, got \(idle.step)")
+}
+
 if failures == 0 {
     print("all \(checks) checks passed")
 } else {

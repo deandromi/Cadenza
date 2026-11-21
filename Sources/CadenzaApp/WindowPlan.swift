@@ -94,6 +94,9 @@ struct WindowResult: Sendable {
     let windowIndex: Int
     /// content seconds of the window's first frame, edge - segmentSeconds
     let beginSeconds: Double
+    /// content seconds of the window's trailing edge: where the player had
+    /// got to when this window was cut
+    let edgeSeconds: Double
     let events: [Event]
     /// per symbol: end frame of the last interval whose offset was observed
     /// in this window, 0 when the symbol never ended here

@@ -205,7 +205,8 @@ final class InferenceContext: @unchecked Sendable {
             print("[inference] window \(windowIndex): \(events.count) events decoded in \(String(format: "%.2f", CACurrentMediaTime() - decodeStart)) s "
                 + "(mel \(String(format: "%.2f", melWall)), model \(String(format: "%.2f", predWall)), crf \(String(format: "%.2f", crfWall)), heads \(String(format: "%.2f", headsWall)), units \(Self.computeUnits))")
         }
-        return WindowResult(windowIndex: windowIndex, beginSeconds: beginTime, events: events, lastP: lastP)
+        return WindowResult(windowIndex: windowIndex, beginSeconds: beginTime, edgeSeconds: edgeSeconds,
+                            events: events, lastP: lastP)
     }
 
     /// Runs the audio-evidence length refiner over one window's events.

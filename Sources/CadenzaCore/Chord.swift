@@ -44,7 +44,13 @@ public struct Chord: Sendable, Equatable {
     /// whose spelling produces a known quality at every transposition of the
     /// sounding set wins; ties fall back to the lowest bass note.
     public static func identify(in notes: [NoteEvent], group: Int) -> Chord? {
-        let groupNotes = notes.filter { $0.onsetGroup == group }
+        identify(notes: notes.filter { $0.onsetGroup == group }, group: group)
+    }
+
+    /// The same read, for a caller that already holds one group: the whole
+    /// take no longer has to be filtered per group, which is what made a long
+    /// session cost a full pass over its history for every chord in it.
+    public static func identify(notes groupNotes: [NoteEvent], group: Int) -> Chord? {
         guard groupNotes.count >= 3 else { return nil }
 
         let sounding = Set(groupNotes.map(\.pitchClass))
