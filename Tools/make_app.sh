@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 #
-# Builds the Cadenza app bundle at build/Cadenza.app.
+# Builds the Cadenza app bundle at build/Cadenza.app and installs it to
+# /Applications, leaving that installed copy as the only Cadenza on the
+# machine (pass CADENZA_KEEP_BUILD=1 to keep the assembled bundle).
 #
 # Usage: Tools/make_app.sh
 
@@ -88,4 +90,14 @@ fi
 cp -R "${app_dir}" /Applications/Cadenza.app
 codesign --force -s - /Applications/Cadenza.app
 
-echo "You can run: open build/Cadenza.app (or open -a Cadenza)"
+# One Cadenza on the machine, the installed one: leaving the assembled copy
+# behind put a second Cadenza.app in Spotlight and Launchpad. The DMG build
+# needs the bundle for its staging folder and sets CADENZA_KEEP_BUILD=1.
+if [ "${CADENZA_KEEP_BUILD:-0}" != "1" ]; then
+  rm -rf "${app_dir}"
+  echo "Removed the assembled copy; /Applications/Cadenza.app is the only Cadenza"
+else
+  echo "Kept ${app_dir} for the DMG build"
+fi
+
+echo "You can run: open -a Cadenza"

@@ -19,7 +19,7 @@ final_dmg="${build_dir}/${dmg_name}"
 
 echo "Building release and app bundle"
 swift build -c release --product CadenzaApp >/dev/null
-bash Tools/make_app.sh >/dev/null
+CADENZA_KEEP_BUILD=1 bash Tools/make_app.sh >/dev/null
 
 echo "Staging ${staging}"
 cp -R "${app}" "${staging}/Cadenza.app"
