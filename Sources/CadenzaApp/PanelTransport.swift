@@ -37,6 +37,23 @@ struct PanelTransport {
     var sessionHasAudio: (SessionRecord) -> Bool = { _ in false }
     /// Import a MIDI file as a session.
     var importMIDI: () -> Void = { }
+    /// Reads a take back from its MIDI and describes it: key, tempo,
+    /// harmony, phrasing, cadences, texture, register.
+    var describeSession: (SessionRecord) -> TakeDescription? = { _ in nil }
+    /// One line in the panel's status area, for actions that only need to
+    /// tell the player what happened.
+    var showStatus: (String, Bool) -> Void = { _, _ in }
+    /// The time machine: where playback sits (0-1) and a scrub request.
+    var playbackProgress: () -> Double = { 0 }
+    var scrubPlayback: (Double) -> Void = { _ in }
+    /// Retroactive capture: keep the last minute of playing as its own
+    /// session, and whether there is anything in the window to keep.
+    var keepLastMinute: () -> Void = { }
+    var canKeepLastMinute: () -> Bool = { false }
+    /// The practice click: on/off, and the tempo it runs at.
+    var toggleMetronome: () -> Void = { }
+    var metronomeActive: () -> Bool = { false }
+    var metronomeTempo: () -> Double = { 96 }
     /// A-B looping over the playing session: marks at the current moment,
     /// the loop toggle, and the practice rate.
     var setLoopPoint: (Bool) -> Void = { _ in }   // true = A, false = B
@@ -137,4 +154,78 @@ func paperInkRects(
     }
     rects.append(("wordmark", view.convert(wordmark.frame, to: view)))
     return rects
+}
+
+
+/// The take's description as a glass card: one sentence a person can read at
+/// a glance, then the captioned lines behind it. Read-only, so it carries no
+/// controls at all — the row's menu is where actions live.
+@MainActor
+final class TakeDescriptionPopover: NSPopover {
+    init(_ description: TakeDescription, title: String) {
+        super.init()
+        behavior = .transient
+        let width: CGFloat = 320
+        let controller = NSViewController()
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 260))
+        let backdrop = makeGlassBackdrop(cornerRadius: 16, interactive: false)
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(backdrop)
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 16, right: 18)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+
+        let heading = makeInkLabel(title,
+                                   font: .systemFont(ofSize: 11, weight: .medium),
+                                   color: PaperTheme.secondaryInk)
+        stack.addArrangedSubview(heading)
+        let summary = makeInkLabel(description.summary,
+                                   font: PaperTheme.displaySerif(17, weight: .regular),
+                                   color: PaperTheme.ink)
+        summary.maximumNumberOfLines = 3
+        summary.lineBreakMode = .byWordWrapping
+        summary.preferredMaxLayoutWidth = width - 36
+        stack.addArrangedSubview(summary)
+        stack.addArrangedSubview(HairlineView())
+
+        for line in description.lines {
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.alignment = .firstBaseline
+            row.spacing = 10
+            let caption = makeInkLabel(line.caption,
+                                       font: .systemFont(ofSize: 11, weight: .medium),
+                                       color: PaperTheme.secondaryInk)
+            caption.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+            let value = makeInkLabel(line.value,
+                                     font: .systemFont(ofSize: 12, weight: .regular),
+                                     color: PaperTheme.ink)
+            value.maximumNumberOfLines = 2
+            value.lineBreakMode = .byWordWrapping
+            row.addArrangedSubview(caption)
+            row.addArrangedSubview(value)
+            stack.addArrangedSubview(row)
+        }
+
+        NSLayoutConstraint.activate([
+            backdrop.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            backdrop.topAnchor.constraint(equalTo: root.topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: root.topAnchor),
+            stack.widthAnchor.constraint(equalToConstant: width),
+        ])
+        controller.view = root
+        contentViewController = controller
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
 }

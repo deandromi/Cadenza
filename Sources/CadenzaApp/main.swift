@@ -53,6 +53,11 @@ if CommandLine.arguments.contains("--screen-shot") {
     SmokeMain.runScreenShot()
     exit(0)
 }
+if CommandLine.arguments.contains("--describe-latest") {
+    @MainActor func go() { SmokeMain.runDescribeLatest() }
+    MainActor.assumeIsolated { go() }
+    exit(0)
+}
 if CommandLine.arguments.contains("--sessions-probe") {
     @MainActor func go() { SmokeMain.runSessionsProbe() }
     MainActor.assumeIsolated { go() }

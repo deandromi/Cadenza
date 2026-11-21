@@ -15,6 +15,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// the session piano: playback sounds inside Cadenza instead of only
     /// leaving the app over the virtual MIDI source
     private let piano = PianoSampler()
+    private let metronome = Metronome()
+    /// Bumped whenever a session starts or stops, so a count-in that is
+    /// still running when the user presses Stop starts nothing.
+    private var countInToken = 0
+    /// The rolling minute: every note the engine strikes, with when it
+    /// arrived, so the best thing you played can be kept after the fact.
+    private var recentNotes: [(note: NoteEvent, at: Date)] = []
+    private static let retroWindow: TimeInterval = 60
+    /// true between pressing New session with a click and the first note.
+    private var countingIn = false
     private let store = SessionStore(directory: SettingsKeys.sessionDirectory)
     private var sheetController: SheetMusicController?
     /// the sheet section opened from an archived session's row
@@ -32,6 +42,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// where a paused playback resumes: the next note's index and the onset
     /// of the last note already sent
     private var playbackCursor = 0
+    /// The playing session's notes, read once: the scrub hand polls the
+    /// transport every second and re-parsing a MIDI file that often is work
+    /// nobody asked for.
+    private var playbackNotesCache: [NoteEvent] = []
+    private var playbackNotesCacheID: UUID?
     private var playbackPreviousOnset = 0.0
     /// A-B loop over the playing session, with the practice rate
     private var loopEnabled = false
@@ -60,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             guard let self else { return }
             switch kind {
             case .struck:
+                self.rememberRecent(event)
                 self.publisher.noteStruck(event)
                 self.screen?.noteStruck(event)
             case .extended:
@@ -172,6 +188,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             exportSessionBoth: { [weak self] record in self?.exportSession(record, choice: .both) },
             sessionHasAudio: { [weak self] record in self?.store.sessions.first(where: { $0.id == record.id })?.hasAudio ?? false },
             importMIDI: { [weak self] in self?.importMIDI() },
+            describeSession: { [weak self] record in
+                guard let self, let notes = self.store.notes(for: record) else { return nil }
+                return TakeAnalysis.describe(notes: notes)
+            },
+            showStatus: { [weak self] text, isError in
+                self?.screen?.setStatus(text, error: isError)
+            },
+            playbackProgress: { [weak self] in self?.playbackProgress() ?? 0 },
+            scrubPlayback: { [weak self] fraction in self?.scrubPlayback(to: fraction) },
+            keepLastMinute: { [weak self] in self?.keepLastMinute() },
+            canKeepLastMinute: { [weak self] in
+                guard let self else { return false }
+                return self.recentNotes.contains { Date().timeIntervalSince($0.at) <= Self.retroWindow }
+            },
+            toggleMetronome: { [weak self] in self?.toggleMetronome() },
+            metronomeActive: { [weak self] in self?.metronome.isRunning ?? false },
+            metronomeTempo: { [weak self] in self?.metronome.bpm ?? 96 },
             setLoopPoint: { [weak self] isA in self?.setLoopPoint(isA) },
             toggleLoop: { [weak self] in self?.toggleLoop() },
             loopActive: { [weak self] in self?.loopEnabled ?? false },
@@ -221,6 +254,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                                    action: #selector(menuPlayPause), keyEquivalent: "p")
         playPause.target = self
         sessionMenu.addItem(playPause)
+        let keepMinute = NSMenuItem(title: "Keep last minute",
+                                    action: #selector(menuKeepLastMinute), keyEquivalent: "k")
+        keepMinute.keyEquivalentModifierMask = [.command, .shift]
+        keepMinute.target = self
+        sessionMenu.addItem(keepMinute)
         let refresh = NSMenuItem(title: "Refresh MIDI port",
                                  action: #selector(menuRefreshMIDI), keyEquivalent: "r")
         refresh.target = self
@@ -278,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc private func menuNewSession() { toggleListening() }
     @objc private func menuPlayPause() { togglePlayPause() }
+    @objc private func menuKeepLastMinute() { keepLastMinute() }
     @objc private func menuRefreshMIDI() { republishMIDIPort() }
     @objc private func menuSessions() { openSessions() }
     @objc private func menuSheet() { openSheetMusic() }
@@ -329,6 +368,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             let controller = SettingsController()
             controller.publishedMIDIPort = { [weak self] in self?.publisher.publishedName }
             controller.onRefreshMIDI = { [weak self] in self?.republishMIDIPort() }
+            controller.onMetronomeSettingsChanged = { [weak self] in
+                guard let self, self.metronome.isRunning else { return }
+                self.metronome.bpm = SettingsKeys.metronomeBPM
+                self.metronome.beatsPerBar = SettingsKeys.metronomeBeats
+                self.metronome.start()
+                self.screen?.syncTransport()
+            }
             controller.onSessionDirectoryChanged = { [weak self] url in
                 self?.store.setDirectory(url)
                 self?.refreshSessions()
@@ -337,7 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             settingsController = controller
         }
         guard let content = settingsController?.overlayContent() else { return }
-        screen?.presentOverlay(content, size: NSSize(width: 460, height: 430))
+        screen?.presentOverlay(content, size: NSSize(width: 460, height: 600))
     }
 
     // MARK: per-session actions
@@ -497,6 +543,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return notes.isEmpty ? 0 : notes[index].onset
     }
 
+    /// Where the playing take sits, 0 to 1, for the panel's scrub hand.
+    private func playbackProgress() -> Double {
+        guard let record = playingRecord, let notes = cachedPlaybackNotes(for: record), !notes.isEmpty else {
+            return 0
+        }
+        let total = max(0.5, notes.map(\.offset).max() ?? 0.5)
+        return min(1, max(0, currentPlaybackMoment() / total))
+    }
+
+    /// The time machine: jump to a point in the take and keep playing from
+    /// there, with the keybed and the endless measure following. Scrubbing
+    /// only moves the transport; nothing is exported from a scrub.
+    private func scrubPlayback(to fraction: Double) {
+        guard let record = playingRecord, let notes = cachedPlaybackNotes(for: record), !notes.isEmpty else { return }
+        let total = max(0.5, notes.map(\.offset).max() ?? 0.5)
+        let target = min(max(0, fraction), 1) * total
+        var index = notes.firstIndex(where: { $0.onset >= target }) ?? (notes.count - 1)
+        index = min(notes.count - 1, max(0, index))
+        playbackTask?.cancel()
+        playbackTask = nil
+        publisher.panic()
+        piano.silence()
+        playbackCursor = index
+        playbackPreviousOnset = max(0, target - 0.05)
+        playbackCount = 0
+        guard !playbackPaused else {
+            screen?.syncTransport()
+            return
+        }
+        startPlayback(from: record, cursor: index, previousOnset: playbackPreviousOnset)
+    }
+
+    /// The playing take's notes, sorted by onset, read once per session.
+    private func cachedPlaybackNotes(for record: SessionRecord) -> [NoteEvent]? {
+        if playbackNotesCacheID == record.id { return playbackNotesCache }
+        guard let notes = store.notes(for: record) else { return nil }
+        playbackNotesCache = notes.sorted { $0.onset < $1.onset }
+        playbackNotesCacheID = record.id
+        return playbackNotesCache
+    }
+
     private func toggleLoop() {
         guard let a = loopA, let b = loopB, b > a else {
             present(error: "Set loop points A and B first, B after A")
@@ -514,14 +601,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         archiveOverlay?.update(sessions: store.sessions, playing: playingRecord)
     }
 
+    // MARK: retroactive capture
+
+    /// Adds a struck note to the rolling minute and drops what fell out of
+    /// it. One array of small values, pruned on every strike, so the buffer
+    /// cannot grow past the window.
+    private func rememberRecent(_ note: NoteEvent) {
+        let now = Date()
+        recentNotes.append((note, now))
+        if recentNotes.count > 4096 {
+            recentNotes.removeFirst(recentNotes.count - 4096)
+        }
+        recentNotes.removeAll { now.timeIntervalSince($0.at) > Self.retroWindow + 10 }
+    }
+
+    /// Keeps the last minute of playing as its own session without touching
+    /// the one that is running: you play something worth keeping, press the
+    /// button, and carry on.
+    private func keepLastMinute() {
+        let now = Date()
+        let window = recentNotes.filter { now.timeIntervalSince($0.at) <= Self.retroWindow }
+        guard window.count >= 2 else {
+            present(error: "Nothing played in the last minute yet")
+            return
+        }
+        let first = window.map(\.note.onset).min() ?? 0
+        let notes = window.map { entry -> NoteEvent in
+            var note = entry.note
+            note.onset = max(0, entry.note.onset - first)
+            return note
+        }
+        let span = notes.map(\.offset).max() ?? 0
+        let began = Date().addingTimeInterval(-span)
+        if let record = store.saveSession(notes: notes, startedAt: began,
+                                          durationSeconds: span, audio: nil,
+                                          keepAudio: false) {
+            refreshSessions()
+            let described = TakeAnalysis.describe(notes: notes)
+            screen?.setStatus(described.map { "Kept the last minute · \($0.summary)" }
+                              ?? "Kept the last minute as \(record.label)", error: false)
+        } else {
+            present(error: "Couldn't keep that minute")
+        }
+    }
+
+    // MARK: metronome
+
+    /// The practice click: on while you play, off when you press it again.
+    /// Reading the settings at every start means a tempo changed in Settings
+    /// applies to the next click, not the next launch.
+    private func toggleMetronome() {
+        metronome.bpm = SettingsKeys.metronomeBPM
+        metronome.beatsPerBar = SettingsKeys.metronomeBeats
+        metronome.toggle()
+        screen?.syncTransport()
+        screen?.setStatus(metronome.isRunning
+                          ? "Click on · \(Int(metronome.bpm)) bpm"
+                          : "Click off", error: false)
+    }
+
     // MARK: transport actions
 
     /// One action: it starts the session that listens, plays out as MIDI,
     /// and is what export hands over, and it stops that session again.
     private func toggleListening() {
-        if engine.isRunning {
+        if engine.isRunning || countingIn {
+            countingIn = false
+            countInToken += 1
             engine.stop()
             publisher.panic()
+            metronome.stop()
+            screen?.syncTransport()
             screen?.sessionStopped()
             screen?.syncTransport()
             sheetController?.sessionEnded()
@@ -537,7 +687,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     keepAudio: keepAudio)
                 if let record {
                     engraveSessionPDF(record, notes: engine.notes)
-                    screen?.setStatus(keepAudio ? "Saved session to the archive" : "Saved session (audio discarded)", error: false)
+                    // the take describes itself the moment it stops: key,
+                    // tempo and phrasing come from the notes that were just
+                    // played, so the player learns something before opening
+                    // anything
+                    if let described = TakeAnalysis.describe(notes: engine.notes) {
+                        screen?.setStatus(described.summary, error: false)
+                    } else {
+                        screen?.setStatus(keepAudio ? "Saved session to the archive" : "Saved session (audio discarded)", error: false)
+                    }
                 } else {
                     // empty session: nothing earned its folder, the streamed
                     // recording goes with it
@@ -552,11 +710,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 present(error: "Model files not found next to the app")
                 return
             }
-            engine.start(tensorsDir: assets.tensors, modelURL: assets.model)
-            sessionStartedAt = Date()
-            screen?.sessionStarted()
-            screen?.syncTransport()
-            sheetController?.reset()
+            let begin = { [weak self] in
+                guard let self else { return }
+                self.engine.start(tensorsDir: assets.tensors, modelURL: assets.model)
+                self.sessionStartedAt = Date()
+                self.screen?.sessionStarted()
+                self.screen?.syncTransport()
+                self.sheetController?.reset()
+                self.present(error: self.engine.lastError)
+            }
+            // A click that is already running gives the player one bar of
+            // count-in before the session takes the first note: the whole
+            // reason to have a metronome is to start in time.
+            if metronome.isRunning {
+                countingIn = true
+                countInToken += 1
+                let token = countInToken
+                screen?.setStatus("Counting in · \(Int(metronome.bpm)) bpm", error: false)
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: UInt64(metronome.barSeconds * 1_000_000_000))
+                    guard self.countInToken == token, !self.engine.isRunning else { return }
+                    self.countingIn = false
+                    begin()
+                }
+            } else {
+                begin()
+            }
         }
         present(error: engine.lastError)
     }
@@ -602,6 +781,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return
         }
         playingRecord = record
+        playbackNotesCacheID = nil
         playbackPaused = false
         playbackCursor = 0
         playbackPreviousOnset = 0
@@ -801,6 +981,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         piano.park()
         playingRecord = nil
+        playbackNotesCacheID = nil
+        playbackNotesCache = []
         // loop points belong to the stopped playback; the next one starts clean
         loopA = nil
         loopB = nil

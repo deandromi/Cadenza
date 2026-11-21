@@ -39,6 +39,11 @@ final class InferenceContext: @unchecked Sendable {
     /// The compute-unit choice for the backbone, measured with the replay
     /// harness on this machine: gpu median 0,73 s per window versus 1,02 s
     /// cpuOnly, and the neural engine is slower still and returns phantom
+    /// Onset-score bias for threshold studies, in logit units; nil (unset)
+    /// leaves the model's own calibration alone.
+    static let onsetBias: Float? = ProcessInfo.processInfo.environment["CADENZA_ONSET_BIAS"]
+        .flatMap { Float($0) }
+
     /// onsets in bulk. GPU is the default; CADENZA_COMPUTE_UNITS overrides
     /// (cpuOnly, cpuAndNE, all).
     static var computeUnits: MLComputeUnits {
@@ -98,6 +103,20 @@ final class InferenceContext: @unchecked Sendable {
         let context = UnsafeBufferPointer(
             start: contextArray.dataPointer.assumingMemoryBound(to: Float.self),
             count: contextArray.count)
+        // A study knob, not a product setting: shifting every diagonal of the
+        // score tensor moves the semi-CRF's own onset decision without
+        // touching the model, which is exactly what a threshold study needs.
+        // Unset means the model's own calibration.
+        if let bias = Self.onsetBias, bias != 0 {
+            let mutable = UnsafeMutableBufferPointer(
+                start: UnsafeMutablePointer(mutating: score.baseAddress!), count: score.count)
+            for frame in 0..<t {
+                let base = (frame * t + frame) * symbolCount
+                for symbol in 0..<symbolCount {
+                    mutable[base + symbol] += bias
+                }
+            }
+        }
         let crfStart = CACurrentMediaTime()
         // every symbol's suffix DP is independent: spread them over the cores
         var intervals = [[FrameInterval]](repeating: [], count: symbolCount)

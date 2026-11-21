@@ -937,6 +937,61 @@ sheetLayout: do {
     expect(continued, "the tied note resumes on the next downbeat")
 }
 
+// MARK: take description
+
+do {
+    // a I-V-vi-IV take in C major, one chord a bar at 100 bpm
+    var progression: [NoteEvent] = []
+    let chords = [[60, 64, 67], [55, 59, 62], [57, 60, 64], [53, 57, 60]]
+    let bar = 2.4
+    for (index, chord) in chords.enumerated() {
+        for pitch in chord {
+            progression.append(NoteEvent(pitch: pitch, velocity: 80,
+                                         onset: Double(index) * bar, duration: bar * 0.9))
+        }
+    }
+    if let described = TakeAnalysis.describe(notes: progression) {
+        expect(described.keyName == "C major", "a I-V-vi-IV take reads as C major, got \(described.keyName)")
+        expect(abs(described.tempoBPM - 100) < 6, "the pulse reads near 100 bpm, got \(described.tempoBPM)")
+        expect(described.lines.contains { $0.caption == "Harmony" }, "the description names its harmonic rhythm")
+        expect(described.summary.contains("C major"), "the one-line summary carries the key")
+    } else {
+        expect(false, "a four-chord take produces a description")
+    }
+
+    // silence splits phrases, and the closing chord decides the cadence
+    var phrased: [NoteEvent] = []
+    for (index, pitch) in [72, 71, 69, 67].enumerated() {
+        phrased.append(NoteEvent(pitch: pitch, velocity: 70, onset: Double(index) * 0.5, duration: 0.4))
+    }
+    phrased.append(NoteEvent(pitch: 60, velocity: 70, onset: 6.0, duration: 1.6))
+    phrased.append(NoteEvent(pitch: 64, velocity: 70, onset: 6.0, duration: 1.6))
+    phrased.append(NoteEvent(pitch: 67, velocity: 70, onset: 6.0, duration: 1.6))
+    if let described = TakeAnalysis.describe(notes: phrased) {
+        let phraseLine = described.lines.first { $0.caption == "Phrases" }?.value ?? ""
+        expect(phraseLine.contains("2 phrases"), "a long silence splits the take into two phrases, got \(phraseLine)")
+        let cadenceLine = described.lines.first { $0.caption == "Cadences" }?.value ?? ""
+        expect(cadenceLine.contains("1 on the tonic"), "a closing C major chord reads as a tonic cadence, got \(cadenceLine)")
+    } else {
+        expect(false, "a phrased take produces a description")
+    }
+
+    // a minor take stays minor
+    if let described = TakeAnalysis.describe(notes: [
+        NoteEvent(pitch: 57, velocity: 80, onset: 0, duration: 1),
+        NoteEvent(pitch: 60, velocity: 80, onset: 0, duration: 1),
+        NoteEvent(pitch: 64, velocity: 80, onset: 0, duration: 1),
+        NoteEvent(pitch: 55, velocity: 80, onset: 1, duration: 1),
+        NoteEvent(pitch: 59, velocity: 80, onset: 1, duration: 1),
+        NoteEvent(pitch: 62, velocity: 80, onset: 1, duration: 1),
+        NoteEvent(pitch: 57, velocity: 80, onset: 2, duration: 1),
+    ]) {
+        expect(described.isMinor, "an A minor cadence reads as minor, got \(described.keyName)")
+    }
+
+    expect(TakeAnalysis.describe(notes: []) == nil, "an empty take has no description")
+}
+
 if failures == 0 {
     print("all \(checks) checks passed")
 } else {

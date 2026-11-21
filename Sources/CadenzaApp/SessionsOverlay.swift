@@ -140,6 +140,7 @@ final class SessionsOverlayView: NSView {
             }
             row.onRename = { [weak self] in self?.rename(record) }
             row.onDelete = { [weak self] in self?.delete(record) }
+            row.onDescribe = { [weak self] anchor in self?.describe(record, from: anchor) }
             row.onCopyMIDI = { [weak self] in self?.transport.copySessionMIDI(record) }
             row.onPlayAlong = { [weak self] in
                 self?.onLeave?()
@@ -171,6 +172,17 @@ final class SessionsOverlayView: NSView {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         transport.renameSession(record, field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// The take describes itself: the row asks the shell to read the MIDI
+    /// back and hands the lines to a glass card anchored on the row.
+    private func describe(_ record: SessionRecord, from anchor: NSView) {
+        guard let description = transport.describeSession(record) else {
+            transport.showStatus("That session has no notes to describe", true)
+            return
+        }
+        let popover = TakeDescriptionPopover(description, title: record.name ?? "This take")
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxX)
     }
 
     private func delete(_ record: SessionRecord) {
@@ -216,6 +228,7 @@ final class SessionRow: NSView {
     var onSheet: (() -> Void)?
     var onRename: (() -> Void)?
     var onDelete: (() -> Void)?
+    var onDescribe: ((NSView) -> Void)?
     var onCopyMIDI: (() -> Void)?
     var onPlayAlong: (() -> Void)?
     var onExport: ((ExportChoice) -> Void)?
@@ -353,6 +366,9 @@ final class SessionRow: NSView {
         let along = menu.addItem(withTitle: "Play along", action: #selector(playAlongTapped), keyEquivalent: "")
         along.target = self
         menu.addItem(.separator())
+        let describe = menu.addItem(withTitle: "Describe take", action: #selector(describeTapped), keyEquivalent: "")
+        describe.target = self
+        menu.addItem(.separator())
         let remove = menu.addItem(withTitle: "Delete…", action: #selector(deleteTapped), keyEquivalent: "")
         remove.target = self
         menu.popUp(positioning: nil, at: NSPoint(x: bounds.maxX - 20, y: 8), in: self)
@@ -362,6 +378,7 @@ final class SessionRow: NSView {
     @objc private func copyTapped() { onCopyMIDI?() }
     @objc private func renameTapped() { onRename?() }
     @objc private func deleteTapped() { onDelete?() }
+    @objc private func describeTapped() { onDescribe?(self) }
     @objc private func playAlongTapped() { onPlayAlong?() }
     @objc private func exportMIDITapped() { onExport?(.midi) }
     @objc private func exportAudioTapped() { onExport?(.audio) }

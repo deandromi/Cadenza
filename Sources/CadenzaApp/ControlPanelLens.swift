@@ -27,11 +27,17 @@ final class ControlPanelLens: NSView {
     /// the transport under the timer: play/pause the session in hand, stop it
     private let playPauseButton = NSButton(title: "Play", target: nil, action: nil)
     private let stopPlaybackButton = NSButton(title: "Stop", target: nil, action: nil)
+    /// the practice click, on its own line: a click that runs while you play
+    private let metronomeButton = NSButton(title: "Metronome", target: nil, action: nil)
+    /// retroactive capture: keep what the last minute held, after the fact
+    private let keepButton = NSButton(title: "Keep last minute", target: nil, action: nil)
     /// the loop row, visible while a session plays: marks, toggle, rate
     private let loopAButton = NSButton(title: "Set A", target: nil, action: nil)
     private let loopBButton = NSButton(title: "Set B", target: nil, action: nil)
     private let loopToggleButton = NSButton(title: "Loop", target: nil, action: nil)
     private let ratePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    /// the time machine: drag through the take, the keys follow
+    private let scrubSlider = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
     private var loopRow: NSStackView?
     private var latestSessions: [SessionRecord] = []
     /// A tap on the panel's paper asks the shell for the session archive;
@@ -49,7 +55,7 @@ final class ControlPanelLens: NSView {
         // views and their relationships are built only after super.init on
         // this OS build: mutation before it orphans subtrees from the live
         // layout engine
-        for button in [listenButton, exportButton, sessionsButton, playPauseButton, stopPlaybackButton, loopAButton, loopBButton, loopToggleButton] {
+        for button in [listenButton, exportButton, sessionsButton, playPauseButton, stopPlaybackButton, metronomeButton, keepButton, loopAButton, loopBButton, loopToggleButton] {
             button.isBordered = false
             button.font = .systemFont(ofSize: loopAButton == button ? 11 : 13, weight: .medium)
             button.contentTintColor = PaperTheme.ink
@@ -81,16 +87,24 @@ final class ControlPanelLens: NSView {
         playbackButtons.orientation = .horizontal
         playbackButtons.spacing = 20
         playbackButtons.alignment = .firstBaseline
-        let loopRow = NSStackView(views: [loopAButton, loopBButton, loopToggleButton, ratePopup])
+        let loopRow = NSStackView(views: [scrubSlider, loopAButton, loopBButton, loopToggleButton, ratePopup])
         loopRow.orientation = .horizontal
         loopRow.spacing = 10
         loopRow.alignment = .firstBaseline
         loopRow.isHidden = true
         self.loopRow = loopRow
+        scrubSlider.isContinuous = true
+        scrubSlider.controlSize = .small
+        scrubSlider.target = self
+        scrubSlider.action = #selector(scrubChanged)
+        scrubSlider.translatesAutoresizingMaskIntoConstraints = false
+        scrubSlider.widthAnchor.constraint(equalToConstant: 120).isActive = true
         addSubview(backdrop)
         addSubview(rows)
         rows.addArrangedSubview(Self.captionedRow("Session", timeLabel))
         rows.addArrangedSubview(playbackButtons)
+        rows.addArrangedSubview(metronomeButton)
+        rows.addArrangedSubview(keepButton)
         rows.addArrangedSubview(loopRow)
         rows.addArrangedSubview(Self.captionedRow("Notes", countLabel))
         rows.addArrangedSubview(Self.captionedRow("Level", levelLine))
@@ -120,6 +134,10 @@ final class ControlPanelLens: NSView {
         playPauseButton.action = #selector(playPauseTapped)
         stopPlaybackButton.target = self
         stopPlaybackButton.action = #selector(stopPlaybackTapped)
+        metronomeButton.target = self
+        metronomeButton.action = #selector(metronomeTapped)
+        keepButton.target = self
+        keepButton.action = #selector(keepTapped)
         loopAButton.target = self
         loopAButton.action = #selector(loopATapped)
         loopBButton.target = self
@@ -171,6 +189,10 @@ final class ControlPanelLens: NSView {
         playPauseButton.isEnabled = listening ? playAlongRunning : (playing || !latestSessions.isEmpty)
         playPauseButton.contentTintColor = playing ? PaperTheme.stamp : PaperTheme.ink
         stopPlaybackButton.isEnabled = playing
+        let clicking = transport.metronomeActive()
+        metronomeButton.title = "Metronome · \(Int(transport.metronomeTempo().rounded()))"
+        metronomeButton.contentTintColor = clicking ? PaperTheme.stamp : PaperTheme.ink
+        keepButton.isEnabled = transport.canKeepLastMinute()
         loopRow?.isHidden = !playing
         loopToggleButton.contentTintColor = transport.loopActive() ? PaperTheme.stamp : PaperTheme.ink
         sessionsButton.title = latestSessions.isEmpty
@@ -187,6 +209,11 @@ final class ControlPanelLens: NSView {
         countLabel.stringValue = notes
         levelLine.setFractionTarget(level)
         levelLine.sounding = sounding
+        // the scrub hand follows playback, but never fights the user's own
+        // drag: while the mouse is down the slider belongs to the pointer
+        if NSEvent.pressedMouseButtons == 0, !scrubSlider.isHidden {
+            scrubSlider.doubleValue = transport.playbackProgress()
+        }
     }
 
     /// The archive changed elsewhere: the door shows how many sessions it
@@ -205,6 +232,10 @@ final class ControlPanelLens: NSView {
     }
 
     // MARK: loop and rate
+
+    @objc private func scrubChanged() {
+        transport.scrubPlayback(scrubSlider.doubleValue)
+    }
 
     @objc private func loopATapped() {
         transport.setLoopPoint(true)
@@ -237,6 +268,16 @@ final class ControlPanelLens: NSView {
         syncTransport()
     }
 
+    @objc private func keepTapped() {
+        transport.keepLastMinute()
+        syncTransport()
+    }
+
+    @objc private func metronomeTapped() {
+        transport.toggleMetronome()
+        syncTransport()
+    }
+
     @objc private func stopPlaybackTapped() {
         transport.stopPlayback()
         syncTransport()
@@ -264,6 +305,9 @@ final class ControlPanelLens: NSView {
             ("panel count", inLens(countLabel)),
             ("play pause button", inLens(playPauseButton)),
             ("stop playback button", inLens(stopPlaybackButton)),
+            ("metronome button", inLens(metronomeButton)),
+            ("scrub slider", inLens(scrubSlider)),
+            ("keep last minute button", inLens(keepButton)),
             ("listen button", inLens(listenButton)),
             ("export button", inLens(exportButton)),
         ]

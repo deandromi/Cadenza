@@ -8,6 +8,8 @@ enum SettingsKeys {
     static let tuningA4Key = "tuningA4"
     static let inputGainKey = "inputGain"
     static let inputDeviceIDKey = "inputDeviceID"
+    static let metronomeBPMKey = "metronomeBPM"
+    static let metronomeBeatsKey = "metronomeBeats"
 
     static var sessionDirectory: URL? {
         guard let path = UserDefaults.standard.string(forKey: sessionDirectoryPath) else { return nil }
@@ -37,6 +39,19 @@ enum SettingsKeys {
     /// CoreAudio device id of the chosen input; 0 means the system default.
     static var inputDeviceID: UInt32 {
         UInt32(UserDefaults.standard.integer(forKey: inputDeviceIDKey))
+    }
+
+    /// The practice click's tempo, 96 unless set; 30 to 240 is the usable
+    /// range for a metronome, so anything outside it is a typo.
+    static var metronomeBPM: Double {
+        let value = UserDefaults.standard.double(forKey: metronomeBPMKey)
+        return (30...240).contains(value) ? value : 96
+    }
+
+    /// Beats per bar for the click: 2, 3, 4 or 6.
+    static var metronomeBeats: Int {
+        let value = UserDefaults.standard.integer(forKey: metronomeBeatsKey)
+        return [2, 3, 4, 6].contains(value) ? value : 4
     }
 }
 
@@ -99,6 +114,11 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         "Input gain · ×\(String(format: "%.1f", SettingsKeys.inputGain))",
         font: .systemFont(ofSize: 11, weight: .medium), color: PaperTheme.secondaryInk)
     private let tuningField = NSTextField(string: String(Int(SettingsKeys.tuningA4)))
+    private let metronomeField = NSTextField(string: String(Int(SettingsKeys.metronomeBPM)))
+    private let metronomePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    /// The metronome is retuned the moment a setting changes, so a running
+    /// click never sits at the old tempo.
+    var onMetronomeSettingsChanged: (() -> Void)?
     /// Called after the session directory changed so the app shell can point
     /// the session store at the new folder.
     var onSessionDirectoryChanged: ((URL) -> Void)?
@@ -116,7 +136,7 @@ final class SettingsController: NSObject, NSApplicationDelegate {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let size = NSSize(width: 420, height: 484)
+        let size = NSSize(width: 420, height: 566)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable],
@@ -140,7 +160,7 @@ final class SettingsController: NSObject, NSApplicationDelegate {
     }
 
     /// The settings section built for the app's overlay card.
-    func overlayContent(size: NSSize = NSSize(width: 460, height: 520)) -> NSView {
+    func overlayContent(size: NSSize = NSSize(width: 460, height: 600)) -> NSView {
         makeContent(size: size)
     }
 
@@ -224,6 +244,16 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         tuningField.action = #selector(tuningCommitted)
         tuningField.widthAnchor.constraint(equalToConstant: 64).isActive = true
 
+        metronomeField.font = .systemFont(ofSize: 13, weight: .regular)
+        metronomeField.target = self
+        metronomeField.action = #selector(metronomeTempoCommitted)
+        metronomeField.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        metronomePopup.addItems(withTitles: ["2 beats", "3 beats", "4 beats", "6 beats"])
+        metronomePopup.selectItem(at: [2, 3, 4, 6].firstIndex(of: SettingsKeys.metronomeBeats) ?? 2)
+        metronomePopup.font = .systemFont(ofSize: 13, weight: .regular)
+        metronomePopup.target = self
+        metronomePopup.action = #selector(metronomeMeterChanged)
+
         func settingRow(_ caption: NSView, _ control: NSView, accessory: NSView? = nil) -> NSStackView {
             let row = NSStackView(views: [caption, control])
             row.orientation = .horizontal
@@ -242,6 +272,8 @@ final class SettingsController: NSObject, NSApplicationDelegate {
             "The standard 440 matches most pianos",
             font: .systemFont(ofSize: 11, weight: .regular), color: PaperTheme.secondaryInk)
         let gainRow = settingRow(caption("Gain"), gainSlider, accessory: gainCaption)
+        let metronomeRow = settingRow(caption("Click, bpm"), metronomeField)
+        let metronomeMeterRow = settingRow(caption("Click, meter"), metronomePopup)
 
         rows.addArrangedSubview(makeInkLabel(
             "Settings",
@@ -254,6 +286,8 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         rows.addArrangedSubview(gainRow)
         rows.addArrangedSubview(tuningRow)
         rows.addArrangedSubview(tuningNote)
+        rows.addArrangedSubview(metronomeRow)
+        rows.addArrangedSubview(metronomeMeterRow)
 
         // the virtual port every other app and web page listens to
         let refreshMIDI = NSButton(title: "Republish", target: self, action: #selector(refreshMIDITapped))
@@ -345,6 +379,21 @@ final class SettingsController: NSObject, NSApplicationDelegate {
 
     /// Tuning is clamped to a sane range; an unusable value falls back to
     /// 440 Hz without removing the user's text.
+    @objc private func metronomeTempoCommitted() {
+        let value = Double(metronomeField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 96
+        let clamped = min(240, max(30, value))
+        UserDefaults.standard.set(clamped, forKey: SettingsKeys.metronomeBPMKey)
+        metronomeField.stringValue = String(Int(clamped))
+        onMetronomeSettingsChanged?()
+    }
+
+    @objc private func metronomeMeterChanged() {
+        let values = [2, 3, 4, 6]
+        let index = min(values.count - 1, max(0, metronomePopup.indexOfSelectedItem))
+        UserDefaults.standard.set(values[index], forKey: SettingsKeys.metronomeBeatsKey)
+        onMetronomeSettingsChanged?()
+    }
+
     @objc private func tuningCommitted() {
         let value = tuningField.doubleValue
         if value >= 380, value <= 520 {

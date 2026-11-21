@@ -1374,7 +1374,32 @@ enum SmokeMain {
     /// Opens the sheet section exactly the way the home screen does, with a
     /// real session, and reports whether the card survived: the failure this
     /// guards against closes the card the moment it appears.
-    /// Exercises the archive on disk: a session is saved, renamed (folder,
+    /// Prints the description of the newest archived take: proof that the
+    /// description path reads a real MIDI off disk. Run with
+    /// `--describe-latest`.
+    @MainActor
+    static func runDescribeLatest() {
+        let defaults = UserDefaults.standard.string(forKey: SettingsKeys.sessionDirectoryPath)
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let directory = defaults ?? documents.appendingPathComponent("Cadenza", isDirectory: true)
+        let store = SessionStore(directory: directory)
+        guard let newest = store.sessions.first else {
+            print("describe-latest: no sessions in \(directory.path)")
+            return
+        }
+        guard let notes = store.notes(for: newest), let described = TakeAnalysis.describe(notes: notes) else {
+            print("describe-latest: no notes for \(newest.label)")
+            return
+        }
+        print("describe-latest: \(newest.label)")
+        print("describe-latest: \(described.summary)")
+        for line in described.lines {
+            print("describe-latest:   \(line.caption) · \(line.value)")
+        }
+    }
+
+    /// Exercises the archive on disk    /// Exercises the archive on disk: a session is saved, renamed (folder,
     /// MIDI, WAV and sheet PDF follow the name) and deleted, with the index
     /// checked at every step. Run with `--sessions-probe`.
     @MainActor

@@ -102,7 +102,9 @@ conversion close to real time with near-perfect note capture.
 
 ## Practice tools
 
-- **Metronome with count-in** — standalone, with adjustable meter and click.
+- **Metronome with count-in** — built: the click runs on its own engine with an
+  accented downbeat, tempo and meter in Settings, and a session started while
+  the click runs waits one bar before it takes its first note.
 - **Transport shortcuts** — keyboard shortcuts for the panel's named
   functions: play/pause, stop, new session, export.
 
@@ -115,19 +117,25 @@ below is a separate door.
 
 ### Catch it
 
-- **Retroactive capture** — a rolling buffer keeps the last minute of
-  playing, so hitting one key puts what was just played into a session. No
-  record button needed before the moment happens.
-- **Time machine** — scrub back and forth through a session with the sheet
-  redrawing and the audio following. Scrubbing only: the export flow stays
-  the session export, so there is exactly one way out of a session.
+- **Retroactive capture** — built: a rolling minute of struck notes is kept
+  with wall-clock stamps, and "Keep last minute" (Shift-Command-K, or the
+  panel) writes that window out as its own session without stopping the one
+  that is running. Audio is not part of the kept minute yet: that needs the
+  recording ring trimmed, not copied.
+- **Time machine** — the transport scrub is built: dragging the scrub hand in
+  the panel jumps playback to that point and the keybed and endless measure
+  follow. Scrubbing only: the export flow stays the session export, so there is
+  exactly one way out of a session. Scrubbing the *sheet* waits for the
+  engraver rewrite.
 
 ### Understand it
 
-- **The take describes itself** — after stopping, a short deterministic
-  description: key, tempo curve, harmonic rhythm, phrases, cadences,
-  texture, register use. Generated from note events in CadenzaCore, no model
-  involved.
+- **The take describes itself** — built in `TakeDescription`: key (Krumhansl
+  profiles, near ties decided by fewest accidentals and a major reading),
+  tempo, harmonic rhythm, phrase count and length, cadences on the tonic or the
+  dominant, texture and register. The summary lands in the panel the moment a
+  session stops, and any archived take describes itself from its MIDI through
+  the row's "Describe take" card. Deterministic, from note events only.
 - **Split the voices** — melody, accompaniment and bass separated into their
   own staves, MIDI tracks and part exports. Not a default view: a toggle,
   because most takes read better as one grand staff.
@@ -357,6 +365,38 @@ as good on quiet input, but it loses on the bass test (0.933 against 1.000)
 and the normalised path is the only one that cannot be sunk by a quiet room or
 a low input gain. It stays the default, with the numbers recorded here rather
 than a hunch.
+
+### Threshold study: measured, no bias ships
+
+The quiet-end question was: does the semi-CRF's own decision point sit too
+high? `CADENZA_ONSET_BIAS` (logit units, applied to every diagonal of the score
+tensor before the DP) made that testable without touching the model.
+
+Reflets dans l'eau, first 30 s, rendered with the recorded piano samples and
+scored by `--eval`:
+
+| onset bias | precision | recall | F1 |
+| --- | --- | --- | --- |
+| 0 | 0.960 | 0.736 | 0.833 |
+| -0.4 | 0.922 | 0.719 | 0.808 |
+| -0.8 | 0.967 | 0.753 | 0.847 |
+| -1.2 | 0.960 | 0.727 | 0.828 |
+| -1.6 | 0.966 | 0.732 | 0.833 |
+
+The same setting repeated gives 0.833 and 0.849, and -0.8 repeated gives 0.847
+and 0.835: the run-to-run spread (±1.6 F1 points) is larger than any difference
+between settings. Nothing here is a win, so **no bias ships**; the knob stays as
+a study tool, documented, never set by the app.
+
+Two harness facts came out of this and are worth remembering:
+
+- The recorded-sample renderer and `MidiReader` disagree on the timeline of a
+  piece (211 rendered notes against 231 truth notes in the same 30 s), which
+  sinks a piece's scores to F1 ≈ 0.14 regardless of the model. Cross-piece
+  averages from that pair are not comparable until the two readers agree.
+- The metric is streaming, so the note *lengths* carry a −3.2 s bias: the
+  playback path compensates latency for onsets but not for offsets. That is the
+  next measurable thing in the length work, not in the threshold.
 
 ### Where the misses are now
 
