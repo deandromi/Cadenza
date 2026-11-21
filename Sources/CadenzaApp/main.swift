@@ -37,6 +37,10 @@ if CommandLine.arguments.contains("--morph-shot") {
     SmokeMain.runMorphShot()
     exit(0)
 }
+if let index = CommandLine.arguments.firstIndex(of: "--sheet-report"), CommandLine.arguments.count > index + 1 {
+    SmokeMain.runSheetReport(path: CommandLine.arguments[index + 1])
+    exit(0)
+}
 if CommandLine.arguments.contains("--menu-check") {
     SmokeMain.runMenuCheck()
     exit(0)

@@ -16,7 +16,7 @@ public enum ScoreLayout {
     public static let lineGap: Double = 9
 
     /// Gap between the two staves of the grand staff, in line gaps.
-    public static let staffGap: Double = 3.2
+    public static let staffGap: Double = 5.0
 
     /// Left padding of a measure that shows clef, key and meter.
     public static let framingPad: Double = 66

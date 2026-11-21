@@ -958,14 +958,103 @@ enum SmokeMain {
         }
     }
 
+
+    /// Renders an engraved result offscreen onto paper and writes it as a
+    /// PNG: the shared tail of the sheet diagnostics.
+    @MainActor
+    static func writeSheet(_ result: SheetDraft.Result, to path: String) {
+        let view = ScoreView(result: result)
+        let size = ScoreView.pointSize(of: result)
+        view.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
+        let scale: CGFloat = 1.6
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width * scale),
+            pixelsHigh: Int(size.height * scale),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )!
+        // paper behind the ink
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        if let ctx = NSGraphicsContext.current {
+            PaperTheme.paper.setFill()
+            NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh).fill()
+            ctx.cgContext.translateBy(x: 0, y: CGFloat(rep.pixelsHigh))
+            ctx.cgContext.scaleBy(x: scale, y: -scale)
+            view.draw(NSRect(x: 0, y: 0, width: size.width, height: size.height))
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        guard let cg = rep.cgImage,
+              let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL,
+                                                         UTType.png.identifier as CFString, 1, nil) else {
+            print("sheet: could not write png")
+            exit(1)
+        }
+        CGImageDestinationAddImage(dest, cg, nil)
+        CGImageDestinationFinalize(dest)
+        print("sheet: wrote \(path)")
+    }
+
     /// Renders an engraved MIDI file's sheet to a PNG, offscreen, so the
     /// notation can be inspected without opening a window: --sheet <mid>
+    /// A known phrase for calibrating the engraver: quarters in both hands,
+    /// a half note, eighths that must beam, a dotted rhythm, a chord with a
+    /// second in it, ledger lines above and below, and a rest.
+    private static func calibrationNotes() -> [NoteEvent] {
+        var notes: [NoteEvent] = []
+        let quarter = 0.5
+        func add(_ pitch: Int, _ beat: Double, _ length: Double) {
+            notes.append(NoteEvent(pitch: pitch, velocity: 70, onset: beat * quarter,
+                                   duration: length * quarter))
+        }
+        // measure 1: five quarters in the right hand over a held bass
+        for (index, pitch) in [72, 74, 76, 77, 79].enumerated() {
+            add(pitch, Double(index), 1)
+        }
+        add(43, 0, 3)
+        add(55, 0, 3)
+        // measure 2: half + quarter, a chord with a second (C5 + D5), bass fifth
+        add(81, 3, 2)
+        add(79, 5, 1)
+        add(72, 3, 2)
+        add(74, 3, 2)
+        add(45, 3, 3)
+        add(52, 3, 3)
+        // measure 3: beamed eighths, then a quarter rest and a quarter
+        for (index, pitch) in [84, 83, 81, 79].enumerated() {
+            add(pitch, 6 + Double(index) * 0.5, 0.5)
+        }
+        add(77, 8, 1)
+        add(50, 6, 3)
+        // measure 4: dotted quarter + eighth, a deep ledger-line bass
+        add(76, 9, 1.5)
+        add(74, 10.5, 0.5)
+        add(36, 9, 3)
+        add(91, 11, 1)
+        return notes
+    }
+
     static func runSheet(path: String) {
         MainActor.assumeIsolated {
             // the app renders its paper world in light mode; the offscreen
             // render must resolve the same dynamic colors
             NSApplication.shared.appearance = NSAppearance(named: .aqua)
             MusicFont.register()
+            if path == "test" {
+                let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
+                let result = SheetDraft.draft(notes: calibrationNotes(), options: options,
+                                              pageWidth: 86)
+                print("sheet draft: \(result.rows.count) rows, fifths \(result.fifths), "
+                    + "\(result.beamGroups.count) beams")
+                writeSheet(result, to: "/tmp/cadenza_sheet.png")
+                return
+            }
             guard let file = try? MidiReader.read(url: URL(fileURLWithPath: path)) else {
                 print("sheet: cannot read \(path)")
                 exit(1)
@@ -990,41 +1079,7 @@ enum SmokeMain {
             print("sheet draft: \(result.rows.count) rows, fifths \(result.fifths), "
                 + "\(result.beamGroups.count) beams, options \(result.options.numerator)/\(result.options.denominator)")
 
-            let view = ScoreView(result: result)
-            let size = ScoreView.pointSize(of: result)
-            view.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
-            let scale: CGFloat = 1.6
-            let rep = NSBitmapImageRep(
-                bitmapDataPlanes: nil,
-                pixelsWide: Int(size.width * scale),
-                pixelsHigh: Int(size.height * scale),
-                bitsPerSample: 8,
-                samplesPerPixel: 4,
-                hasAlpha: true,
-                isPlanar: false,
-                colorSpaceName: .deviceRGB,
-                bytesPerRow: 0,
-                bitsPerPixel: 0
-            )!
-            // paper behind the ink
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-            if let ctx = NSGraphicsContext.current {
-                PaperTheme.paper.setFill()
-                NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh).fill()
-                ctx.cgContext.translateBy(x: 0, y: CGFloat(rep.pixelsHigh))
-                ctx.cgContext.scaleBy(x: scale, y: -scale)
-                view.draw(NSRect(x: 0, y: 0, width: size.width, height: size.height))
-            }
-            NSGraphicsContext.restoreGraphicsState()
-            guard let cg = rep.cgImage,
-                  let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: "/tmp/cadenza_sheet.png") as CFURL, UTType.png.identifier as CFString, 1, nil) else {
-                print("sheet: could not write png")
-                exit(1)
-            }
-            CGImageDestinationAddImage(dest, cg, nil)
-            CGImageDestinationFinalize(dest)
-            print("sheet: wrote /tmp/cadenza_sheet.png")
+            writeSheet(result, to: "/tmp/cadenza_sheet.png")
         }
     }
 
@@ -1196,6 +1251,91 @@ enum SmokeMain {
                 CGImageDestinationAddImage(dest, cg, nil)
                 CGImageDestinationFinalize(dest)
                 print("screen-shot: wrote /tmp/cadenza_screen.png")
+            }
+        }
+    }
+
+    /// Dumps what the engravdraft really holds: rows, measures per row, and
+    /// the first measures' symbols with their ticks and x. The render alone
+    /// cannot say whether the music or the geometry is wrong.
+    static func runSheetReport(path: String) {
+        MainActor.assumeIsolated {
+            guard let file = try? MidiReader.read(url: URL(fileURLWithPath: path)) else {
+                print("report: cannot read \(path)")
+                return
+            }
+            let metaMeter = file.timeSignatures.first?.signature
+            let metaBpm = file.initialTempo
+            let options = SheetDraft.Options(
+                bpm: metaBpm > 0 ? metaBpm : 120,
+                numerator: metaMeter?.beatsPerMeasure ?? 4,
+                denominator: metaMeter?.beatUnit ?? 4)
+            let pedals = file.sustainPedals.map { span in
+                SheetDraft.PedalSpan(startTick: SheetDraft.ticks(seconds: span.start, options: options),
+                                     endTick: SheetDraft.ticks(seconds: span.end, options: options))
+            }
+            let result = SheetDraft.draft(notes: file.notes, options: options, pageWidth: 86, pedals: pedals)
+            let guessed = SheetDraft.inferredOptions(notes: file.notes)
+            print("report: inferred tempo \(Int(guessed.bpm)) meter \(guessed.numerator)/\(guessed.denominator)")
+            print("report: notes \(file.notes.count), range \(file.notes.map(\.pitch).min() ?? 0)-\(file.notes.map(\.pitch).max() ?? 0), "
+                + "tempo \(Int(metaBpm)), meter \(options.numerator)/\(options.denominator), pedals \(pedals.count)")
+            let grid = max(1, SheetDraft.ticksPerQuarter / 4)
+            let ticks = file.notes.map { SheetDraft.ticks(seconds: $0.onset, options: options) }
+            let sample = file.notes.sorted { $0.onset < $1.onset }.prefix(14)
+                .map { String(format: "%.3f/\(SheetDraft.ticks(seconds: $0.onset, options: options))/v\($0.pitch)", $0.onset) }
+                .joined(separator: " ")
+            print("report: first onsets \(sample)")
+            let rawZero = ticks.min() ?? 0
+            let zero = Int((Double(rawZero) / Double(grid)).rounded()) * grid
+            let errors = ticks.map { t -> Int in
+                let v = t - zero
+                let snapped = Int((Double(v) / Double(grid)).rounded()) * grid
+                return abs(v - snapped)
+            }
+            let offGrid = errors.filter { $0 > 40 }.count
+            print("report: grid error avg \(errors.reduce(0,+)/max(1,errors.count)) max \(errors.max() ?? 0), off-grid(>40) \(offGrid)/\(errors.count)")
+            var perMeasure: [Int: Int] = [:]
+            let measureTicks = options.measureTicks
+            for t in ticks { perMeasure[(t - zero) / measureTicks, default: 0] += 1 }
+            let firstTwelve = (0..<12).map { "\($0):\(perMeasure[$0] ?? 0)" }.joined(separator: " ")
+            print("report: notes per measure (first 12) \(firstTwelve), measures \(perMeasure.keys.max().map { $0 + 1 } ?? 0)")
+            print("report: fifths \(result.fifths), rows \(result.rows.count), width \(result.width), "
+                + "rowHeight \(result.rowHeight), total \(result.totalHeight), beams \(result.beamGroups.count)")
+
+            func describe(_ placed: SheetDraft.Placed) -> String {
+                switch placed.symbol {
+                case .chord(let chord):
+                    let notes = chord.notes.map { "\($0.pitch)@\($0.staffPosition)/\($0.head)/dot\($0.dots)/acc\($0.accidental)" }
+                    return "chord t\(chord.startTicks)-\(chord.endTicks) [\(notes.joined(separator: " "))]"
+                case .rest(let t, let kind): return "rest t\(t) \(kind)"
+                case .bar(let t): return "bar t\(t)"
+                case .finalBar(let t): return "final t\(t)"
+                case .clefChange(let clef, let t): return "clef \(clef) t\(t)"
+                case .blank(let t): return "blank t\(t)"
+                case .timeSignature: return "time"
+                case .pedalDown(let t): return "pedalDown t\(t)"
+                case .pedalUp(let t): return "pedalUp t\(t)"
+                }
+            }
+            for (index, row) in result.rows.prefix(4).enumerated() {
+                let bars = row.top.filter { if case .bar = $0.symbol { return true }; return false }
+                print("report: row \(index) first m\(row.firstMeasure) width \(row.width) bars \(bars.count) "
+                    + "top \(row.top.count) bottom \(row.bottom.count) clefs \(row.clefTop)/\(row.clefBottom)")
+            }
+            guard let row = result.rows.first else { return }
+            print("report: first row top symbols:")
+            for placed in row.top.prefix(26) {
+                print(String(format: "  x%.1f  %@", placed.x, describe(placed)))
+            }
+            print("report: first row bottom symbols:")
+            for placed in row.bottom.prefix(20) {
+                print(String(format: "  x%.1f  %@", placed.x, describe(placed)))
+            }
+            if result.rows.count > 1 {
+                print("report: second row top symbols:")
+                for placed in result.rows[1].top.prefix(30) {
+                    print(String(format: "  x%.1f  %@", placed.x, describe(placed)))
+                }
             }
         }
     }

@@ -834,35 +834,58 @@ pedalChecks: do {
 }
 
 pedalSheet: do {
-    // The engraver places pedal marks in the bass track, and a chord at
-    // the same tick survives beside them.
+    // The engraved edition carries no pedal marks: a pedalled performance
+    // has a span under almost every chord, and a mark in the wrong place
+    // reads worse than none. What the engraver must still guarantee is that
+    // the pedal never disturbs the notes it sounds under.
     let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
     let notes = [
         NoteEvent(pitch: 60, velocity: 80, onset: 0.0, duration: 1.8),
         NoteEvent(pitch: 64, velocity: 80, onset: 0.0, duration: 1.8),
-        NoteEvent(pitch: 67, velocity: 80, onset: 0.0, duration: 1.8),
+        NoteEvent(pitch: 60, velocity: 80, onset: 2.0, duration: 0.9),
+        NoteEvent(pitch: 43, velocity: 80, onset: 0.0, duration: 1.8),
+        NoteEvent(pitch: 48, velocity: 80, onset: 2.0, duration: 0.9),
     ]
-    // pedal from just before the chord to mid-way: ticks at 120 bpm are
-    // 480 per quarter, so 2.0 s is exactly one bar span
-    let result = SheetDraft.draft(notes: notes, options: options, pedals: [
+    let plain = SheetDraft.draft(notes: notes, options: options)
+    let pedalled = SheetDraft.draft(notes: notes, options: options, pedals: [
         SheetDraft.PedalSpan(startTick: 950, endTick: 1500),
     ])
-    let downs = result.bottomTrack.filter {
-        if case .pedalDown = $0 { return true }; return false
+    let pedalMarks = pedalled.bottomTrack.filter {
+        if case .pedalDown = $0 { return true }
+        if case .pedalUp = $0 { return true }
+        return false
     }
-    let ups = result.bottomTrack.filter {
-        if case .pedalUp = $0 { return true }; return false
+    expect(pedalMarks.isEmpty, "pedal spans stay out of the ink")
+    expect(pedalled.topTrack == plain.topTrack, "the pedal leaves the treble untouched")
+    expect(pedalled.bottomTrack == plain.bottomTrack, "the pedal leaves the bass untouched")
+    expect(pedalled.rows == plain.rows, "the pedal leaves the layout untouched")
+}
+
+sheetLayout: do {
+    // Four bars of waltz: a bass note on the downbeat, chords on the two
+    // beats after it, a melody above. The sheet must read it as 3/4 — the
+    // default 4/4 would put every barline in the wrong place — and the
+    // system must close with a barline of its own.
+    var notes: [NoteEvent] = []
+    for bar in 0..<4 {
+        let start = Double(bar) * 1.5          // 3/4 at 120 bpm
+        notes.append(NoteEvent(pitch: 43, velocity: 96, onset: start, duration: 0.4))
+        notes.append(NoteEvent(pitch: 55, velocity: 64, onset: start + 0.5, duration: 0.4))
+        notes.append(NoteEvent(pitch: 59, velocity: 62, onset: start + 1.0, duration: 0.4))
+        notes.append(NoteEvent(pitch: 79, velocity: 80, onset: start, duration: 0.45))
+        notes.append(NoteEvent(pitch: 76, velocity: 74, onset: start + 0.5, duration: 0.45))
+        notes.append(NoteEvent(pitch: 72, velocity: 72, onset: start + 1.0, duration: 0.45))
     }
-    expect(downs.count == 1 && downs.first?.startTicks == 950, "the pedal-down mark sits at its tick")
-    expect(ups.count == 1 && ups.first?.startTicks == 1500, "the pedal-up mark sits at its tick")
-    expect(result.bottomTrack.contains {
-        if case .chord = $0 { return true }; return false
-    }, "the chord survives beside the pedal marks")
-    // placement: the marks carry real x positions in the row
-    let placedDown = result.rows.first?.bottom.first {
-        if case .pedalDown = $0.symbol { return true }; return false
-    }
-    expect(placedDown != nil && placedDown?.trackIndex ?? -1 >= 0, "the pedal mark is placed by the layout")
+    let guessed = SheetDraft.inferredOptions(notes: notes)
+    expect(guessed.numerator == 3, "a waltz bass reads as 3/4")
+    let draft = SheetDraft.draft(notes: notes, options: guessed)
+    expect(draft.rows.count == 1, "four bars make one system")
+    expect(draft.rows.first?.top.last.map {
+        if case .finalBar = $0.symbol { return true }
+        return false
+    } ?? false, "the system closes with a final barline")
+    expect(draft.rowsPerPage == SheetEngraver.systemsPerPage,
+           "systems are grouped into pages")
 }
 
 if failures == 0 {

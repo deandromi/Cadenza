@@ -278,6 +278,24 @@ public enum SheetDraft {
         public let rowHeight: Double
         /// Total height in staff spaces, top margin included.
         public let totalHeight: Double
+        /// Systems per printed page; the renderer opens a page gap between
+        /// pages. Zero means one continuous strip.
+        public let rowsPerPage: Int
+
+        public init(options: Options, fifths: Int, topTrack: [Symbol], bottomTrack: [Symbol],
+                    rows: [Row], beamGroups: [BeamGroup], width: Double, rowHeight: Double,
+                    totalHeight: Double, rowsPerPage: Int = 0) {
+            self.options = options
+            self.fifths = fifths
+            self.topTrack = topTrack
+            self.bottomTrack = bottomTrack
+            self.rows = rows
+            self.beamGroups = beamGroups
+            self.width = width
+            self.rowHeight = rowHeight
+            self.totalHeight = totalHeight
+            self.rowsPerPage = rowsPerPage
+        }
     }
 
     // MARK: key signature
@@ -1059,76 +1077,79 @@ public enum SheetDraft {
     /// Ped./release marks under the bass staff.
     public static func draft(notes: [NoteEvent] /* live stream */, options: Options, pageWidth: Double = 88,
                              pedals: [PedalSpan] = []) -> Result {
-        // 1. Onsets to ticks, shifted so the first note lands at zero.
-        var running = notes
-            .sorted { ($0.onset, $0.pitch) < ($1.onset, $1.pitch) }
-            .map { event in
-                RunningNote(start: ticks(seconds: event.onset, options: options),
-                            duration: max(1, ticks(seconds: event.duration, options: options)),
-                            pitch: event.pitch)
+        SheetEngraver.engrave(notes: notes, options: options, pageWidth: pageWidth, pedals: pedals)
+    }
+
+    /// The options a performance itself argues for: tempo from the pulse of
+    /// the played onsets, meter from where the accents fall. A session has no
+    /// file header to read, so this is how the sheet picks a 3/4 waltz over a
+    /// default 4/4, which no amount of engraving can fix afterwards.
+    public static func inferredOptions(notes: [NoteEvent]) -> Options {
+        guard notes.count >= 4 else { return Options() }
+        let tempo = Engraver.inferTempo(notes)
+        let meter = Engraver.inferTimeSignature(notes, tempo: tempo)
+        let bass = bassMeterGuess(notes, tempo: tempo)
+        let numerator = bass ?? meter.beatsPerMeasure
+        return Options(bpm: tempo,
+                       numerator: numerator,
+                       denominator: meter.beatUnit)
+    }
+
+    /// The meter the left hand argues for.
+    ///
+    /// A waltz bass lands on the downbeat and nowhere else, so the lowest
+    /// note of each attack clusters on the bar line of the true meter and
+    /// smears under a wrong one. That is a sharper signal than the full
+    /// onset histogram, which every meter explains about equally well once
+    /// subdivisions are in play. Nil when the bass says nothing.
+    public static func bassMeterGuess(_ notes: [NoteEvent], tempo: Double) -> Int? {
+        let quarter = 60.0 / tempo
+        guard quarter > 0.05 else { return nil }
+        // the lowest note of every attack: the bass voice. Attacks are
+        // grouped by onset rather than by onsetGroup, because an imported
+        // MIDI file carries no group ids.
+        var lowest: [Int: (onset: Double, pitch: Int)] = [:]
+        for note in notes {
+            let slot = Int((note.onset / 0.05).rounded())
+            if let current = lowest[slot] {
+                if note.pitch < current.pitch {
+                    lowest[slot] = (min(current.onset, note.onset), note.pitch)
+                }
+            } else {
+                lowest[slot] = (note.onset, note.pitch)
             }
-        guard let earliest = running.map(\.start).min() else { return emptyResult(options: options) }
-        running = running.map { RunningNote(start: $0.start - earliest, duration: $0.duration, pitch: $0.pitch) }
-
-        // 2. Chordify and round durations.
-        running = chordify(running, options: options)
-        running = roundDurations(running)
-        running.sort { ($0.start, $0.pitch) < ($1.start, $1.pitch) }
-
-        // 3. Hands.
-        let hands = splitHands(running, measureTicks: options.measureTicks)
-
-        // 4. Key.
-        let fifths = guessedFifths(pitches: running.map(\.pitch))
-
-        // 5. Clefs per measure, then chords, then the symbol lists.
-        let lastStart = running.map(\.start).max() ?? 0
-        let clefsTop = measureClefs(notes: hands.top, measureTicks: options.measureTicks)
-        let clefsBottom = measureClefs(notes: hands.bottom, measureTicks: options.measureTicks)
-        let topChords = makeChords(from: hands.top, fifths: fifths, clefs: clefsTop, measureTicks: options.measureTicks)
-        let bottomChords = makeChords(from: hands.bottom, fifths: fifths, clefs: clefsBottom, measureTicks: options.measureTicks)
-        var topSymbols = symbols(from: topChords, clefs: clefsTop, options: options, lastStart: lastStart)
-        var bottomSymbols = symbols(from: bottomChords, clefs: clefsBottom, options: options, lastStart: lastStart)
-
-        // 6. Beams. Group ids double as the beam tag on member stems, so
-        // the ids run through the global beam group list.
-        var allGroups: [BeamGroup] = []
-        let topGroups = beamGroups(for: topSymbols, options: options)
-        applyBeams(to: &topSymbols, groups: topGroups, idOffset: 0)
-        for group in topGroups {
-            allGroups.append(BeamGroup(id: allGroups.count, track: 0,
-                                       chordIndices: group.indices, up: group.up,
-                                       flags: group.flags))
         }
-        let bottomGroups = beamGroups(for: bottomSymbols, options: options)
-        applyBeams(to: &bottomSymbols, groups: bottomGroups, idOffset: allGroups.count)
-        for group in bottomGroups {
-            allGroups.append(BeamGroup(id: allGroups.count, track: 1,
-                                       chordIndices: group.indices, up: group.up,
-                                       flags: group.flags))
+        let all = lowest.values.sorted { $0.onset < $1.onset }
+        // the bass voice proper: the attacks whose lowest note sits in the
+        // bottom of the piece's register. Inner chords on the weak beats sit
+        // a third or fifth higher and would smear the very barline this
+        // measures.
+        let floor = all.map(\.pitch).min() ?? 0
+        let deep = all.filter { $0.pitch <= floor + 7 }
+        let bass = deep.count >= 4 ? deep : all
+        guard bass.count >= 4 else { return nil }
+        let origin = bass[0].onset
+        var best: (numerator: Int, score: Double)?
+        for numerator in [3, 4, 2] {
+            let bar = quarter * Double(numerator)
+            let window = 0.12  // an eighth of a 3/4 bar, near enough to hear
+            var hits = 0
+            for note in bass {
+                let position = ((note.onset - origin).truncatingRemainder(dividingBy: bar)) / bar
+                if position < window || position > 1 - window { hits += 1 }
+            }
+            let share = Double(hits) / Double(bass.count)
+            // how much better than chance on a grid this coarse
+            let score = share - 2 * window
+            if ProcessInfo.processInfo.environment["CDZ_METER_DEBUG"] != nil {
+                print(String(format: "[meter] %d/4 share %.2f score %.2f", numerator, share, score))
+            }
+            if best == nil || score > best!.score + 0.02 {
+                best = (numerator, score)
+            }
         }
-
-        // 6b. Pedal marks ride in the bass track, placed by the layout.
-        // Their ticks live in the same pre-shift space as the notes, so
-        // they shift by the piece's earliest start like everything else.
-        if !pedals.isEmpty {
-            let shifted = pedals.map { PedalSpan(
-                startTick: max(0, $0.startTick - earliest),
-                endTick: max(1, $0.endTick - earliest)) }
-            bottomSymbols = insertingPedals(shifted, into: bottomSymbols)
-        }
-
-        // 7. Rows with column alignment.
-        let rows = layoutRows(top: topSymbols, bottom: bottomSymbols,
-                              clefsTop: clefsTop, clefsBottom: clefsBottom,
-                              options: options, pageWidth: pageWidth)
-
-        let rowHeight = 4.0 + ScoreLayout.staffGap + 4.0 + 2.6
-        let totalHeight = rowHeight * Double(max(1, rows.count)) + 2.2
-        return Result(options: options, fifths: fifths,
-                      topTrack: topSymbols, bottomTrack: bottomSymbols,
-                      rows: rows, beamGroups: allGroups,
-                      width: pageWidth, rowHeight: rowHeight, totalHeight: totalHeight)
+        guard let best, best.score > 0.03 else { return nil }
+        return best.numerator
     }
 
     private static func emptyResult(options: Options) -> Result {
@@ -1145,9 +1166,9 @@ public enum SheetDraft {
         let row = Row(clefTop: .treble, clefBottom: .bass,
                       top: place(top), bottom: place(bottom),
                       firstMeasure: 1, showsFraming: true, width: 88)
-        let rowHeight = 4.0 + ScoreLayout.staffGap + 4.0 + 2.6
+        let rowHeight = 4.0 + ScoreLayout.staffGap + 4.0 + 12.0
         return Result(options: options, fifths: 0, topTrack: top, bottomTrack: bottom,
                       rows: [row], beamGroups: [], width: 88, rowHeight: rowHeight,
-                      totalHeight: rowHeight + 2.2)
+                      totalHeight: rowHeight + 6.0, rowsPerPage: SheetEngraver.systemsPerPage)
     }
 }
