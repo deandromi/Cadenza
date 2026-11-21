@@ -753,7 +753,7 @@ extension AppDelegate {
 
     var playbackPaused: Bool { playback.paused }
 
-    var playbackProgress: Double { playback.progress ?? 0 }
+    var playbackProgress: Double { playback.progress }
 
     func scrubPlayback(_ fraction: Double) { playback.scrub(to: fraction) }
 

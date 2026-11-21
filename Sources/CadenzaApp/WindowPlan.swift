@@ -51,10 +51,6 @@ struct WindowPlan: Sendable, Equatable {
     var frameDuration: Double { Double(WindowGeometry.hopSize) / WindowGeometry.sampleRate }
     var stepWallSeconds: Double { Double(stepSamples) / WindowGeometry.sampleRate }
 
-    func streamingAdvance(decodeWall: Double) -> Double {
-        min(max(streamingStep, decodeWall + 0.10), segmentSeconds)
-    }
-
     /// The reference tier: matches the published transcribe() numbers.
     static let standard = WindowPlan(
         segmentSeconds: 16.0,
