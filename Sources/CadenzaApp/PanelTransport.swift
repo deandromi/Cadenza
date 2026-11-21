@@ -27,6 +27,10 @@ struct PanelTransport {
     var renameSession: (SessionRecord, String) -> Void = { _, _ in }
     /// Removes a session and everything it owns on disk.
     var deleteSession: (SessionRecord) -> Void = { _ in }
+    /// The archive's batch actions: delete a shift-clicked set, or rename it
+    /// from one stem with -1, -2 appended in list order.
+    var deleteSessions: ([SessionRecord]) -> Void = { _ in }
+    var renameSessions: ([SessionRecord], String) -> Void = { _, _ in }
     var copySessionMIDI: (SessionRecord) -> Void = { _ in }
     var openSessionSheet: (SessionRecord) -> Void = { _ in }
     var playAlong: (SessionRecord) -> Void = { _ in }
@@ -50,10 +54,12 @@ struct PanelTransport {
     /// session, and whether there is anything in the window to keep.
     var keepLastMinute: () -> Void = { }
     var canKeepLastMinute: () -> Bool = { false }
+    var keepMinuteEnabled: () -> Bool = { true }
     /// The practice click: on/off, and the tempo it runs at.
     var toggleMetronome: () -> Void = { }
     var metronomeActive: () -> Bool = { false }
     var metronomeTempo: () -> Double = { 96 }
+    var setMetronomeTempo: (Double) -> Void = { _ in }
     /// A-B looping over the playing session: marks at the current moment,
     /// the loop toggle, and the practice rate.
     var setLoopPoint: (Bool) -> Void = { _ in }   // true = A, false = B

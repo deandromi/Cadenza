@@ -30,6 +30,14 @@ final class SessionsOverlayView: NSView {
     private var sessions: [SessionRecord] = []
     private var playingID: UUID?
     private var rows: [SessionRow] = []
+    /// Shift-clicked rows: the archive acts on all of them at once.
+    private var selected: Set<UUID> = []
+    private let selectionBar = NSStackView()
+    private let selectionLabel = makeInkLabel(
+        "",
+        font: .systemFont(ofSize: 11, weight: .medium),
+        color: PaperTheme.secondaryInk
+    )
 
     /// Told the shell to close the overlay, for actions that open something
     /// else (a session's sheet).
@@ -73,19 +81,44 @@ final class SessionsOverlayView: NSView {
         top.spacing = 12
         top.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(top)
-        addSubview(scroll)
+        let renameAll = NSButton(title: "Rename…", target: self, action: #selector(renameSelectionTapped))
+        let deleteAll = NSButton(title: "Delete", target: self, action: #selector(deleteSelectionTapped))
+        for button in [renameAll, deleteAll] {
+            button.isBordered = false
+            button.font = .systemFont(ofSize: 11, weight: .medium)
+            button.contentTintColor = PaperTheme.ink
+        }
+        deleteAll.contentTintColor = PaperTheme.stamp
+        selectionBar.orientation = .horizontal
+        selectionBar.alignment = .firstBaseline
+        selectionBar.spacing = 14
+        selectionBar.addArrangedSubview(selectionLabel)
+        selectionBar.addArrangedSubview(renameAll)
+        selectionBar.addArrangedSubview(deleteAll)
+        selectionBar.isHidden = true
+        selectionBar.translatesAutoresizingMaskIntoConstraints = false
+
+        let column = NSStackView(views: [top, selectionBar, scroll])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 12
+        column.edgeInsets = NSEdgeInsets(top: 26, left: 30, bottom: 20, right: 30)
+        column.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(column)
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(emptyLabel)
 
         NSLayoutConstraint.activate([
-            top.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 30),
-            top.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -30),
-            top.topAnchor.constraint(equalTo: topAnchor, constant: 26),
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
-            scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            scroll.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 16),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20),
+            column.leadingAnchor.constraint(equalTo: leadingAnchor),
+            column.trailingAnchor.constraint(equalTo: trailingAnchor),
+            column.topAnchor.constraint(equalTo: topAnchor),
+            column.bottomAnchor.constraint(equalTo: bottomAnchor),
+            top.leadingAnchor.constraint(equalTo: column.leadingAnchor, constant: 30),
+            top.trailingAnchor.constraint(equalTo: column.trailingAnchor, constant: -30),
+            selectionBar.leadingAnchor.constraint(equalTo: column.leadingAnchor, constant: 30),
+            scroll.leadingAnchor.constraint(equalTo: column.leadingAnchor, constant: 18),
+            scroll.trailingAnchor.constraint(equalTo: column.trailingAnchor, constant: -18),
+            scroll.widthAnchor.constraint(equalTo: column.widthAnchor, constant: -36),
             list.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor, constant: 12),
             list.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor, constant: -12),
             list.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
@@ -107,6 +140,27 @@ final class SessionsOverlayView: NSView {
         rebuild()
     }
 
+    /// Shift-click: a row joins or leaves the selection instead of playing.
+    private func toggleSelection(_ record: SessionRecord) {
+        if selected.contains(record.id) {
+            selected.remove(record.id)
+        } else {
+            selected.insert(record.id)
+        }
+        for row in rows { row.setSelected(selected.contains(row.recordID)) }
+        syncSelectionBar()
+    }
+
+    private var selectedRecords: [SessionRecord] {
+        // the list's own order, newest first, is the order the names follow
+        sessions.filter { selected.contains($0.id) }
+    }
+
+    private func syncSelectionBar() {
+        selectionLabel.stringValue = "\(selected.count) selected"
+        selectionBar.isHidden = selected.isEmpty
+    }
+
     func syncTransport() {
         let listening = transport.isListening()
         newSessionButton.title = listening ? "Stop session" : "New session"
@@ -115,6 +169,7 @@ final class SessionsOverlayView: NSView {
     }
 
     private func rebuild() {
+        selected = selected.filter { id in sessions.contains { $0.id == id } }
         for row in rows {
             list.removeArrangedSubview(row)
             row.removeFromSuperview()
@@ -127,7 +182,9 @@ final class SessionsOverlayView: NSView {
         for record in sessions {
             let row = SessionRow(record: record,
                                  isPlaying: record.id == playingID,
+                                 isSelected: selected.contains(record.id),
                                  hasAudio: record.hasAudio)
+            row.onShiftClick = { [weak self] in self?.toggleSelection(record) }
             row.onPlay = { [weak self] in
                 guard let self else { return }
                 self.transport.playSession(record)
@@ -159,6 +216,48 @@ final class SessionsOverlayView: NSView {
             row.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
         }
         syncTransport()
+        syncSelectionBar()
+    }
+
+    /// Renames every selected take at once: the typed title is the stem and
+    /// the archive numbers them -1, -2 in list order, so a batch of takes
+    /// stays sorted instead of colliding on one name.
+    @objc private func renameSelectionTapped() {
+        let records = selectedRecords
+        guard !records.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = records.count == 1 ? "Rename session" : "Rename \(records.count) sessions"
+        alert.informativeText = records.count == 1
+            ? "Give “\(records[0].label)” a name."
+            : "One title for all of them; they are numbered -1, -2 and so on."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 22))
+        field.stringValue = records.count == 1 ? (records[0].name ?? "") : ""
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let base = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !base.isEmpty else { return }
+        transport.renameSessions(records, base)
+        selected.removeAll()
+        syncSelectionBar()
+    }
+
+    @objc private func deleteSelectionTapped() {
+        let records = selectedRecords
+        guard !records.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = records.count == 1 ? "Delete session" : "Delete \(records.count) sessions"
+        alert.informativeText = records.count == 1
+            ? "“\(records[0].label)” and its files go away for good."
+            : "All \(records.count) of them, with their MIDI, audio and sheet files, go away for good."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        transport.deleteSessions(records)
+        selected.removeAll()
+        syncSelectionBar()
     }
 
     private func rename(_ record: SessionRecord) {
@@ -220,11 +319,15 @@ final class SessionRow: NSView {
     private let metaLabel: NSTextField
     private let menuButton = NSButton()
     private var isPlaying: Bool
+    private var isSelected: Bool
     private var tracking: NSTrackingArea?
+    var recordID: UUID { record.id }
     private var hovered = false {
         didSet { needsDisplay = true }
     }
     var onPlay: (() -> Void)?
+    /// Shift-click: the row joins or leaves a multi-row selection.
+    var onShiftClick: (() -> Void)?
     var onSheet: (() -> Void)?
     var onRename: (() -> Void)?
     var onDelete: (() -> Void)?
@@ -233,9 +336,10 @@ final class SessionRow: NSView {
     var onPlayAlong: (() -> Void)?
     var onExport: ((ExportChoice) -> Void)?
 
-    init(record: SessionRecord, isPlaying: Bool, hasAudio: Bool) {
+    init(record: SessionRecord, isPlaying: Bool, isSelected: Bool, hasAudio: Bool) {
         self.record = record
         self.isPlaying = isPlaying
+        self.isSelected = isSelected
         let title = record.name?.isEmpty == false
             ? record.name!
             : (record.folderName ?? "Untitled take")
@@ -297,6 +401,13 @@ final class SessionRow: NSView {
         fatalError("init(coder:) is not supported")
     }
 
+    /// The selection moved elsewhere: only the wash changes.
+    func setSelected(_ selected: Bool) {
+        guard isSelected != selected else { return }
+        isSelected = selected
+        needsDisplay = true
+    }
+
     func refresh(playingID: UUID?) {
         isPlaying = playingID == record.id
         playButton.image = NSImage(systemSymbolName: isPlaying ? "stop.fill" : "play.fill",
@@ -306,10 +417,15 @@ final class SessionRow: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard hovered || isPlaying else { return }
-        let wash = isPlaying
-            ? PaperTheme.stamp.withAlphaComponent(0.10)
-            : PaperTheme.ink.withAlphaComponent(0.05)
+        guard hovered || isPlaying || isSelected else { return }
+        let wash: NSColor
+        if isSelected {
+            wash = PaperTheme.stamp.withAlphaComponent(0.14)
+        } else if isPlaying {
+            wash = PaperTheme.stamp.withAlphaComponent(0.10)
+        } else {
+            wash = PaperTheme.ink.withAlphaComponent(0.05)
+        }
         wash.setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 12, yRadius: 12).fill()
     }
@@ -328,7 +444,11 @@ final class SessionRow: NSView {
     override func mouseExited(with event: NSEvent) { hovered = false }
 
     override func mouseDown(with event: NSEvent) {
-        onPlay?()
+        if event.modifierFlags.contains(.shift) {
+            onShiftClick?()
+        } else {
+            onPlay?()
+        }
     }
 
     /// The whole line is the play target, labels included: only the two

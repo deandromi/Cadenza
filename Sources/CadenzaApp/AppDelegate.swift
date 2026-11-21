@@ -180,6 +180,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 self.refreshSessions()
                 self.screen?.setStatus("Deleted session", error: false)
             },
+            deleteSessions: { [weak self] records in
+                guard let self, !records.isEmpty else { return }
+                if let playing = self.playingRecord, records.contains(where: { $0.id == playing.id }) {
+                    self.stopPlayback()
+                }
+                for record in records { self.store.delete(record) }
+                self.refreshSessions()
+                self.screen?.setStatus(records.count == 1 ? "Deleted session" : "Deleted \(records.count) sessions", error: false)
+            },
+            renameSessions: { [weak self] records, base in
+                guard let self, !records.isEmpty else { return }
+                var renamed = 0
+                for (index, record) in records.enumerated() {
+                    let name = records.count == 1 ? base : "\(base)-\(index + 1)"
+                    if self.store.rename(record, to: name) != nil { renamed += 1 }
+                }
+                self.refreshSessions()
+                self.screen?.setStatus(renamed == 1 ? "Renamed session" : "Renamed \(renamed) sessions", error: false)
+            },
+
             copySessionMIDI: { [weak self] record in self?.copySessionMIDI(record) },
             openSessionSheet: { [weak self] record in self?.openSessionSheet(record) },
             playAlong: { [weak self] record in self?.togglePlayAlong(of: record) },
@@ -202,9 +222,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 guard let self else { return false }
                 return self.recentNotes.contains { Date().timeIntervalSince($0.at) <= Self.retroWindow }
             },
+            keepMinuteEnabled: { SettingsKeys.keepRecentMinute },
             toggleMetronome: { [weak self] in self?.toggleMetronome() },
             metronomeActive: { [weak self] in self?.metronome.isRunning ?? false },
             metronomeTempo: { [weak self] in self?.metronome.bpm ?? 96 },
+            setMetronomeTempo: { [weak self] bpm in self?.setMetronomeTempo(bpm) },
             setLoopPoint: { [weak self] isA in self?.setLoopPoint(isA) },
             toggleLoop: { [weak self] in self?.toggleLoop() },
             loopActive: { [weak self] in self?.loopEnabled ?? false },
@@ -368,6 +390,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             let controller = SettingsController()
             controller.publishedMIDIPort = { [weak self] in self?.publisher.publishedName }
             controller.onRefreshMIDI = { [weak self] in self?.republishMIDIPort() }
+            controller.onRetroSettingChanged = { [weak self] in
+                guard let self else { return }
+                if !SettingsKeys.keepRecentMinute { self.recentNotes.removeAll() }
+                self.screen?.syncTransport()
+            }
             controller.onMetronomeSettingsChanged = { [weak self] in
                 guard let self, self.metronome.isRunning else { return }
                 self.metronome.bpm = SettingsKeys.metronomeBPM
@@ -607,6 +634,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// it. One array of small values, pruned on every strike, so the buffer
     /// cannot grow past the window.
     private func rememberRecent(_ note: NoteEvent) {
+        guard SettingsKeys.keepRecentMinute else { return }
         let now = Date()
         recentNotes.append((note, now))
         if recentNotes.count > 4096 {
@@ -650,6 +678,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// The practice click: on while you play, off when you press it again.
     /// Reading the settings at every start means a tempo changed in Settings
     /// applies to the next click, not the next launch.
+    /// Sets the click's tempo from the home screen's popover: stored, applied
+    /// to a running click immediately, and shown on the button.
+    private func setMetronomeTempo(_ bpm: Double) {
+        let clamped = min(240, max(30, bpm.rounded()))
+        UserDefaults.standard.set(clamped, forKey: SettingsKeys.metronomeBPMKey)
+        metronome.bpm = clamped
+        if metronome.isRunning { metronome.start() }
+        screen?.syncTransport()
+    }
+
     private func toggleMetronome() {
         metronome.bpm = SettingsKeys.metronomeBPM
         metronome.beatsPerBar = SettingsKeys.metronomeBeats

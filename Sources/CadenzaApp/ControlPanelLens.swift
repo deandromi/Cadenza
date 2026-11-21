@@ -39,6 +39,7 @@ final class ControlPanelLens: NSView {
     /// the time machine: drag through the take, the keys follow
     private let scrubSlider = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
     private var loopRow: NSStackView?
+    private var metronomePopover: NSPopover?
     private var latestSessions: [SessionRecord] = []
     /// A tap on the panel's paper asks the shell for the session archive;
     /// buttons keep their own clicks as named shortcuts.
@@ -192,6 +193,7 @@ final class ControlPanelLens: NSView {
         let clicking = transport.metronomeActive()
         metronomeButton.title = "Metronome · \(Int(transport.metronomeTempo().rounded()))"
         metronomeButton.contentTintColor = clicking ? PaperTheme.stamp : PaperTheme.ink
+        keepButton.isHidden = !transport.keepMinuteEnabled()
         keepButton.isEnabled = transport.canKeepLastMinute()
         loopRow?.isHidden = !playing
         loopToggleButton.contentTintColor = transport.loopActive() ? PaperTheme.stamp : PaperTheme.ink
@@ -273,9 +275,22 @@ final class ControlPanelLens: NSView {
         syncTransport()
     }
 
+    /// The click's card: start or stop it and set its tempo from here, so the
+    /// home screen owns the click instead of sending the player to Settings.
     @objc private func metronomeTapped() {
-        transport.toggleMetronome()
-        syncTransport()
+        let popover = MetronomePopover(
+            isRunning: transport.metronomeActive(),
+            bpm: transport.metronomeTempo(),
+            onToggle: { [weak self] in
+                self?.transport.toggleMetronome()
+                self?.syncTransport()
+            },
+            onTempo: { [weak self] bpm in
+                self?.transport.setMetronomeTempo(bpm)
+                self?.syncTransport()
+            })
+        metronomePopover = popover
+        popover.show(relativeTo: metronomeButton.bounds, of: metronomeButton, preferredEdge: .minY)
     }
 
     @objc private func stopPlaybackTapped() {

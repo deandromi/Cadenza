@@ -151,6 +151,31 @@ final class AudioTapState: @unchecked Sendable {
         return latestLevel
     }
 
+    /// Peak amplitude in the newest `seconds` of audio. The transcription
+    /// engine asks this before it spends a decode: a window of silence has
+    /// nothing to transcribe, and skipping it is the difference between a
+    /// warm laptop and a cool one during a practice session.
+    func recentPeak(seconds: Double) -> Float {
+        lock.lock()
+        let rate = self.rate
+        let span = Int((seconds * rate).rounded())
+        let end = ringStart + ring.count
+        let from = max(ringStart, end - span)
+        var peak: Float = 0
+        if end > from {
+            let base = from - ringStart
+            ring.withUnsafeBufferPointer { buffer in
+                guard let start = buffer.baseAddress else { return }
+                for index in base..<buffer.count {
+                    let value = abs(start[index])
+                    if value > peak { peak = value }
+                }
+            }
+        }
+        lock.unlock()
+        return peak
+    }
+
     func receivedSeconds() -> Double {
         lock.lock()
         defer { lock.unlock() }

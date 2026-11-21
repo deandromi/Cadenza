@@ -366,6 +366,46 @@ and the normalised path is the only one that cannot be sunk by a quiet room or
 a low input gain. It stays the default, with the numbers recorded here rather
 than a hunch.
 
+### Heat: what a session actually costs
+
+Measured on this laptop with `CADENZA_DEBUG_INFERENCE=1` and the release
+build, on the Debussy take: one 16 s window costs **2.0–2.4 s of model time**
+on the GPU, 0.05–0.1 s of mel, 0.05–0.15 s of semi-CRF DP and 0.2–0.8 s of
+attribute heads. The pipeline stretches its step until two decoders keep up, so
+the GPU is busy for most of a session — that is the heat a player feels.
+
+What is now in place because of it:
+
+- **A silent window is not decoded.** Before a window is submitted, the engine
+  asks the ring for the peak of the window's whole 16 s *and* whether any note
+  is still sounding. Both quiet means no decode, with the streaming cursor
+  advanced so the grid stays intact. Skipping a window in the middle of
+  sounding music is forbidden: the merge carries note state across windows and
+  that experiment produced thousands of phantom repeats (F1 0.02), which is
+  why the condition is the strict one.
+- **The neural engine is not a shortcut.** It decodes in the same time as the
+  GPU (2.0–2.4 s) but returns a broken score tensor on this model: F1 0.023
+  against 0.851, thousands of phantom notes. The GPU stays the default;
+  `CADENZA_COMPUTE_UNITS` still exists for experiments.
+- **Per-window timing prints are opt-in** (`CADENZA_DEBUG_INFERENCE`): they
+  used to write two lines a second for the whole session.
+- Already true before this pass: the sheet redrafts at most four times a
+  second, and the endless measure's 30 Hz clock stops when the last note has
+  drifted off the paper.
+
+Still on the table, in order of expected effect:
+
+1. **Pace from measured throughput** instead of `decodeWall * 0.6`: the
+   current formula assumes two decoders halve the pace, which one GPU cannot
+   do, so the step drifts to the 4 s ceiling and queue depth (and latency)
+   grows with it.
+2. **Incremental chords**: `recomputeChords()` re-infers every onset group of
+   the whole history on every window. On a long take that is O(n) work per
+   2.6 s for output that only changed in the tail.
+3. **Occlusion**: no decodes while the window is not visible.
+4. **Economy mode**: a larger step ceiling when on battery, as an explicit
+   trade of latency for quiet fans.
+
 ### Threshold study: measured, no bias ships
 
 The quiet-end question was: does the semi-CRF's own decision point sit too

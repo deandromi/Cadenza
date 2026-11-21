@@ -34,6 +34,14 @@ final class TranscriptionEngine: ObservableObject {
     /// second, so this is opt-in: CADENZA_DEBUG_ENGINE=1 turns it on.
     static let verbose = ProcessInfo.processInfo.environment["CADENZA_DEBUG_ENGINE"] != nil
 
+    /// Windows skipped because the audio under them was silent.
+    private var skippedWindows = 0
+    /// Room floor for the silence skip: about -56 dBFS, under a piano's
+    /// quietest note and above a quiet room's noise.
+    static let silencePeak: Float = 0.0016
+    /// A study switch: CADENZA_NO_SILENCE_SKIP=1 decodes silence too.
+    static let skipsSilence = ProcessInfo.processInfo.environment["CADENZA_NO_SILENCE_SKIP"] == nil
+
     private let audioEngine = AVAudioEngine()
     private var tapState = AudioTapState()
     /// two decoders run in parallel, alternating windows: a fresh window
@@ -184,6 +192,10 @@ final class TranscriptionEngine: ObservableObject {
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         isRunning = false
+        if Self.verbose, skippedWindows > 0 {
+            print("[engine] skipped \(skippedWindows) silent windows, no decode spent on them")
+        }
+        skippedWindows = 0
         lastRecording = takeRecording()
     }
 
@@ -228,6 +240,21 @@ final class TranscriptionEngine: ObservableObject {
         var guardCount = 0
         while received >= nextEdge, let slot = decoderBusy.firstIndex(of: false) {
             let edge = nextEdge
+            // Silence costs nothing to skip: a window whose newest step is
+            // below the room floor has no note in it, so the decode that
+            // would prove that is pure heat. The cursor still advances, so
+            // the next window is cut in the same grid and keeps its history.
+            if Self.skipsSilence, edge > plan.segmentSeconds + 0.5,
+               tapState.recentPeak(seconds: plan.segmentSeconds) < Self.silencePeak,
+               !notes.contains(where: { $0.offset > edge - 2.0 }) {
+                // Only a window whose whole 16 s is silent is skipped, and
+                // only when nothing is still sounding: the merge carries note
+                // state from window to window, so cutting a decode out of the
+                // middle of sounding music invented thousands of repeats.
+                nextEdge = edge + currentStep
+                skippedWindows += 1
+                continue
+            }
             if Self.verbose {
                 print("[engine] window \(windowIndex) submitted on decoder \(slot), edge \(String(format: "%.2f", edge)) s, \(Int(received)) s captured so far")
             }

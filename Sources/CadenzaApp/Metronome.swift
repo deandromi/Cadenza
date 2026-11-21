@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Foundation
 
@@ -96,5 +97,96 @@ final class Metronome {
         }
         pattern = buffer
         return true
+    }
+}
+
+/// The click's own glass card on the practice screen: start or stop it and
+/// set its tempo without opening Settings. The slider writes through on every
+/// step, so a running click follows the hand.
+@MainActor
+final class MetronomePopover: NSPopover {
+    private let valueLabel = makeInkLabel("", font: .systemFont(ofSize: 12, weight: .medium),
+                                          color: PaperTheme.secondaryInk)
+    private let toggleButton = NSButton(title: "Start", target: nil, action: nil)
+    private let slider = NSSlider(value: 96, minValue: 40, maxValue: 208, target: nil, action: nil)
+    private let onToggle: () -> Void
+    private let onTempo: (Double) -> Void
+
+    init(isRunning: Bool, bpm: Double, onToggle: @escaping () -> Void, onTempo: @escaping (Double) -> Void) {
+        self.onToggle = onToggle
+        self.onTempo = onTempo
+        super.init()
+        behavior = .transient
+
+        let width: CGFloat = 240
+        let controller = NSViewController()
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 118))
+        let backdrop = makeGlassBackdrop(cornerRadius: 16, interactive: true)
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(backdrop)
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+
+        let caption = makeInkLabel("Click", font: .systemFont(ofSize: 11, weight: .medium),
+                                   color: PaperTheme.secondaryInk)
+        let topRow = NSStackView(views: [caption, NSView(), valueLabel])
+        topRow.orientation = .horizontal
+        topRow.alignment = .firstBaseline
+        topRow.spacing = 8
+        topRow.translatesAutoresizingMaskIntoConstraints = false
+
+        toggleButton.title = isRunning ? "Stop" : "Start"
+        toggleButton.isBordered = false
+        toggleButton.font = .systemFont(ofSize: 13, weight: .medium)
+        toggleButton.contentTintColor = isRunning ? PaperTheme.stamp : PaperTheme.ink
+        toggleButton.target = self
+        toggleButton.action = #selector(toggleTapped)
+
+        slider.isContinuous = true
+        slider.target = self
+        slider.action = #selector(tempoChanged)
+        slider.doubleValue = bpm
+        slider.translatesAutoresizingMaskIntoConstraints = false
+        slider.widthAnchor.constraint(equalToConstant: width - 32).isActive = true
+        valueLabel.stringValue = "\(Int(bpm.rounded())) bpm"
+
+        stack.addArrangedSubview(topRow)
+        stack.addArrangedSubview(slider)
+        stack.addArrangedSubview(toggleButton)
+        NSLayoutConstraint.activate([
+            backdrop.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            backdrop.topAnchor.constraint(equalTo: root.topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: root.topAnchor),
+            stack.widthAnchor.constraint(equalToConstant: width),
+            topRow.widthAnchor.constraint(equalToConstant: width - 32),
+        ])
+        controller.view = root
+        contentViewController = controller
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    @objc private func toggleTapped() {
+        onToggle()
+        performClose(nil)
+    }
+
+    @objc private func tempoChanged() {
+        let bpm = (slider.doubleValue / 4).rounded() * 4
+        slider.doubleValue = bpm
+        valueLabel.stringValue = "\(Int(bpm)) bpm"
+        onTempo(bpm)
     }
 }

@@ -62,6 +62,11 @@ final class OverlayHost: NSView {
     private var escapeMonitor: Any?
     private var onDismiss: (() -> Void)?
     private(set) var isPresented = false
+    /// Bumped by every present and dismiss. A dismiss that is still animating
+    /// when the next section opens must not finish on top of it: it used to
+    /// clear the new card, which is how opening a sheet from the archive
+    /// closed the sheet again.
+    private var transitionID = 0
 
     init() {
         closePill = padForLens(NSStackView(views: [closeButton, escapeHint]), horizontal: 14, vertical: 8)
@@ -141,6 +146,7 @@ final class OverlayHost: NSView {
     func present(_ content: NSView, size: NSSize,
                  onDismiss: (() -> Void)? = nil) {
         guard window != nil else { return }
+        transitionID += 1
         if isPresented { dismiss(animated: false) }
         self.onDismiss = onDismiss
 
@@ -221,9 +227,11 @@ final class OverlayHost: NSView {
     func dismiss(animated: Bool = true) {
         guard isPresented else { return }
         isPresented = false
+        transitionID += 1
+        let token = transitionID
         removeEscapeMonitor()
         let finish = { [weak self] in
-            guard let self else { return }
+            guard let self, self.transitionID == token else { return }
             self.isHidden = true
             self.alphaValue = 0
             for view in self.cardContent.subviews { view.removeFromSuperview() }

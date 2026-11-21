@@ -39,18 +39,25 @@ final class InferenceContext: @unchecked Sendable {
     /// The compute-unit choice for the backbone, measured with the replay
     /// harness on this machine: gpu median 0,73 s per window versus 1,02 s
     /// cpuOnly, and the neural engine is slower still and returns phantom
+    /// Timing diagnostics for the decode path, off unless asked for: the
+    /// engine prints two lines a second otherwise, for the whole session.
+    static let verbose = ProcessInfo.processInfo.environment["CADENZA_DEBUG_INFERENCE"] != nil
+
     /// Onset-score bias for threshold studies, in logit units; nil (unset)
     /// leaves the model's own calibration alone.
     static let onsetBias: Float? = ProcessInfo.processInfo.environment["CADENZA_ONSET_BIAS"]
         .flatMap { Float($0) }
 
-    /// onsets in bulk. GPU is the default; CADENZA_COMPUTE_UNITS overrides
-    /// (cpuOnly, cpuAndNE, all).
+    /// onsets in bulk. The GPU is the default because it is the only unit
+    /// that is also correct: on the neural engine this model decodes in the
+    /// same time but returns a broken score tensor (measured on the Debussy
+    /// take: F1 0.02 against 0.85 on the GPU, thousands of phantom notes).
+    /// CADENZA_COMPUTE_UNITS overrides it (cpuOnly, cpuAndNE, all).
     static var computeUnits: MLComputeUnits {
         switch ProcessInfo.processInfo.environment["CADENZA_COMPUTE_UNITS"] {
-        case "cpuOnly": return .cpuOnly
         case "cpuAndNE": return .cpuAndNeuralEngine
         case "all": return .all
+        case "cpuOnly": return .cpuOnly
         default: return .cpuAndGPU
         }
     }
@@ -194,8 +201,10 @@ final class InferenceContext: @unchecked Sendable {
                                     detector: bassDetector)
         }
         let headsWall = CACurrentMediaTime() - decodeStart - melWall - predWall - crfWall
-        print("[inference] window \(windowIndex): \(events.count) events decoded in \(String(format: "%.2f", CACurrentMediaTime() - decodeStart)) s "
-            + "(mel \(String(format: "%.2f", melWall)), model \(String(format: "%.2f", predWall)), crf \(String(format: "%.2f", crfWall)), heads \(String(format: "%.2f", headsWall)), units \(Self.computeUnits))")
+        if Self.verbose {
+            print("[inference] window \(windowIndex): \(events.count) events decoded in \(String(format: "%.2f", CACurrentMediaTime() - decodeStart)) s "
+                + "(mel \(String(format: "%.2f", melWall)), model \(String(format: "%.2f", predWall)), crf \(String(format: "%.2f", crfWall)), heads \(String(format: "%.2f", headsWall)), units \(Self.computeUnits))")
+        }
         return WindowResult(windowIndex: windowIndex, beginSeconds: beginTime, events: events, lastP: lastP)
     }
 

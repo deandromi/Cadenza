@@ -10,6 +10,7 @@ enum SettingsKeys {
     static let inputDeviceIDKey = "inputDeviceID"
     static let metronomeBPMKey = "metronomeBPM"
     static let metronomeBeatsKey = "metronomeBeats"
+    static let keepRecentMinuteKey = "keepRecentMinute"
 
     static var sessionDirectory: URL? {
         guard let path = UserDefaults.standard.string(forKey: sessionDirectoryPath) else { return nil }
@@ -39,6 +40,15 @@ enum SettingsKeys {
     /// CoreAudio device id of the chosen input; 0 means the system default.
     static var inputDeviceID: UInt32 {
         UInt32(UserDefaults.standard.integer(forKey: inputDeviceIDKey))
+    }
+
+    /// Whether the rolling last minute is kept at all. On by default: it is
+    /// what makes "Keep last minute" possible, and it costs one array of
+    /// small values. Off means nothing is buffered and the button goes away.
+    static var keepRecentMinute: Bool {
+        UserDefaults.standard.object(forKey: keepRecentMinuteKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: keepRecentMinuteKey)
     }
 
     /// The practice click's tempo, 96 unless set; 30 to 240 is the usable
@@ -107,6 +117,7 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         color: PaperTheme.secondaryInk
     )
     private let keepAudioCheckbox = NSButton(checkboxWithTitle: "Keep recorded audio", target: nil, action: nil)
+    private let keepRecentCheckbox = NSButton(checkboxWithTitle: "Keep the last minute in reach", target: nil, action: nil)
     private let devicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private var deviceChoices: [InputDevices.Device] = []
     private let gainSlider = NSSlider(value: Double(SettingsKeys.inputGain), minValue: 0.5, maxValue: 4, target: nil, action: nil)
@@ -119,6 +130,9 @@ final class SettingsController: NSObject, NSApplicationDelegate {
     /// The metronome is retuned the moment a setting changes, so a running
     /// click never sits at the old tempo.
     var onMetronomeSettingsChanged: (() -> Void)?
+    /// The rolling minute was switched on or off; the panel shows or hides
+    /// its button and the shell stops buffering when it is off.
+    var onRetroSettingChanged: (() -> Void)?
     /// Called after the session directory changed so the app shell can point
     /// the session store at the new folder.
     var onSessionDirectoryChanged: ((URL) -> Void)?
@@ -136,7 +150,7 @@ final class SettingsController: NSObject, NSApplicationDelegate {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        let size = NSSize(width: 420, height: 566)
+        let size = NSSize(width: 420, height: 606)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable],
@@ -160,7 +174,7 @@ final class SettingsController: NSObject, NSApplicationDelegate {
     }
 
     /// The settings section built for the app's overlay card.
-    func overlayContent(size: NSSize = NSSize(width: 460, height: 600)) -> NSView {
+    func overlayContent(size: NSSize = NSSize(width: 460, height: 640)) -> NSView {
         makeContent(size: size)
     }
 
@@ -220,6 +234,13 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         keepAudioCheckbox.target = self
         keepAudioCheckbox.action = #selector(toggleKeepAudio)
         keepAudioCheckbox.state = SettingsKeys.keepRecordedAudio ? .on : .off
+
+        keepRecentCheckbox.isBordered = false
+        keepRecentCheckbox.font = .systemFont(ofSize: 13, weight: .regular)
+        keepRecentCheckbox.contentTintColor = PaperTheme.ink
+        keepRecentCheckbox.target = self
+        keepRecentCheckbox.action = #selector(toggleKeepRecent)
+        keepRecentCheckbox.state = SettingsKeys.keepRecentMinute ? .on : .off
 
         deviceChoices = InputDevices.all()
         devicePopup.addItems(withTitles: ["System default"])
@@ -282,6 +303,7 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         ))
         rows.addArrangedSubview(directoryRow)
         rows.addArrangedSubview(keepAudioCheckbox)
+        rows.addArrangedSubview(keepRecentCheckbox)
         rows.addArrangedSubview(deviceRow)
         rows.addArrangedSubview(gainRow)
         rows.addArrangedSubview(tuningRow)
@@ -379,6 +401,11 @@ final class SettingsController: NSObject, NSApplicationDelegate {
 
     /// Tuning is clamped to a sane range; an unusable value falls back to
     /// 440 Hz without removing the user's text.
+    @objc private func toggleKeepRecent() {
+        UserDefaults.standard.set(keepRecentCheckbox.state == .on, forKey: SettingsKeys.keepRecentMinuteKey)
+        onRetroSettingChanged?()
+    }
+
     @objc private func metronomeTempoCommitted() {
         let value = Double(metronomeField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 96
         let clamped = min(240, max(30, value))
