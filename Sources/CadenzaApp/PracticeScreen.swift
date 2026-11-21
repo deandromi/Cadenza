@@ -47,11 +47,11 @@ final class PracticeScreenView: NSView {
     private var sessionSeconds: Double = 0
     private var clockTimer: Timer?
 
-    init(transport: PanelTransport, onSessions: (() -> Void)? = nil,
+    init(shell: PracticeShell, onSessions: (() -> Void)? = nil,
          onSheetMusic: (() -> Void)? = nil,
          onStatistics: (() -> Void)? = nil, onRefreshMIDI: (() -> Void)? = nil,
          onSettings: (() -> Void)? = nil) {
-        panel = ControlPanelLens(transport: transport)
+        panel = ControlPanelLens(shell: shell)
         self.onSessions = onSessions
         menuLens = MenuLens(onSessions: onSessions, onSheetMusic: onSheetMusic,
                             onStatistics: onStatistics,

@@ -8,7 +8,7 @@ import CadenzaCore
 /// four.
 @MainActor
 final class SessionsOverlayView: NSView {
-    private let transport: PanelTransport
+    private let shell: PracticeShell
     private let titleLabel = makeInkLabel(
         "Sessions",
         font: PaperTheme.displaySerif(26, weight: .semibold),
@@ -43,8 +43,8 @@ final class SessionsOverlayView: NSView {
     /// else (a session's sheet).
     var onLeave: (() -> Void)?
 
-    init(transport: PanelTransport, sessions: [SessionRecord], playing: SessionRecord?) {
-        self.transport = transport
+    init(shell: PracticeShell, sessions: [SessionRecord], playing: SessionRecord?) {
+        self.shell = shell
         self.sessions = sessions
         self.playingID = playing?.id
         super.init(frame: .zero)
@@ -162,7 +162,7 @@ final class SessionsOverlayView: NSView {
     }
 
     func syncTransport() {
-        let listening = transport.isListening()
+        let listening = shell.isListening
         newSessionButton.title = listening ? "Stop session" : "New session"
         newSessionButton.contentTintColor = PaperTheme.stamp
         for row in rows { row.refresh(playingID: playingID) }
@@ -187,29 +187,24 @@ final class SessionsOverlayView: NSView {
             row.onShiftClick = { [weak self] in self?.toggleSelection(record) }
             row.onPlay = { [weak self] in
                 guard let self else { return }
-                self.transport.playSession(record)
-                self.playingID = self.transport.playingSession()?.id
+                self.shell.playSession(record)
+                self.playingID = self.shell.playingSession?.id
                 self.syncTransport()
             }
             row.onSheet = { [weak self] in
                 self?.onLeave?()
-                self?.transport.openSessionSheet(record)
+                self?.shell.openSessionSheet(record)
             }
             row.onRename = { [weak self] in self?.rename(record) }
             row.onDelete = { [weak self] in self?.delete(record) }
             row.onDescribe = { [weak self] anchor in self?.describe(record, from: anchor) }
-            row.onCopyMIDI = { [weak self] in self?.transport.copySessionMIDI(record) }
+            row.onCopyMIDI = { [weak self] in self?.shell.copySessionMIDI(record) }
             row.onPlayAlong = { [weak self] in
                 self?.onLeave?()
-                self?.transport.playAlong(record)
+                self?.shell.playAlong(record)
             }
             row.onExport = { [weak self] choice in
-                guard let self else { return }
-                switch choice {
-                case .midi: self.transport.exportSessionMIDI(record)
-                case .audio: self.transport.exportSessionAudio(record)
-                case .both: self.transport.exportSessionBoth(record)
-                }
+                self?.shell.exportSession(record, choice: choice)
             }
             rows.append(row)
             list.addArrangedSubview(row)
@@ -238,7 +233,7 @@ final class SessionsOverlayView: NSView {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let base = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !base.isEmpty else { return }
-        transport.renameSessions(records, base)
+        shell.renameSessions(records, base: base)
         selected.removeAll()
         syncSelectionBar()
     }
@@ -255,7 +250,7 @@ final class SessionsOverlayView: NSView {
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        transport.deleteSessions(records)
+        shell.deleteSessions(records)
         selected.removeAll()
         syncSelectionBar()
     }
@@ -270,14 +265,14 @@ final class SessionsOverlayView: NSView {
         alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        transport.renameSession(record, field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+        shell.renameSession(record, to: field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     /// The take describes itself: the row asks the shell to read the MIDI
     /// back and hands the lines to a glass card anchored on the row.
     private func describe(_ record: SessionRecord, from anchor: NSView) {
-        guard let description = transport.describeSession(record) else {
-            transport.showStatus("That session has no notes to describe", true)
+        guard let description = shell.describeSession(record) else {
+            shell.showStatus("That session has no notes to describe", isError: true)
             return
         }
         let popover = TakeDescriptionPopover(description, title: record.name ?? "This take")
@@ -292,11 +287,11 @@ final class SessionsOverlayView: NSView {
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        transport.deleteSession(record)
+        shell.deleteSession(record)
     }
 
     @objc private func newSessionTapped() {
-        transport.toggleListening()
+        shell.toggleListening()
         syncTransport()
     }
 }

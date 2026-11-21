@@ -7,7 +7,7 @@ import CadenzaCore
 /// that are not there, and the archive itself lives in the sessions overlay
 /// where there is room for every session instead of the first four.
 final class ControlPanelLens: NSView {
-    private let transport: PanelTransport
+    private let shell: PracticeShell
     private let rows = NSStackView()
     /// the stopwatch reads big and steady: it is the panel's heartbeat
     private let timeLabel = makeInkLabel(
@@ -46,8 +46,8 @@ final class ControlPanelLens: NSView {
     var onRequestExpand: (() -> Void)?
     private let backdrop: NSGlassEffectView
 
-    init(transport: PanelTransport) {
-        self.transport = transport
+    init(shell: PracticeShell) {
+        self.shell = shell
         backdrop = makeGlassBackdrop(cornerRadius: 18, interactive: true)
 
         super.init(frame: .zero)
@@ -180,23 +180,23 @@ final class ControlPanelLens: NSView {
     /// under the button: the session's title is Stop while it runs, and
     /// the stamp tint carries that running state.
     func syncTransport() {
-        let listening = transport.isListening()
+        let listening = shell.isListening
         listenButton.title = listening ? "Stop" : "New session"
         listenButton.contentTintColor = listening ? PaperTheme.stamp : PaperTheme.ink
-        exportButton.isEnabled = transport.exportEnabled()
-        let playing = transport.playingSession() != nil
-        let paused = transport.playbackPaused()
+        exportButton.isEnabled = shell.exportEnabled
+        let playing = shell.playingSession != nil
+        let paused = shell.playbackPaused
         playPauseButton.title = playing ? (paused ? "Resume" : "Pause") : "Play"
         playPauseButton.isEnabled = listening ? playAlongRunning : (playing || !latestSessions.isEmpty)
         playPauseButton.contentTintColor = playing ? PaperTheme.stamp : PaperTheme.ink
         stopPlaybackButton.isEnabled = playing
-        let clicking = transport.metronomeActive()
-        metronomeButton.title = "Metronome · \(Int(transport.metronomeTempo().rounded()))"
+        let clicking = shell.metronomeActive
+        metronomeButton.title = "Metronome · \(Int(shell.metronomeTempo.rounded()))"
         metronomeButton.contentTintColor = clicking ? PaperTheme.stamp : PaperTheme.ink
-        keepButton.isHidden = !transport.keepMinuteEnabled()
-        keepButton.isEnabled = transport.canKeepLastMinute()
+        keepButton.isHidden = !shell.keepMinuteEnabled
+        keepButton.isEnabled = shell.canKeepLastMinute
         loopRow?.isHidden = !playing
-        loopToggleButton.contentTintColor = transport.loopActive() ? PaperTheme.stamp : PaperTheme.ink
+        loopToggleButton.contentTintColor = shell.loopActive ? PaperTheme.stamp : PaperTheme.ink
         sessionsButton.title = latestSessions.isEmpty
             ? "Sessions"
             : "Sessions · \(latestSessions.count)"
@@ -214,7 +214,7 @@ final class ControlPanelLens: NSView {
         // the scrub hand follows playback, but never fights the user's own
         // drag: while the mouse is down the slider belongs to the pointer
         if NSEvent.pressedMouseButtons == 0, !scrubSlider.isHidden {
-            scrubSlider.doubleValue = transport.playbackProgress()
+            scrubSlider.doubleValue = shell.playbackProgress
         }
     }
 
@@ -236,42 +236,42 @@ final class ControlPanelLens: NSView {
     // MARK: loop and rate
 
     @objc private func scrubChanged() {
-        transport.scrubPlayback(scrubSlider.doubleValue)
+        shell.scrubPlayback(scrubSlider.doubleValue)
     }
 
     @objc private func loopATapped() {
-        transport.setLoopPoint(true)
+        shell.setLoopPoint(isA: true)
         loopAButton.contentTintColor = PaperTheme.stamp
     }
 
     @objc private func loopBTapped() {
-        transport.setLoopPoint(false)
+        shell.setLoopPoint(isA: false)
         loopBButton.contentTintColor = PaperTheme.stamp
     }
 
     @objc private func loopToggleTapped() {
-        transport.toggleLoop()
-        loopToggleButton.contentTintColor = transport.loopActive() ? PaperTheme.stamp : PaperTheme.ink
+        shell.toggleLoop()
+        loopToggleButton.contentTintColor = shell.loopActive ? PaperTheme.stamp : PaperTheme.ink
     }
 
     @objc private func rateChanged() {
         let title = ratePopup.titleOfSelectedItem ?? "100%"
-        transport.setPlaybackRate((Double(title.dropLast()) ?? 100) / 100.0)
+        shell.setPlaybackRate((Double(title.dropLast()) ?? 100) / 100.0)
     }
 
     /// Play starts the newest session when nothing is playing; while one
     /// plays, the same button pauses and resumes it.
     @objc private func playPauseTapped() {
-        if transport.playingSession() != nil {
-            transport.togglePlayPause()
+        if shell.playingSession != nil {
+            shell.togglePlayPause()
         } else if let newest = latestSessions.first {
-            transport.playSession(newest)
+            shell.playSession(newest)
         }
         syncTransport()
     }
 
     @objc private func keepTapped() {
-        transport.keepLastMinute()
+        shell.keepLastMinute()
         syncTransport()
     }
 
@@ -279,14 +279,14 @@ final class ControlPanelLens: NSView {
     /// home screen owns the click instead of sending the player to Settings.
     @objc private func metronomeTapped() {
         let popover = MetronomePopover(
-            isRunning: transport.metronomeActive(),
-            bpm: transport.metronomeTempo(),
+            isRunning: shell.metronomeActive,
+            bpm: shell.metronomeTempo,
             onToggle: { [weak self] in
-                self?.transport.toggleMetronome()
+                self?.shell.toggleMetronome()
                 self?.syncTransport()
             },
             onTempo: { [weak self] bpm in
-                self?.transport.setMetronomeTempo(bpm)
+                self?.shell.setMetronomeTempo(bpm)
                 self?.syncTransport()
             })
         metronomePopover = popover
@@ -294,7 +294,7 @@ final class ControlPanelLens: NSView {
     }
 
     @objc private func stopPlaybackTapped() {
-        transport.stopPlayback()
+        shell.stopPlayback()
         syncTransport()
     }
 
@@ -329,11 +329,11 @@ final class ControlPanelLens: NSView {
     }
 
     @objc private func listenTapped() {
-        transport.toggleListening()
+        shell.toggleListening()
         syncTransport()
     }
 
     @objc private func exportTapped() {
-        transport.export()
+        shell.export()
     }
 }

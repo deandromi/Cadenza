@@ -1157,12 +1157,7 @@ enum SmokeMain {
             MusicFont.register()
             let size = NSSize(width: 1080, height: 660)
             let screen = PracticeScreenView(
-                transport: PanelTransport(
-                    isListening: { true },
-                    toggleListening: {},
-                    exportEnabled: { true },
-                    export: {}
-                ),
+                shell: PreviewShell(listening: true, exporting: true),
                 onSheetMusic: {}
             )
             screen.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
@@ -1210,12 +1205,7 @@ enum SmokeMain {
             MusicFont.register()
             let size = NSSize(width: 1080, height: 660)
             let screen = PracticeScreenView(
-                transport: PanelTransport(
-                    isListening: { true },
-                    toggleListening: {},
-                    exportEnabled: { true },
-                    export: {}
-                ),
+                shell: PreviewShell(listening: true, exporting: true),
                 onSheetMusic: {}
             )
             screen.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
@@ -1227,7 +1217,7 @@ enum SmokeMain {
             screen.layoutSubtreeIfNeeded()
             screen.setNoteCount(12)
             screen.sessionStarted()
-            for (pitch, age) in [(48, 8.6), (55, 8.5), (72, 6.4), (76, 6.3),
+            for (pitch, _) in [(48, 8.6), (55, 8.5), (72, 6.4), (76, 6.3),
                                  (61, 4.4), (66, 4.3), (70, 2.2), (84, 0.9),
                                  (93, 0.9), (30, 0.4)] {
                 screen.noteStruck(NoteEvent(pitch: pitch, velocity: 80, onset: 0, duration: 0.5))
@@ -1439,13 +1429,8 @@ enum SmokeMain {
             NSApplication.shared.appearance = NSAppearance(named: .aqua)
             MusicFont.register()
             let size = NSSize(width: 1080, height: 720)
-            let transport = PanelTransport(
-                isListening: { false },
-                toggleListening: {},
-                exportEnabled: { false },
-                export: {}
-            )
-            let screen = PracticeScreenView(transport: transport, onSheetMusic: {})
+            let shell = PreviewShell()
+            let screen = PracticeScreenView(shell: shell, onSheetMusic: {})
             let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                                   styleMask: [.titled], backing: .buffered, defer: false)
             window.contentView = screen
@@ -1485,13 +1470,8 @@ enum SmokeMain {
             NSApplication.shared.appearance = NSAppearance(named: .aqua)
             MusicFont.register()
             let size = NSSize(width: 1080, height: 660)
-            let transport = PanelTransport(
-                isListening: { true },
-                toggleListening: {},
-                exportEnabled: { true },
-                export: {}
-            )
-            let screen = PracticeScreenView(transport: transport, onSheetMusic: {})
+            let shell = PreviewShell(listening: true, exporting: true)
+            let screen = PracticeScreenView(shell: shell, onSheetMusic: {})
             let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                                   styleMask: [.titled], backing: .buffered, defer: false)
             window.contentView = screen
@@ -1508,7 +1488,7 @@ enum SmokeMain {
             screen.layoutSubtreeIfNeeded()
 
             writeShot(of: screen, size: size, name: "home")
-            let archive = SessionsOverlayView(transport: transport,
+            let archive = SessionsOverlayView(shell: shell,
                                               sessions: sessions,
                                               playing: sessions[1])
             screen.presentOverlay(archive, size: NSSize(width: 620, height: 130 + CGFloat(sessions.count) * 47 + 20))
