@@ -7,7 +7,7 @@ import CadenzaCore
 /// so nothing is hidden behind an "expanded" mode and no list is ever cut at
 /// four.
 @MainActor
-final class SessionsOverlayView: NSView {
+final class SessionsOverlayView: NSView, SessionRowActions {
     private let shell: PracticeShell
     private let titleLabel = makeInkLabel(
         "Sessions",
@@ -184,28 +184,7 @@ final class SessionsOverlayView: NSView {
                                  isPlaying: record.id == playingID,
                                  isSelected: selected.contains(record.id),
                                  hasAudio: record.hasAudio)
-            row.onShiftClick = { [weak self] in self?.toggleSelection(record) }
-            row.onPlay = { [weak self] in
-                guard let self else { return }
-                self.shell.playSession(record)
-                self.playingID = self.shell.playingSession?.id
-                self.syncTransport()
-            }
-            row.onSheet = { [weak self] in
-                self?.onLeave?()
-                self?.shell.openSessionSheet(record)
-            }
-            row.onRename = { [weak self] in self?.rename(record) }
-            row.onDelete = { [weak self] in self?.delete(record) }
-            row.onDescribe = { [weak self] anchor in self?.describe(record, from: anchor) }
-            row.onCopyMIDI = { [weak self] in self?.shell.copySessionMIDI(record) }
-            row.onPlayAlong = { [weak self] in
-                self?.onLeave?()
-                self?.shell.playAlong(record)
-            }
-            row.onExport = { [weak self] choice in
-                self?.shell.exportSession(record, choice: choice)
-            }
+            row.actions = self
             rows.append(row)
             list.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
@@ -253,6 +232,38 @@ final class SessionsOverlayView: NSView {
         shell.deleteSessions(records)
         selected.removeAll()
         syncSelectionBar()
+    }
+
+    // MARK: the rows
+
+    func rowPlayed(_ record: SessionRecord) {
+        shell.playSession(record)
+        playingID = shell.playingSession?.id
+        syncTransport()
+    }
+
+    func rowShiftClicked(_ record: SessionRecord) { toggleSelection(record) }
+
+    func rowOpenedSheet(_ record: SessionRecord) {
+        onLeave?()
+        shell.openSessionSheet(record)
+    }
+
+    func rowRenamed(_ record: SessionRecord) { rename(record) }
+
+    func rowDeleted(_ record: SessionRecord) { delete(record) }
+
+    func rowDescribed(_ record: SessionRecord, from anchor: NSView) { describe(record, from: anchor) }
+
+    func rowCopiedMIDI(_ record: SessionRecord) { shell.copySessionMIDI(record) }
+
+    func rowPlayedAlong(_ record: SessionRecord) {
+        onLeave?()
+        shell.playAlong(record)
+    }
+
+    func rowExported(_ record: SessionRecord, choice: ExportChoice) {
+        shell.exportSession(record, choice: choice)
     }
 
     private func rename(_ record: SessionRecord) {
@@ -320,16 +331,10 @@ final class SessionRow: NSView {
     private var hovered = false {
         didSet { needsDisplay = true }
     }
-    var onPlay: (() -> Void)?
-    /// Shift-click: the row joins or leaves a multi-row selection.
-    var onShiftClick: (() -> Void)?
-    var onSheet: (() -> Void)?
-    var onRename: (() -> Void)?
-    var onDelete: (() -> Void)?
-    var onDescribe: ((NSView) -> Void)?
-    var onCopyMIDI: (() -> Void)?
-    var onPlayAlong: (() -> Void)?
-    var onExport: ((ExportChoice) -> Void)?
+    /// Everything the row can ask for, answered by the archive that owns it.
+    /// The row hands itself back, so the archive never captures a record it
+    /// has to keep in step with the list.
+    weak var actions: SessionRowActions?
 
     init(record: SessionRecord, isPlaying: Bool, isSelected: Bool, hasAudio: Bool) {
         self.record = record
@@ -440,9 +445,9 @@ final class SessionRow: NSView {
 
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.shift) {
-            onShiftClick?()
+            actions?.rowShiftClicked(record)
         } else {
-            onPlay?()
+            actions?.rowPlayed(record)
         }
     }
 
@@ -459,7 +464,7 @@ final class SessionRow: NSView {
     }
 
     @objc private func playTapped() {
-        onPlay?()
+        actions?.rowPlayed(record)
     }
 
     @objc private func menuTapped() {
@@ -489,13 +494,29 @@ final class SessionRow: NSView {
         menu.popUp(positioning: nil, at: NSPoint(x: bounds.maxX - 20, y: 8), in: self)
     }
 
-    @objc private func sheetTapped() { onSheet?() }
-    @objc private func copyTapped() { onCopyMIDI?() }
-    @objc private func renameTapped() { onRename?() }
-    @objc private func deleteTapped() { onDelete?() }
-    @objc private func describeTapped() { onDescribe?(self) }
-    @objc private func playAlongTapped() { onPlayAlong?() }
-    @objc private func exportMIDITapped() { onExport?(.midi) }
-    @objc private func exportAudioTapped() { onExport?(.audio) }
-    @objc private func exportBothTapped() { onExport?(.both) }
+    @objc private func sheetTapped() { actions?.rowOpenedSheet(record) }
+    @objc private func copyTapped() { actions?.rowCopiedMIDI(record) }
+    @objc private func renameTapped() { actions?.rowRenamed(record) }
+    @objc private func deleteTapped() { actions?.rowDeleted(record) }
+    @objc private func describeTapped() { actions?.rowDescribed(record, from: self) }
+    @objc private func playAlongTapped() { actions?.rowPlayedAlong(record) }
+    @objc private func exportMIDITapped() { actions?.rowExported(record, choice: .midi) }
+    @objc private func exportAudioTapped() { actions?.rowExported(record, choice: .audio) }
+    @objc private func exportBothTapped() { actions?.rowExported(record, choice: .both) }
+}
+
+/// What a session row can ask of the archive that owns it. The row knows its
+/// own record and hands it back, so the archive answers with a method instead
+/// of the row holding a closure per menu item.
+@MainActor
+protocol SessionRowActions: AnyObject {
+    func rowPlayed(_ record: SessionRecord)
+    func rowShiftClicked(_ record: SessionRecord)
+    func rowOpenedSheet(_ record: SessionRecord)
+    func rowRenamed(_ record: SessionRecord)
+    func rowDeleted(_ record: SessionRecord)
+    func rowDescribed(_ record: SessionRecord, from anchor: NSView)
+    func rowCopiedMIDI(_ record: SessionRecord)
+    func rowPlayedAlong(_ record: SessionRecord)
+    func rowExported(_ record: SessionRecord, choice: ExportChoice)
 }

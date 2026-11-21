@@ -192,6 +192,7 @@ extension SmokeMain {
         // windows instead of on whatever the machine's load happened to allow
         let fixedStep = ProcessInfo.processInfo.environment["CDZ_FIXED_STEP"].flatMap(Double.init)
         var step = fixedStep ?? plan.streamingStep
+        var pacer = DecodePacer(floorStep: plan.streamingStep, ceilingStep: WindowGeometry.stepCeiling)
         var index = 0
         var emissionCount = 0
         // per window: its edge, its (later filled) decode wall, and the
@@ -232,9 +233,11 @@ extension SmokeMain {
             }
             schedule.append((edge: edge, decodeWall: decodeWall, onsets: onsets))
             index += 1
-            // the live engine stretches its step until two decoders keep up
+            // the live engine's pacer, fed the same measurements it reads
             if fixedStep == nil {
-                step = min(WindowGeometry.stepCeiling, max(plan.streamingStep, decodeWall * 0.6))
+                // offline there is no live edge; the backlog a decode creates
+                // is how much longer it took than the audio it advanced
+                step = pacer.record(wall: decodeWall, backlog: max(0, decodeWall - step), decoders: 2)
             }
             edge += step
           }
