@@ -37,6 +37,10 @@ if CommandLine.arguments.contains("--morph-shot") {
     SmokeMain.runMorphShot()
     exit(0)
 }
+if CommandLine.arguments.contains("--overlay-shot") {
+    SmokeMain.runOverlayShot()
+    exit(0)
+}
 if CommandLine.arguments.contains("--screen-shot") {
     SmokeMain.runScreenShot()
     exit(0)

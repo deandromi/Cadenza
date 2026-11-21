@@ -21,6 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var archiveSheetController: SheetMusicController?
     private var settingsController: SettingsController?
     private var statsController: StatsController?
+    /// the archive on screen, told when the store moves under it
+    private weak var archiveOverlay: SessionsOverlayView?
     private var cancellables: Set<AnyCancellable> = []
     private var sessionStartedAt: Date?
     private var playbackTask: Task<Void, Never>?
@@ -109,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let screen = PracticeScreenView(
             transport: makeTransport(),
+            onSessions: { [weak self] in self?.openSessions() },
             onSheetMusic: { [weak self] in self?.openSheetMusic() },
             onStatistics: { [weak self] in self?.openStats() },
             onRefreshMIDI: { [weak self] in self?.republishMIDIPort() },
@@ -180,6 +183,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case (45, [.command]):
                 self.toggleListening()
                 return nil
+            case (18, [.command]):
+                self.openSessions()
+                return nil
+            case (19, [.command]):
+                self.openSheetMusic()
+                return nil
+            case (20, [.command]):
+                self.openStats()
+                return nil
+            case (21, [.command]):
+                self.openSettings()
+                return nil
             default:
                 return event
             }
@@ -192,7 +207,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if statsController == nil {
             statsController = StatsController()
         }
-        statsController?.show(relativeTo: window, sessions: store.sessions)
+        guard let content = statsController?.overlayContent(sessions: store.sessions) else { return }
+        screen?.presentOverlay(content, size: NSSize(width: 440, height: 300))
+    }
+
+    /// The session archive: every kept session, in the one window, on frozen
+    /// glass. Its door belongs to the panel, its rows to the store.
+    private func openSessions() {
+        guard let screen else { return }
+        let archive = SessionsOverlayView(transport: makeTransport(),
+                                          sessions: store.sessions,
+                                          playing: playingRecord)
+        archiveOverlay = archive
+        archive.onLeave = { [weak self] in self?.screen?.dismissOverlay() }
+        // the card is only as tall as the archive it holds: six takes do not
+        // leave half a screen of empty glass under the last row
+        let height = min(560, 130 + CGFloat(max(1, store.sessions.count)) * 47 + 20)
+        screen.presentOverlay(archive, size: NSSize(width: 620, height: height)) { [weak self] in
+            self?.screen?.setStatus("", error: false)
+        }
     }
 
     private func openSettings() {
@@ -207,7 +240,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             settingsController = controller
         }
-        settingsController?.show(relativeTo: window)
+        guard let content = settingsController?.overlayContent() else { return }
+        screen?.presentOverlay(content, size: NSSize(width: 460, height: 430))
     }
 
     // MARK: per-session actions
@@ -324,7 +358,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             notes: notes,
             pedals: store.pedalSpans(for: record))
         archiveSheetController = controller
-        controller.show(relativeTo: window)
+        presentSheet(controller)
+    }
+
+    /// Puts a sheet in the card, live: the engraver redrafts while notes land.
+    private func presentSheet(_ controller: SheetMusicController) {
+        let content = controller.overlayContent()
+        screen?.presentOverlay(content, size: NSSize(width: 980, height: 700)) { [weak controller] in
+            controller?.overlayDismissed()
+        }
     }
 
     // MARK: loop and rate
@@ -368,6 +410,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// playing carrying the stamp.
     private func refreshSessions() {
         screen?.setSessions(store.sessions, playing: playingRecord)
+        archiveOverlay?.update(sessions: store.sessions, playing: playingRecord)
     }
 
     // MARK: transport actions
@@ -699,13 +742,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// frames the performance, then the engraver cuts it into measures.
     private func openSheetMusic() {
         if let controller = sheetController, controller.isOpen {
-            controller.show(relativeTo: window)
             controller.sync(notes: engine.notes)
             return
         }
         let controller = SheetMusicController(notes: engine.notes)
         sheetController = controller
-        controller.show(relativeTo: window)
+        presentSheet(controller)
     }
 
     private func present(error: String?) {

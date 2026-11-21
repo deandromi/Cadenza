@@ -139,6 +139,11 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         self.window = window
     }
 
+    /// The settings section built for the app's overlay card.
+    func overlayContent(size: NSSize = NSSize(width: 460, height: 520)) -> NSView {
+        makeContent(size: size)
+    }
+
     private func makeContent(size: NSSize) -> NSView {
         let root = NSView(frame: NSRect(origin: .zero, size: size))
         root.autoresizingMask = [.width, .height]
@@ -238,6 +243,11 @@ final class SettingsController: NSObject, NSApplicationDelegate {
             font: .systemFont(ofSize: 11, weight: .regular), color: PaperTheme.secondaryInk)
         let gainRow = settingRow(caption("Gain"), gainSlider, accessory: gainCaption)
 
+        rows.addArrangedSubview(makeInkLabel(
+            "Settings",
+            font: PaperTheme.displaySerif(26, weight: .semibold),
+            color: PaperTheme.ink
+        ))
         rows.addArrangedSubview(directoryRow)
         rows.addArrangedSubview(keepAudioCheckbox)
         rows.addArrangedSubview(deviceRow)

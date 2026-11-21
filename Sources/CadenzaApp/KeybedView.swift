@@ -62,9 +62,78 @@ final class KeybedView: NSView {
         let isSharp: Bool
     }
 
-    /// pitches sounding right now; stamp-tinted keys follow
+    /// How lit each key is right now, 0…1, and where it is heading. A key
+    /// does not switch on: it lights with the force of the strike and lets go
+    /// over a release that lasts longer than the attack, the way felt behaves
+    /// under a hammer. Only keys in motion are repainted, and the ticker
+    /// stops the moment the bed is still.
+    private var glow: [Int: CGFloat] = [:]
+    private var glowTarget: [Int: CGFloat] = [:]
+    private var glowTimer: Timer?
+    private static let tick = 1.0 / 60.0
+    private static let attack: CGFloat = 0.42
+    private static let release: CGFloat = 0.16
+
+    /// pitches sounding right now, for callers that only know sets
     var soundingPitches: Set<Int> = [] {
-        didSet { needsDisplay = true }
+        didSet {
+            let fresh = soundingPitches.subtracting(glowTarget.filter { $0.value > 0 }.keys)
+            for pitch in fresh { press(pitch: pitch, velocity: 96) }
+            for pitch in glowTarget.keys where !soundingPitches.contains(pitch) {
+                glowTarget[pitch] = 0
+            }
+        }
+    }
+
+    /// A key is struck: it lights at the strike's force, never above its own
+    /// ceiling, and starts settling the instant it is hit.
+    func press(pitch: Int, velocity: Int) {
+        let force = CGFloat(max(20, min(127, velocity))) / 127
+        glowTarget[pitch] = 0.35 + 0.65 * force
+        if glow[pitch] == nil { glow[pitch] = 0 }
+        startGlowTimer()
+    }
+
+    /// A key is let go: the light drains, slower than it came.
+    func release(pitch: Int) {
+        guard glowTarget[pitch] != nil else { return }
+        glowTarget[pitch] = 0
+        startGlowTimer()
+    }
+
+    func releaseAll() {
+        for pitch in glowTarget.keys { glowTarget[pitch] = 0 }
+        startGlowTimer()
+    }
+
+    private func startGlowTimer() {
+        guard glowTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.tick, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.advanceGlow() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        glowTimer = timer
+    }
+
+    private func advanceGlow() {
+        var settled = true
+        for (pitch, target) in glowTarget {
+            let current = glow[pitch] ?? 0
+            let rate = target > current ? Self.attack : Self.release
+            let next = current + (target - current) * rate
+            if abs(next - target) < 0.008 {
+                glow[pitch] = target > 0 ? target : nil
+                if target == 0 { glowTarget[pitch] = nil }
+            } else {
+                glow[pitch] = next
+                settled = false
+            }
+        }
+        needsDisplay = true
+        if settled || glowTarget.isEmpty {
+            glowTimer?.invalidate()
+            glowTimer = nil
+        }
     }
 
     /// the painted bed, keyed by the geometry and appearance it was drawn for
@@ -250,19 +319,26 @@ final class KeybedView: NSView {
     // MARK: the lit keys
 
     private func drawSoundingKeys() {
-        guard !soundingPitches.isEmpty, !bedFaces.isEmpty else { return }
-        for face in bedFaces where soundingPitches.contains(face.pitch) {
+        guard !glow.isEmpty, !bedFaces.isEmpty else { return }
+        for face in bedFaces {
+            guard let intensity = glow[face.pitch], intensity > 0.001 else { continue }
             let key = keyFront(face.rect, radius: face.radius)
-            // carmine sits nearly solid on ebony and as a wash on ivory, so a
-            // sounding key reads the same as it did when it was painted with
-            // the bed instead of over it
+            // carmine sits nearly solid on ebony and as a wash on ivory, and
+            // the wash carries the strike's force: a whisper stays a whisper
+            let peak: CGFloat = face.isSharp ? 0.90 : 0.22
             PaperTheme.stamp
-                .withAlphaComponent(face.isSharp ? 0.88 : 0.14)
+                .withAlphaComponent(peak * intensity)
                 .setFill()
             key.fill()
+            // the key dips a hair under the finger: one shaded band at the top
+            NSColor.black.withAlphaComponent(0.10 * intensity).setFill()
+            NSRect(x: face.rect.minX,
+                   y: face.rect.maxY - 5,
+                   width: face.rect.width,
+                   height: 5).fill()
             if face.isSharp {
                 // keep the lacquer alive under the tint: one pale ridge
-                NSColor.white.withAlphaComponent(0.16).setFill()
+                NSColor.white.withAlphaComponent(0.16 * intensity).setFill()
                 NSRect(
                     x: face.rect.minX + 1.2,
                     y: face.rect.minY + 2,

@@ -7,14 +7,17 @@ final class MenuLens: NSView {
     private let menuButton = NSButton(title: "Menu", target: nil, action: nil)
     private var pill: NSStackView?
     private var backdrop: NSView?
-    private let menuItems = ["Sheet music", "Sessions", "Statistics", "Refresh MIDI port", "Settings"]
+    private let menuItems = ["Sessions", "Sheet music", "Statistics", "Refresh MIDI port", "Settings"]
+    private let onSessions: (() -> Void)?
     private let onSheetMusic: (() -> Void)?
     private let onStatistics: (() -> Void)?
     private let onRefreshMIDI: (() -> Void)?
     private let onSettings: (() -> Void)?
 
-    init(onSheetMusic: (() -> Void)? = nil, onStatistics: (() -> Void)? = nil,
+    init(onSessions: (() -> Void)? = nil, onSheetMusic: (() -> Void)? = nil,
+         onStatistics: (() -> Void)? = nil,
          onRefreshMIDI: (() -> Void)? = nil, onSettings: (() -> Void)? = nil) {
+        self.onSessions = onSessions
         self.onSheetMusic = onSheetMusic
         self.onStatistics = onStatistics
         self.onRefreshMIDI = onRefreshMIDI
@@ -63,8 +66,21 @@ final class MenuLens: NSView {
     @objc private func openMenu() {
         let menu = NSMenu()
         for title in menuItems {
-            let item = menu.addItem(withTitle: title, action: nil, keyEquivalent: "")
-            if title == "Sheet music" {
+            // the section doors carry their shortcuts so the menu teaches
+            // them: ⌘1 sessions, ⌘2 sheet, ⌘3 statistics, ⌘4 settings
+            let key: String = switch title {
+            case "Sessions": "1"
+            case "Sheet music": "2"
+            case "Statistics": "3"
+            case "Settings": "4"
+            default: ""
+            }
+            let item = menu.addItem(withTitle: title, action: nil, keyEquivalent: key)
+            if title == "Sessions" {
+                item.isEnabled = onSessions != nil
+                item.target = self
+                item.action = #selector(sessionsTapped)
+            } else if title == "Sheet music" {
                 item.isEnabled = onSheetMusic != nil
                 item.target = self
                 item.action = #selector(sheetMusicTapped)
@@ -90,6 +106,10 @@ final class MenuLens: NSView {
             }
         }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: menuButton.bounds.minY - 8), in: menuButton)
+    }
+
+    @objc private func sessionsTapped() {
+        onSessions?()
     }
 
     @objc private func sheetMusicTapped() {

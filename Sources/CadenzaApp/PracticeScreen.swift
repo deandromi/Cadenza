@@ -13,14 +13,17 @@ final class PracticeScreenView: NSView {
     private let keybed = KeybedView()
     private let staffLens: StaffLensView
     private let panel: ControlPanelLens
-    /// the panel's two geometries: docked narrow at the right edge, or
-    /// centered and wide with its details unfolded
-    private var panelDockWidth: NSLayoutConstraint?
-    private var panelDockTrailing: NSLayoutConstraint?
-    private var panelCenterX: NSLayoutConstraint?
-    private var panelUnfoldedWidth: NSLayoutConstraint?
-    private var panelIsUnfolded = false
-    private var panelMorphing = false
+    /// Every section — the archive, the sheet, statistics, settings — opens
+    /// here, on frozen glass inside this one window, never in a window of its
+    /// own and never by moving the practice screen out from under the user.
+    private let overlay = OverlayHost()
+    /// One glass container hosts every floating control, so Apple's material
+    /// can blend and react across lenses the way it is meant to: the panel
+    /// and the menu are one glass surface family, not two islands.
+    private let glassContainer = NSGlassEffectContainerView()
+    /// asked by the panel and the menu for the session archive; the shell
+    /// answers, since it owns the sessions
+    private let onSessions: (() -> Void)?
     private let menuLens: MenuLens
     private let wordmark = makeInkLabel(
         "Cadenza",
@@ -44,11 +47,14 @@ final class PracticeScreenView: NSView {
     private var sessionSeconds: Double = 0
     private var clockTimer: Timer?
 
-    init(transport: PanelTransport, onSheetMusic: (() -> Void)? = nil,
+    init(transport: PanelTransport, onSessions: (() -> Void)? = nil,
+         onSheetMusic: (() -> Void)? = nil,
          onStatistics: (() -> Void)? = nil, onRefreshMIDI: (() -> Void)? = nil,
          onSettings: (() -> Void)? = nil) {
         panel = ControlPanelLens(transport: transport)
-        menuLens = MenuLens(onSheetMusic: onSheetMusic, onStatistics: onStatistics,
+        self.onSessions = onSessions
+        menuLens = MenuLens(onSessions: onSessions, onSheetMusic: onSheetMusic,
+                            onStatistics: onStatistics,
                             onRefreshMIDI: onRefreshMIDI, onSettings: onSettings)
         // the measure opens the engraved sheet: same door as the menu
         staffLens = StaffLensView(onOpen: onSheetMusic ?? {})
@@ -66,6 +72,9 @@ final class PracticeScreenView: NSView {
             paper.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
 
+        glassContainer.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(glassContainer)
+
         addSubview(keybed)
         addSubview(staffLens)
 
@@ -77,9 +86,9 @@ final class PracticeScreenView: NSView {
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(statusLabel)
 
-        addSubview(panel)
-        addSubview(menuLens)
-        panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(!(self?.panelIsUnfolded ?? true)) }
+        glassContainer.addSubview(panel)
+        glassContainer.addSubview(menuLens)
+        panel.onRequestExpand = { [weak self] in self?.onSessions?() }
 
         NSLayoutConstraint.activate([
             keybed.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -110,21 +119,32 @@ final class PracticeScreenView: NSView {
             // the two floating lenses carry explicit sizes at required
             // priority: intrinsic consultation proved unreliable here, so
             // geometry is pinned, never guessed
+            glassContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            glassContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            glassContainer.topAnchor.constraint(equalTo: topAnchor),
+            glassContainer.bottomAnchor.constraint(equalTo: bottomAnchor),
+
             menuLens.widthAnchor.constraint(equalToConstant: 75),
             menuLens.heightAnchor.constraint(equalToConstant: 40),
-            menuLens.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -28),
-            menuLens.topAnchor.constraint(equalTo: topAnchor, constant: 20),
+            menuLens.trailingAnchor.constraint(equalTo: glassContainer.trailingAnchor, constant: -28),
+            menuLens.topAnchor.constraint(equalTo: glassContainer.topAnchor, constant: 20),
 
             // the panel is only as tall as its rows: the lens wraps the
             // content instead of stretching blank air around it
-            panel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            panel.centerYAnchor.constraint(equalTo: glassContainer.centerYAnchor),
+            panel.trailingAnchor.constraint(equalTo: glassContainer.trailingAnchor, constant: -30),
+            panel.widthAnchor.constraint(equalToConstant: 240),
         ])
-        panelDockWidth = panel.widthAnchor.constraint(equalToConstant: 240)
-        panelDockTrailing = panel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -30)
-        panelCenterX = panel.centerXAnchor.constraint(equalTo: centerXAnchor)
-        panelUnfoldedWidth = panel.widthAnchor.constraint(equalToConstant: 520)
-        panelDockWidth?.isActive = true
-        panelDockTrailing?.isActive = true
+
+        // the overlay sits above every other layer: one window, one place
+        // where a section can appear
+        addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.leadingAnchor.constraint(equalTo: leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: trailingAnchor),
+            overlay.topAnchor.constraint(equalTo: topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
         refresh()
     }
 
@@ -137,7 +157,7 @@ final class PracticeScreenView: NSView {
     /// A note begins sounding: light the key, engrave it at the now line.
     func noteStruck(_ event: NoteEvent) {
         soundingPitches.insert(event.pitch)
-        keybed.soundingPitches = soundingPitches
+        keybed.press(pitch: event.pitch, velocity: event.velocity)
         staffLens.stripView.noteStruck(pitch: event.pitch)
         refresh()
     }
@@ -145,7 +165,7 @@ final class PracticeScreenView: NSView {
     /// A note stops sounding: hand its notation back to the ink.
     func noteReleased(_ event: NoteEvent) {
         soundingPitches.remove(event.pitch)
-        keybed.soundingPitches = soundingPitches
+        keybed.release(pitch: event.pitch)
         staffLens.stripView.noteReleased(pitch: event.pitch)
         refresh()
     }
@@ -154,105 +174,24 @@ final class PracticeScreenView: NSView {
         panel.setSessions(sessions, playing: playing)
     }
 
-    /// The panel itself moves: docked at the right edge when collapsed,
-    /// centered and wide when unfolded. The morph is a single compositor
-    /// animation on the real lens — a pure translation from the dock
-    /// position plus a fade — the same thing as dragging a glass window,
-    /// which the material handles cleanly. No scaling, no stretching, no
-    /// subview rebuilds mid-flight: the lens is laid out in its final
-    /// geometry at once (hidden), then slides/fades into place.
-    func showExpandedPanel(_ show: Bool, animated: Bool = true) {
-        guard show != panelIsUnfolded, !panelMorphing else { return }
-        panelIsUnfolded = show
-        panelMorphing = true
-        panel.wantsLayer = true
+    // MARK: sections on frozen glass
 
-        func swapGeometry() {
-            panelDockWidth?.isActive = !show
-            panelDockTrailing?.isActive = !show
-            panelCenterX?.isActive = show
-            panelUnfoldedWidth?.isActive = show
-            panel.setExpanded(show)
-            layoutSubtreeIfNeeded()
-        }
-        func setTap(_ unfold: Bool) {
-            panel.onRequestExpand = { [weak self] in self?.showExpandedPanel(unfold) }
-        }
-        /// layer-space translation (y is up in layer coordinates) that puts
-        /// the lens's final center on its dock center
-        func dockDelta(from fromFrame: NSRect, to toFrame: NSRect) -> CATransform3D {
-            let dx = fromFrame.midX - toFrame.midX
-            let dy = fromFrame.midY - toFrame.midY
-            return CATransform3DMakeTranslation(dx, -dy, 0)
-        }
+    /// Shows a section in the card: the room freezes behind it, the card
+    /// arrives with the app's one spring, a click outside or Escape closes it.
+    func presentOverlay(_ content: NSView, size: NSSize, onDismiss: (() -> Void)? = nil) {
+        overlay.present(content, size: size, onDismiss: onDismiss)
+    }
 
-        if !animated {
-            swapGeometry()
-            panelMorphing = false
-            setTap(!show)
-            return
-        }
+    func dismissOverlay(animated: Bool = true) {
+        overlay.dismiss(animated: animated)
+    }
 
-        let fromFrame = panel.frame
-        if show {
-            swapGeometry()
-            let toFrame = panel.frame
-            let start = dockDelta(from: fromFrame, to: toFrame)
-            panel.alphaValue = 0
-            panel.layer?.transform = start
-            let move = CABasicAnimation(keyPath: "transform")
-            move.fromValue = NSValue(caTransform3D: start)
-            move.toValue = NSValue(caTransform3D: CATransform3DIdentity)
-            move.duration = 0.34
-            move.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            let fade = CABasicAnimation(keyPath: "opacity")
-            fade.fromValue = 0
-            fade.toValue = 1
-            fade.duration = 0.26
-            fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            panel.layer?.add(move, forKey: "move")
-            panel.layer?.add(fade, forKey: "fade")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.34) { [weak self] in
-                guard let self else { return }
-                panel.layer?.removeAllAnimations()
-                panel.layer?.transform = CATransform3DIdentity
-                panel.alphaValue = 1
-                panelMorphing = false
-                setTap(false)
-            }
-        } else {
-            let toFrame = NSRect(
-                x: bounds.width - 30 - fromFrame.width,
-                y: (bounds.height - fromFrame.height) / 2,
-                width: fromFrame.width,
-                height: fromFrame.height
-            )
-            let target = dockDelta(from: toFrame, to: fromFrame)
-            let move = CABasicAnimation(keyPath: "transform")
-            move.fromValue = NSValue(caTransform3D: CATransform3DIdentity)
-            move.toValue = NSValue(caTransform3D: target)
-            move.duration = 0.3
-            move.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            let fade = CABasicAnimation(keyPath: "opacity")
-            fade.fromValue = 1
-            fade.toValue = 0
-            fade.duration = 0.3
-            move.isRemovedOnCompletion = false
-            fade.isRemovedOnCompletion = false
-            panel.layer?.add(move, forKey: "move")
-            panel.layer?.add(fade, forKey: "fade")
-            panel.layer?.transform = target
-            panel.alphaValue = 0
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                guard let self else { return }
-                panel.layer?.removeAllAnimations()
-                swapGeometry()
-                panel.layer?.transform = CATransform3DIdentity
-                panel.alphaValue = 1
-                panelMorphing = false
-                setTap(true)
-            }
-        }
+    var overlayPresented: Bool { overlay.isPresented }
+
+    /// A section may be rebuilt in place while it is open — the archive after
+    /// a rename, the sheet while notes land.
+    func refreshOverlayContent(_ content: NSView) {
+        overlay.replaceContent(content)
     }
 
     func setNoteCount(_ count: Int) {
@@ -294,7 +233,7 @@ final class PracticeScreenView: NSView {
         clockTimer = nil
         sessionStart = nil
         soundingPitches = []
-        keybed.soundingPitches = []
+        keybed.releaseAll()
         staffLens.stripView.clear()
         refresh()
     }

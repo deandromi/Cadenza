@@ -98,6 +98,12 @@ final class StatsController: NSObject {
         self.window = window
     }
 
+    /// The statistics section built for the app's overlay card.
+    func overlayContent(sessions: [SessionRecord],
+                        size: NSSize = NSSize(width: 440, height: 400)) -> NSView {
+        content(sessions: sessions, size: size)
+    }
+
     private func content(sessions: [SessionRecord], size: NSSize) -> NSView {
         let root = NSView(frame: NSRect(origin: .zero, size: size))
         root.autoresizingMask = [.width, .height]
@@ -137,6 +143,11 @@ final class StatsController: NSObject {
         let totalSeconds = sessions.reduce(0.0) { $0 + $1.durationSeconds }
         let totalNotes = sessions.reduce(0) { $0 + $1.noteCount }
 
+        rows.addArrangedSubview(makeInkLabel(
+            "Statistics",
+            font: PaperTheme.displaySerif(26, weight: .semibold),
+            color: PaperTheme.ink
+        ))
         rows.addArrangedSubview(caption("This week"))
         rows.addArrangedSubview(large("\(PracticeStats.timeString(weekSeconds)) · \(weekNotes) notes"))
         rows.addArrangedSubview(caption("All time"))

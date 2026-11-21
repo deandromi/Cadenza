@@ -23,6 +23,9 @@ final class SheetMusicController: NSObject {
     private var tempoPopup: NSPopUpButton?
     private var meterPopup: NSPopUpButton?
     private var lastDraft: CFAbsoluteTime = 0
+    /// true while the sheet sits in the app's overlay card instead of a
+    /// window of its own
+    private var presented = false
 
     /// Staff spaces the page holds before wrapping: the window width at
     /// default zoom, minus the sheet's margins.
@@ -81,7 +84,7 @@ final class SheetMusicController: NSObject {
     /// The live feed with optional pedal spans (an imported session's
     /// sustain pedal); the sheet re-engraves with them.
     func sync(notes: [NoteEvent], pedals: [(start: Double, end: Double)]?) {
-        guard window?.isVisible == true else { return }
+        guard isOpen else { return }
         self.notes = notes
         if let pedals { self.pedalSpans = pedals }
         let now = CFAbsoluteTimeGetCurrent()
@@ -90,7 +93,7 @@ final class SheetMusicController: NSObject {
     }
 
     func sessionEnded() {
-        guard window?.isVisible == true else { return }
+        guard isOpen else { return }
         redraft()
     }
 
@@ -101,7 +104,32 @@ final class SheetMusicController: NSObject {
     }
 
     var isOpen: Bool {
-        window?.isVisible == true
+        presented || window?.isVisible == true
+    }
+
+    // MARK: in-window presentation
+
+    /// The sheet's content, built for the app's overlay card instead of a
+    /// window: same paper, same choices bar, same live redraft.
+    func overlayContent(size: NSSize = NSSize(width: 980, height: 720)) -> NSView {
+        // the card hosts fresh views: anything the previous card owned is
+        // gone, so drop the pointers before rebuilding
+        contentHost = nil
+        scoreView = nil
+        tempoPopup = nil
+        meterPopup = nil
+        presented = true
+        let root = makeContent(size: size)
+        redraft()
+        return root
+    }
+
+    /// The card closed: its views went with it, and the next presentation
+    /// starts from a clean build.
+    func overlayDismissed() {
+        presented = false
+        contentHost = nil
+        scoreView = nil
     }
 
     private func redraft() {

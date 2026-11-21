@@ -1,11 +1,11 @@
 import AppKit
 import CadenzaCore
 
-/// The session panel: the running clock, the numbers, the breathing level
-/// line, the sessions archive with its play controls, and the transport,
-/// gathered in one glass lens. The lens is a pure glass backdrop; the rows
-/// render through the regular subview chain on top of it, so the panel can
-/// never collapse into nothing.
+/// The docked control panel: the running clock, the numbers, the breathing
+/// level line, the transport and the two doors — one to the session archive,
+/// one to export. It hugs its content: no blank air is ever reserved for rows
+/// that are not there, and the archive itself lives in the sessions overlay
+/// where there is room for every session instead of the first four.
 final class ControlPanelLens: NSView {
     private let transport: PanelTransport
     private let rows = NSStackView()
@@ -21,21 +21,9 @@ final class ControlPanelLens: NSView {
         color: PaperTheme.secondaryInk
     )
     private let levelLine = LevelLineView()
-    /// the archive: one row per preserved session, newest on top
-    private let sessionRows = NSStackView()
-    private let sessionsCaption = makeInkLabel(
-        "Sessions",
-        font: .systemFont(ofSize: 11, weight: .medium),
-        color: PaperTheme.secondaryInk
-    )
-    private let noSessionsLabel = makeInkLabel(
-        "No sessions yet",
-        font: .systemFont(ofSize: 12, weight: .regular),
-        color: PaperTheme.secondaryInk
-    )
+    private let sessionsButton = NSButton(title: "Sessions", target: nil, action: nil)
     private let listenButton = NSButton(title: "New session", target: nil, action: nil)
     private let exportButton = NSButton(title: "Export", target: nil, action: nil)
-    private let importButton = NSButton(title: "Import MIDI", target: nil, action: nil)
     /// the transport under the timer: play/pause the session in hand, stop it
     private let playPauseButton = NSButton(title: "Play", target: nil, action: nil)
     private let stopPlaybackButton = NSButton(title: "Stop", target: nil, action: nil)
@@ -45,25 +33,9 @@ final class ControlPanelLens: NSView {
     private let loopToggleButton = NSButton(title: "Loop", target: nil, action: nil)
     private let ratePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private var loopRow: NSStackView?
-    /// the practice summary, revealed when the panel expands
-    private let practiceCaption = makeInkLabel(
-        "Practice",
-        font: .systemFont(ofSize: 11, weight: .medium),
-        color: PaperTheme.secondaryInk
-    )
-    private let practiceLabel = makeInkLabel(
-        "No practice recorded yet",
-        font: .systemFont(ofSize: 12, weight: .regular),
-        color: PaperTheme.secondaryInk
-    )
-    private var importButtons: NSStackView!
     private var latestSessions: [SessionRecord] = []
-    private var latestPlaying: SessionRecord?
-    /// true while the panel shows the per-session action rows
-    private var expanded = false
-    /// set by the screen: a tap on the panel's paper (never on a button —
-    /// those stay named shortcuts) asks for the panel to move to the center
-    /// and unfold its details
+    /// A tap on the panel's paper asks the shell for the session archive;
+    /// buttons keep their own clicks as named shortcuts.
     var onRequestExpand: (() -> Void)?
     private let backdrop: NSGlassEffectView
 
@@ -77,11 +49,13 @@ final class ControlPanelLens: NSView {
         // views and their relationships are built only after super.init on
         // this OS build: mutation before it orphans subtrees from the live
         // layout engine
-        for button in [listenButton, exportButton, importButton, playPauseButton, stopPlaybackButton, loopAButton, loopBButton, loopToggleButton] {
+        for button in [listenButton, exportButton, sessionsButton, playPauseButton, stopPlaybackButton, loopAButton, loopBButton, loopToggleButton] {
             button.isBordered = false
             button.font = .systemFont(ofSize: loopAButton == button ? 11 : 13, weight: .medium)
             button.contentTintColor = PaperTheme.ink
         }
+        sessionsButton.font = .systemFont(ofSize: 12, weight: .medium)
+        sessionsButton.contentTintColor = PaperTheme.secondaryInk
         ratePopup.addItems(withTitles: ["100%", "75%", "50%"])
         ratePopup.font = .systemFont(ofSize: 11, weight: .medium)
         ratePopup.contentTintColor = PaperTheme.ink
@@ -97,17 +71,12 @@ final class ControlPanelLens: NSView {
         rows.alignment = .leading
         rows.spacing = 12
         rows.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
-        sessionRows.orientation = .vertical
-        sessionRows.alignment = .leading
-        sessionRows.spacing = 3
         rows.setContentHuggingPriority(.required, for: .vertical)
         let divider = HairlineView()
         let buttons = NSStackView(views: [listenButton, exportButton])
         buttons.orientation = .horizontal
         buttons.spacing = 20
-        importButtons = NSStackView(views: [importButton])
-        importButtons.orientation = .horizontal
-        importButtons.spacing = 20
+        buttons.alignment = .firstBaseline
         let playbackButtons = NSStackView(views: [playPauseButton, stopPlaybackButton])
         playbackButtons.orientation = .horizontal
         playbackButtons.spacing = 20
@@ -126,17 +95,8 @@ final class ControlPanelLens: NSView {
         rows.addArrangedSubview(Self.captionedRow("Notes", countLabel))
         rows.addArrangedSubview(Self.captionedRow("Level", levelLine))
         rows.addArrangedSubview(divider)
-        rows.addArrangedSubview(practiceCaption)
-        rows.addArrangedSubview(practiceLabel)
-        rows.addArrangedSubview(sessionsCaption)
-        rows.addArrangedSubview(sessionRows)
+        rows.addArrangedSubview(sessionsButton)
         rows.addArrangedSubview(buttons)
-        rows.addArrangedSubview(importButtons)
-        // the docked panel stays compact: unfolding reveals the practice
-        // summary and the import action
-        importButtons.isHidden = true
-        practiceCaption.isHidden = true
-        practiceLabel.isHidden = true
         NSLayoutConstraint.activate([
             backdrop.leadingAnchor.constraint(equalTo: leadingAnchor),
             backdrop.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -146,16 +106,16 @@ final class ControlPanelLens: NSView {
             rows.trailingAnchor.constraint(equalTo: trailingAnchor),
             rows.topAnchor.constraint(equalTo: topAnchor),
             rows.bottomAnchor.constraint(equalTo: bottomAnchor),
-            levelLine.widthAnchor.constraint(equalToConstant: 216),
-            divider.widthAnchor.constraint(equalToConstant: 216),
+            levelLine.widthAnchor.constraint(equalToConstant: 192),
+            divider.widthAnchor.constraint(equalToConstant: 192),
         ])
 
         listenButton.target = self
         listenButton.action = #selector(listenTapped)
         exportButton.target = self
         exportButton.action = #selector(exportTapped)
-        importButton.target = self
-        importButton.action = #selector(importTapped)
+        sessionsButton.target = self
+        sessionsButton.action = #selector(sessionsTapped)
         playPauseButton.target = self
         playPauseButton.action = #selector(playPauseTapped)
         stopPlaybackButton.target = self
@@ -211,11 +171,14 @@ final class ControlPanelLens: NSView {
         playPauseButton.isEnabled = listening ? playAlongRunning : (playing || !latestSessions.isEmpty)
         playPauseButton.contentTintColor = playing ? PaperTheme.stamp : PaperTheme.ink
         stopPlaybackButton.isEnabled = playing
-        loopRow?.isHidden = !(playing && expanded)
+        loopRow?.isHidden = !playing
         loopToggleButton.contentTintColor = transport.loopActive() ? PaperTheme.stamp : PaperTheme.ink
+        sessionsButton.title = latestSessions.isEmpty
+            ? "Sessions"
+            : "Sessions · \(latestSessions.count)"
     }
 
-    /// true while a play-along (listening and playing together) runs; the
+    /// true while a play-along (listening while a session plays) runs; the
     /// play/pause button serves it too.
     var playAlongRunning = false
 
@@ -226,160 +189,19 @@ final class ControlPanelLens: NSView {
         levelLine.sounding = sounding
     }
 
-    /// Rebuilds the archive list: one quiet row per preserved session, the
-    /// playing one carrying the stamp, none of them crowding the panel.
-    /// Also recomputes the practice summary and resets the loop buttons
-    /// when the playing session changed.
+    /// The archive changed elsewhere: the door shows how many sessions it
+    /// leads to, and the transport knows whether there is anything to play.
     func setSessions(_ sessions: [SessionRecord], playing: SessionRecord?) {
-        let playingChanged = playing?.id != latestPlaying?.id
         latestSessions = sessions
-        latestPlaying = playing
-        practiceLabel.stringValue = Self.practiceSummary(sessions)
-        if playingChanged {
-            for button in [loopAButton, loopBButton, loopToggleButton] {
-                button.contentTintColor = PaperTheme.ink
-            }
-        }
-        let playingID = playing?.id
-        for view in sessionRows.arrangedSubviews {
-            sessionRows.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-        guard !sessions.isEmpty else {
-            sessionRows.addArrangedSubview(noSessionsLabel)
-            // the archive changed: the transport under the timer may have a
-            // session to offer now, or the playing one may have ended
-            syncTransport()
-            return
-        }
-        for record in sessions.prefix(4) {
-            let playButton = NSButton(title: record.id == playingID ? "Stop" : "Play", target: self, action: #selector(playTapped(_:)))
-            playButton.isBordered = false
-            playButton.font = .systemFont(ofSize: 12, weight: .medium)
-            playButton.contentTintColor = record.id == playingID ? PaperTheme.stamp : PaperTheme.ink
-            playButton.identifier = NSUserInterfaceItemIdentifier(record.id.uuidString)
-            let label = makeInkLabel(
-                record.label,
-                font: .systemFont(ofSize: 12, weight: .regular),
-                color: record.id == playingID ? PaperTheme.ink : PaperTheme.secondaryInk
-            )
-            let row = NSStackView(views: [playButton, label])
-            row.orientation = .horizontal
-            row.spacing = 8
-            row.setContentHuggingPriority(.required, for: .vertical)
-            row.setClippingResistancePriority(.required, for: .vertical)
-            if expanded {
-                let actions = NSStackView()
-                actions.orientation = .horizontal
-                actions.spacing = 12
-                actions.alignment = .firstBaseline
-                for (title, action) in [
-                    ("Rename", #selector(renameTapped(_:))),
-                    ("Copy MIDI", #selector(copyTapped(_:))),
-                    ("Sheet", #selector(sheetTapped(_:))),
-                    ("Play along", #selector(playAlongTapped(_:))),
-                    ("Export", #selector(exportSessionTapped(_:))),
-                ] {
-                    let button = NSButton(title: title, target: self, action: action)
-                    button.isBordered = false
-                    button.font = .systemFont(ofSize: 11, weight: .medium)
-                    button.contentTintColor = PaperTheme.secondaryInk
-                    button.identifier = NSUserInterfaceItemIdentifier(record.id.uuidString)
-                    actions.addArrangedSubview(button)
-                }
-                let entry = NSStackView(views: [row, actions])
-                entry.orientation = .vertical
-                entry.alignment = .leading
-                entry.spacing = 3
-                entry.setContentHuggingPriority(.required, for: .vertical)
-                entry.setClippingResistancePriority(.required, for: .vertical)
-                sessionRows.addArrangedSubview(entry)
-            } else {
-                sessionRows.addArrangedSubview(row)
-            }
-        }
-        // the archive changed: the transport under the timer may have a
-        // session to offer now, or the playing one may have ended
         syncTransport()
     }
 
-    /// The practice summary: time and note count of today, then the week.
-    static func practiceSummary(_ sessions: [SessionRecord]) -> String {
-        // the canonical calendar math lives with the statistics section
-        PracticeStats.summaryLine(sessions)
-    }
-
-    /// A tap on the panel's paper (the window delivers mouse events to the
-    /// deepest view, so the buttons keep their own clicks as named
-    /// shortcuts) asks the screen to open the big centered glass panel.
     override func mouseDown(with event: NSEvent) {
         onRequestExpand?()
     }
 
-    var isExpanded: Bool { expanded }
-
-    /// Shows or hides the per-session action rows. The big centered panel
-    /// opens with expanded rows; the small dock panel starts collapsed.
-    func setExpanded(_ newValue: Bool) {
-        guard expanded != newValue else { return }
-        expanded = newValue
-        importButtons.isHidden = !newValue
-        practiceCaption.isHidden = !newValue
-        practiceLabel.isHidden = !newValue
-        setSessions(latestSessions, playing: latestPlaying)
-    }
-
-    private func record(for sender: NSButton) -> SessionRecord? {
-        guard let identifier = sender.identifier?.rawValue else { return nil }
-        return latestSessions.first(where: { $0.id.uuidString == identifier })
-    }
-
-    @objc private func renameTapped(_ sender: NSButton) {
-        guard let record = record(for: sender) else { return }
-        let alert = NSAlert()
-        alert.messageText = "Rename session"
-        alert.informativeText = "Give “\(record.label)” a name."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 22))
-        field.stringValue = record.name ?? ""
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        transport.renameSession(record, field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-
-    @objc private func copyTapped(_ sender: NSButton) {
-        guard let record = record(for: sender) else { return }
-        transport.copySessionMIDI(record)
-    }
-
-    /// Export asks what to hand over in the glass choice popover: the MIDI
-    /// file always, the audio recording when the session kept one, or both.
-    @objc private func exportSessionTapped(_ sender: NSButton) {
-        guard let record = record(for: sender) else { return }
-        let popover = ExportChoicesPopover(hasAudio: transport.sessionHasAudio(record)) { [weak self] choice in
-            guard let self else { return }
-            switch choice {
-            case .midi: self.transport.exportSessionMIDI(record)
-            case .audio: self.transport.exportSessionAudio(record)
-            case .both: self.transport.exportSessionBoth(record)
-            }
-        }
-        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
-    }
-
-    @objc private func sheetTapped(_ sender: NSButton) {
-        guard let record = record(for: sender) else { return }
-        transport.openSessionSheet(record)
-    }
-
-    @objc private func playAlongTapped(_ sender: NSButton) {
-        guard let record = record(for: sender) else { return }
-        transport.playAlong(record)
-    }
-
-    @objc private func importTapped() {
-        transport.importMIDI()
+    @objc private func sessionsTapped() {
+        onRequestExpand?()
     }
 
     // MARK: loop and rate
@@ -417,13 +239,6 @@ final class ControlPanelLens: NSView {
 
     @objc private func stopPlaybackTapped() {
         transport.stopPlayback()
-        syncTransport()
-    }
-
-    @objc private func playTapped(_ sender: NSButton) {
-        guard let identifier = sender.identifier?.rawValue,
-              let record = latestSessions.first(where: { $0.id.uuidString == identifier }) else { return }
-        transport.playSession(record)
         syncTransport()
     }
 

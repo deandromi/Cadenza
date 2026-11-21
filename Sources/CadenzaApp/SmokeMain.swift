@@ -1139,7 +1139,7 @@ enum SmokeMain {
                 }
             }
             snap("0_start")
-            screen.showExpandedPanel(true, animated: true)
+            screen.layoutSubtreeIfNeeded()
             RunLoop.main.run(until: Date().addingTimeInterval(0.12))
             snap("1_mid")
             RunLoop.main.run(until: Date().addingTimeInterval(0.12))
@@ -1169,7 +1169,7 @@ enum SmokeMain {
                 SessionRecord(id: UUID(), name: nil, folderName: "Session 2", startedAt: Date().addingTimeInterval(-7200), durationSeconds: 41, noteCount: 88, hasAudio: false),
                 SessionRecord(id: UUID(), name: nil, folderName: "Session 3", startedAt: Date().addingTimeInterval(-90000), durationSeconds: 154, noteCount: 531, hasAudio: true),
             ], playing: nil)
-            screen.showExpandedPanel(true, animated: false)
+            screen.layoutSubtreeIfNeeded()
             screen.setNoteCount(12)
             screen.sessionStarted()
             for (pitch, age) in [(48, 8.6), (55, 8.5), (72, 6.4), (76, 6.3),
@@ -1198,6 +1198,80 @@ enum SmokeMain {
                 print("screen-shot: wrote /tmp/cadenza_screen.png")
             }
         }
+    }
+
+    /// Renders the in-window sections — the archive and the settings card —
+    /// into PNGs through the real overlay host, so layout and the frozen
+    /// glass can be inspected without a screen recording of the live app.
+    static func runOverlayShot() {
+        MainActor.assumeIsolated {
+            NSApplication.shared.appearance = NSAppearance(named: .aqua)
+            MusicFont.register()
+            let size = NSSize(width: 1080, height: 660)
+            let transport = PanelTransport(
+                isListening: { true },
+                toggleListening: {},
+                exportEnabled: { true },
+                export: {}
+            )
+            let screen = PracticeScreenView(transport: transport, onSheetMusic: {})
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.contentView = screen
+            screen.frame = NSRect(origin: .zero, size: size)
+            let sessions = [
+                SessionRecord(id: UUID(), name: "Chopin, wrong notes", folderName: "Session 1", startedAt: Date().addingTimeInterval(-3600), durationSeconds: 96, noteCount: 214, hasAudio: true),
+                SessionRecord(id: UUID(), name: nil, folderName: "Session 2", startedAt: Date().addingTimeInterval(-7200), durationSeconds: 41, noteCount: 88, hasAudio: false),
+                SessionRecord(id: UUID(), name: nil, folderName: "Session 3", startedAt: Date().addingTimeInterval(-90000), durationSeconds: 154, noteCount: 531, hasAudio: true),
+                SessionRecord(id: UUID(), name: "Late night take", folderName: "Session 4", startedAt: Date().addingTimeInterval(-180000), durationSeconds: 302, noteCount: 811, hasAudio: true),
+                SessionRecord(id: UUID(), name: nil, folderName: "Session 5", startedAt: Date().addingTimeInterval(-260000), durationSeconds: 74, noteCount: 190, hasAudio: false),
+                SessionRecord(id: UUID(), name: nil, folderName: "Session 6", startedAt: Date().addingTimeInterval(-300000), durationSeconds: 55, noteCount: 120, hasAudio: true),
+            ]
+            screen.setSessions(sessions, playing: sessions[1])
+            screen.layoutSubtreeIfNeeded()
+
+            writeShot(of: screen, size: size, name: "home")
+            let archive = SessionsOverlayView(transport: transport,
+                                              sessions: sessions,
+                                              playing: sessions[1])
+            screen.presentOverlay(archive, size: NSSize(width: 620, height: 130 + CGFloat(sessions.count) * 47 + 20))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+            writeShot(of: screen, size: size, name: "sessions")
+            screen.dismissOverlay(animated: false)
+
+            let settings = SettingsController().overlayContent()
+            screen.presentOverlay(settings, size: NSSize(width: 460, height: 430))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+            writeShot(of: screen, size: size, name: "settings")
+            screen.dismissOverlay(animated: false)
+
+            let stats = StatsController().overlayContent(sessions: sessions)
+            screen.presentOverlay(stats, size: NSSize(width: 440, height: 300))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+            writeShot(of: screen, size: size, name: "stats")
+            screen.dismissOverlay(animated: false)
+        }
+    }
+
+    /// One offscreen render of a view tree to /tmp, at 2×.
+    @MainActor
+    private static func writeShot(of view: NSView, size: NSSize, name: String) {
+        view.layoutSubtreeIfNeeded()
+        let scale: CGFloat = 2
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return }
+        rep.size = size
+        view.cacheDisplay(in: NSRect(origin: .zero, size: size), to: rep)
+        guard let cg = rep.cgImage,
+              let dest = CGImageDestinationCreateWithURL(
+                URL(fileURLWithPath: "/tmp/cadenza_\(name).png") as CFURL,
+                UTType.png.identifier as CFString, 1, nil) else { return }
+        CGImageDestinationAddImage(dest, cg, nil)
+        CGImageDestinationFinalize(dest)
+        print("overlay-shot: wrote /tmp/cadenza_\(name).png")
     }
 
     private static func readF32(_ url: URL) -> [Float] {
