@@ -304,43 +304,67 @@ The broader reading of the same measurements: precision is already 0.92-0.99,
 recall is 0.80-0.88. The next accuracy work belongs to **missed notes**, not
 to note lengths or false notes.
 
-### Found and fixed: the model is deaf below C2
+### What the harness synth got wrong (and the benchmark to trust now)
 
-Isolated bass notes exposed it. A single G1 at any velocity, a C2 at full
-velocity, a D2 in some contexts: the backbone returns nothing at all, while
-G2 and every note above it decode reliably. The reference PyTorch model on
-the same audio misses them identically, so this is not a porting fault: the
-checkpoint's mel filterbank has two to four semitones per band below C2 (the
-lowest bands sit at 38, 43, 54, 65, 71, 77 Hz), and pitch that never reached
-the features cannot come back out.
+For a while the measurements said the model was deaf below C2 and again above
+C6: isolated G1 notes did not decode at any velocity, and every note above
+pitch 84 vanished. The reference PyTorch model missed them identically, so it
+looked like a checkpoint limit and a bass fallback (`LowRegisterDetector`) was
+built, measured, and shipped in 1.3.
 
-`Sources/CadenzaCore/LowRegisterDetector.swift` takes that register from the
-signal instead, and only there: peaks are picked in a long, high-resolution
-window (8192 samples, 5.4 Hz per bin), tracked frame to frame, and a peak
-becomes a note only when it holds for 120 ms, keeps its pitch within half a
-semitone, stands out in the whole spectrum, and — the gate noise cannot pass
-— repeats itself in the waveform at the period its pitch claims. Octave
-phantoms are refused by ratio, so a G2 does not also become a G1.
+It was the benchmark audio, not the model. `Tools/render_midi_samples.py`
+renders a MIDI file with the CC0 piano samples that ship in `Resources/Piano`,
+each note taken from the nearest recorded pitch and shifted, which is what the
+app itself plays back. On that audio — real attack transients, real
+inharmonicity — the model hears what the harmonic-stack synth hid from it:
 
-Measured at `CDZ_FIXED_STEP=0.9`, precision / recall / F1:
+| test (recorded samples, `CDZ_FIXED_STEP=0.9`) | F1 |
+| --- | --- |
+| one lone C1, G1 at v40 and v90, C2, D2, low chords | 0.938 (15/16 notes) |
+| high notes C6 to C7, velocities 33 to 100 | 0.933 (7/8) |
+| note lengths, 0.15 s to 2 s | 1.000, offsets 0.03 s median |
+| Debussy, Reflets dans l'eau, 25 s | 0.870 (P 0.949, R 0.802) |
 
-| piece | before | after |
+Same note-length bench with `CDZ_REFINER=0`: F1 0.800, recall 0.667, offsets
+0.43 s median. The refiner earns its place on real timbre, not only on the
+synth.
+
+So the bass fallback is now **off by default** (`CDZ_LOW=1` turns it on): real
+timbre never needed it, and it cost about a fifth of a second per window. Its
+code and checks stay, because it is still the answer for material whose bass
+the model genuinely drops — which so far is the synth's bare stacks only.
+
+The lesson for the next round: measure on recorded samples, never on the
+harmonic stack. The synth is fine for plumbing tests (lengths, merging,
+latency), not for judging what the model can hear.
+
+### Normalisation: two paths, measured
+
+The mel front end can scale each window by its own mean and standard deviation
+(`CADENZA_MEL_NORM`, the default) or leave levels absolute, the way Transkun
+trained (`CADENZA_MEL_ABS=1`). On recorded samples they trade places:
+
+| Debussy 25 s, peak level | normalised F1 | absolute F1 |
 | --- | --- | --- |
-| isolated bass notes at three velocities | 0.667 / 0.333 / 0.444 | 0.857 / 1.000 / 0.923 |
-| bass chords and melodies below C2 | 0.875 / 0.500 / 0.636 | 0.929 / 0.929 / 0.929 |
-| Je te veux (Satie) | 0.993 / 0.800 / 0.886 | 0.955 / 0.851 / 0.900 |
-| Hey Bulldog | 0.959 / 0.877 / 0.916 | 0.954 / 0.922 / 0.938 |
-| note lengths (`durations2`) | 1.000 / 1.000 / 1.000 | 1.000 / 1.000 / 1.000 |
+| 0.70 | 0.870 | 0.886 |
+| 0.20 | 0.870 | 0.873 |
+| 0.07 | 0.870 | 0.870 |
 
-The length of a detector note comes from its own energy, so bass notes are
-now the most accurately timed notes in the output (2 s median offset error,
-13 of 13 within 10%).
+The absolute path is a point and a half better on healthy levels and exactly
+as good on quiet input, but it loses on the bass test (0.933 against 1.000)
+and the normalised path is the only one that cannot be sunk by a quiet room or
+a low input gain. It stays the default, with the numbers recorded here rather
+than a hunch.
 
-Two smaller fixes came with it. The streaming merge now filters the stub a
-re-strike leaves behind (a note clipped to a few milliseconds is neither
-playable nor writable), and `SingleStrikes.merge` collapses a key reported
-twice inside 60 ms — a piano key cannot strike twice that fast — keeping the
-longer interval. Both are checked.
+### Where the misses are now
+
+On the Debussy capture, 37 notes of 179 are missed and they are all
+pianissimo: 24 sit in the top octave of the texture, 24 sound inside a
+two-note chord. That is masking, and the reference model misses the same notes
+at the same places, so it cannot be fixed downstream of the model without
+inventing notes — which is exactly what the chord completion experiment tried
+and lost. The remaining honest levers are a threshold study on the quiet end
+and, eventually, fine-tuning on real recordings.
 
 ## Small levers, in rough order
 
@@ -357,6 +381,10 @@ longer interval. Both are checked.
 - `--synth-midi <file.mid> <out.f32>` renders a MIDI file to clean synthetic
   audio and prints ground-truth notes; match against `--replay-stream`
   output for best-case precision/recall/F1.
+- `Tools/render_midi_samples.py <midi> <out.f32> [rate] [maxSeconds]` renders
+  a MIDI file with the recorded piano samples the app plays back. This is the
+  benchmark to judge accuracy on: the harmonic-stack synth below is fine for
+  plumbing, but it hides whole registers from the model.
 - `Tools/corpus_eval.sh <outdir> <seconds> <midi...>` does both for a folder
   of pieces and writes one eval line per piece, so a change can be judged on
   slow pedalled music as well as on dense pop.

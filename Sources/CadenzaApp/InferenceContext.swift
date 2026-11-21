@@ -14,8 +14,13 @@ final class InferenceContext: @unchecked Sendable {
     private let refiner = NoteLengthRefiner()
     /// finds the bass notes the model is blind to, from the signal itself
     private let bassDetector = LowRegisterDetector()
-    /// CDZ_LOW=0 turns the bass pass off, for A/B runs
-    private static let detectsBass = ProcessInfo.processInfo.environment["CDZ_LOW"] != "0"
+    /// Off by default, and measured off: with recorded piano samples the
+    /// model finds a lone C1, a G1 at v40 and at v90, C2, D2 and low chords
+    /// without help (15 of 16 notes, F1 0.938), so the fallback is not needed
+    /// for real timbre and it costs a fifth of a second per window. It stays
+    /// behind CDZ_LOW=1 for material whose bass the model really does drop,
+    /// which so far is only the harness synth's bare harmonic stacks.
+    private static let detectsBass = ProcessInfo.processInfo.environment["CDZ_LOW"] == "1"
     /// CDZ_REFINER=0 turns the audio-evidence length pass off, for A/B runs
     private static let refinesLengths = ProcessInfo.processInfo.environment["CDZ_REFINER"] != "0"
 
@@ -208,15 +213,24 @@ final class InferenceContext: @unchecked Sendable {
         return result
     }
 
-    /// Adds the notes the signal holds below C2, which the backbone cannot
-    /// hear: the model's own mel filterbank has several semitones per band
-    /// down there, and the reference model misses them identically.
+    /// Adds the notes the signal holds below C2, but only in a window where
+    /// the model itself reports no bass at all.
+    ///
+    /// Measured with recorded piano samples (Tools/render_midi_samples.py),
+    /// the model does hear that register: on real timbre it finds a lone G1
+    /// at v60 and C2 at v100 without help. It went blind only on the harness
+    /// synth's bare harmonic stacks, whose low notes carry neither the attack
+    /// transient nor the inharmonicity of a string. So the detector is a
+    /// fallback for a window the model left empty down there, not a second
+    /// opinion that competes with it.
     private static func bassNotes(
         _ events: [WindowResult.Event],
         samples: [Float],
         windowBegin: Double,
         detector: LowRegisterDetector
     ) -> [WindowResult.Event] {
+        // the model already hears bass in this window: leave it alone
+        guard !events.contains(where: { $0.pitch <= 45 }) else { return events }
         let existing = events.map { event in
             LowRegisterDetector.Span(pitch: event.pitch, onset: event.onsetSeconds,
                                      offset: event.offsetSeconds, velocity: event.velocity)
