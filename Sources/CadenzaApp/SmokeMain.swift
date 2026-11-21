@@ -1371,6 +1371,87 @@ enum SmokeMain {
         }
     }
 
+    /// Opens the sheet section exactly the way the home screen does, with a
+    /// real session, and reports whether the card survived: the failure this
+    /// guards against closes the card the moment it appears.
+    /// Exercises the archive on disk: a session is saved, renamed (folder,
+    /// MIDI, WAV and sheet PDF follow the name) and deleted, with the index
+    /// checked at every step. Run with `--sessions-probe`.
+    @MainActor
+    static func runSessionsProbe() {
+        let root = URL(fileURLWithPath: "/tmp/cadenza-sessions-probe", isDirectory: true)
+        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = SessionStore(directory: root)
+        let notes = [NoteEvent(pitch: 60, velocity: 90, onset: 0, duration: 1)]
+        guard let saved = store.saveSession(notes: notes, startedAt: Date(), durationSeconds: 2) else {
+            print("sessions-probe: save failed")
+            return
+        }
+        let folder = store.folderURL(for: saved)
+        let wav = folder.appendingPathComponent("audio.wav")
+        try? WavWriter.write([0.1, 0.2], rate: 44_100, to: wav)
+        print("sessions-probe: saved \(folder.lastPathComponent), midi=\(FileManager.default.fileExists(atPath: store.midiURL(for: saved).path))")
+
+        guard let renamed = store.rename(saved, to: "Nocturne in C sharp minor") else {
+            print("sessions-probe: rename failed")
+            return
+        }
+        let renamedFolder = store.folderURL(for: renamed)
+        let listing = (try? FileManager.default.contentsOfDirectory(atPath: renamedFolder.path))?
+            .sorted().joined(separator: ", ") ?? "?"
+        print("sessions-probe: renamed folder=\(renamedFolder.lastPathComponent) files=[\(listing)] index=\(store.sessions.count)")
+        print("sessions-probe: midi resolves=\(FileManager.default.fileExists(atPath: store.midiURL(for: renamed).path)), audio resolves=\(FileManager.default.fileExists(atPath: store.audioURL(for: renamed).path))")
+
+        store.delete(renamed)
+        let gone = !FileManager.default.fileExists(atPath: renamedFolder.path)
+        print("sessions-probe: deleted folderGone=\(gone) index=\(store.sessions.count)")
+    }
+
+    static func runSheetOpenProbe() {
+        MainActor.assumeIsolated {
+            NSApplication.shared.setActivationPolicy(.regular)
+            NSApplication.shared.appearance = NSAppearance(named: .aqua)
+            MusicFont.register()
+            let size = NSSize(width: 1080, height: 720)
+            let transport = PanelTransport(
+                isListening: { false },
+                toggleListening: {},
+                exportEnabled: { false },
+                export: {}
+            )
+            let screen = PracticeScreenView(transport: transport, onSheetMusic: {})
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.contentView = screen
+            screen.frame = NSRect(origin: .zero, size: size)
+            screen.layoutSubtreeIfNeeded()
+
+            // the app stores sessions in the shared Documents folder; the
+            // probe runs without the app's preferences domain
+            let documents = URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Documents/Cadenza", isDirectory: true)
+            let directory = SettingsKeys.sessionDirectory
+                ?? (FileManager.default.fileExists(atPath: documents.path)
+                    ? documents : SessionStore.defaultDirectory)
+            let store = SessionStore(directory: directory)
+            guard let record = store.sessions.first else {
+                print("sheet-open-probe: no sessions to engrave")
+                return
+            }
+            let notes = store.notes(for: record) ?? []
+            print("sheet-open-probe: session \(record.folderName ?? "-") with \(notes.count) notes")
+            let controller = SheetMusicController(notes: notes)
+            let content = controller.overlayContent()
+            screen.presentOverlay(content, size: NSSize(width: 980, height: 700))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+            print("sheet-open-probe: presented=\(screen.overlayPresented)")
+            writeShot(of: screen, size: size, name: "sheet-open")
+            RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+            print("sheet-open-probe: still=\(screen.overlayPresented)")
+        }
+    }
+
     /// Renders the in-window sections — the archive and the settings card —
     /// into PNGs through the real overlay host, so layout and the frozen
     /// glass can be inspected without a screen recording of the live app.

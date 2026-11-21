@@ -22,6 +22,10 @@ final class SheetMusicController: NSObject {
     private var scoreView: ScoreView?
     private var tempoPopup: NSPopUpButton?
     private var meterPopup: NSPopUpButton?
+    private var emptyLabel: NSTextField?
+    /// Called by the choices bar's Close button when the sheet sits in the
+    /// overlay card: there is no window of its own to close there.
+    var onClose: (() -> Void)?
     private var lastDraft: CFAbsoluteTime = 0
     /// true until the player picks a tempo or meter themselves: the sheet
     /// follows what the performance argues for, not a default 4/4
@@ -50,6 +54,7 @@ final class SheetMusicController: NSObject {
         scoreView = nil
         tempoPopup = nil
         meterPopup = nil
+        emptyLabel = nil
         let size = NSSize(width: 980, height: 720)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
@@ -121,6 +126,7 @@ final class SheetMusicController: NSObject {
         scoreView = nil
         tempoPopup = nil
         meterPopup = nil
+        emptyLabel = nil
         presented = true
         let root = makeContent(size: size)
         redraft()
@@ -133,6 +139,7 @@ final class SheetMusicController: NSObject {
         presented = false
         contentHost = nil
         scoreView = nil
+        emptyLabel = nil
     }
 
     private func redraft() {
@@ -147,12 +154,19 @@ final class SheetMusicController: NSObject {
         }
         let result = SheetDraft.draft(notes: notes, options: options, pageWidth: pageSpaces, pedals: pedalTicks)
         guard let host = contentHost else { return }
+        syncChoicesBar()
         if let view = scoreView {
             view.update(result: result)
             return
         }
-        tempoPopup?.selectItem(withTitle: "\(Int(options.bpm)) bpm")
-        meterPopup?.selectItem(withTitle: "\(options.numerator)/\(options.denominator)")
+        // nothing played yet: paper with an invitation beats blank paper,
+        // which reads as a sheet that failed to load
+        if notes.count < 2 {
+            showEmptyState(in: host)
+            return
+        }
+        emptyLabel?.removeFromSuperview()
+        emptyLabel = nil
         host.subviews.forEach { $0.removeFromSuperview() }
         let view = ScoreView(result: result)
         let scroll = NSScrollView(frame: host.bounds)
@@ -172,6 +186,43 @@ final class SheetMusicController: NSObject {
             scroll.bottomAnchor.constraint(equalTo: host.bottomAnchor),
         ])
         scoreView = view
+    }
+
+    /// One centred serif line on the paper while the sheet has nothing to
+    /// engrave yet.
+    private func showEmptyState(in host: NSView) {
+        guard emptyLabel == nil else { return }
+        let label = NSTextField(labelWithString: "Play something and the sheet writes itself")
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = PaperTheme.displaySerif(22, weight: .regular)
+        label.textColor = PaperTheme.secondaryInk
+        label.alignment = .center
+        host.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: host.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: host.centerYAnchor),
+        ])
+        emptyLabel = label
+    }
+
+    /// Keeps both popups on the draft's current framing. The tempo list is a
+    /// grid of fours, so an inferred tempo that falls between two entries is
+    /// added rather than silently left unselected (which rendered blank).
+    private func syncChoicesBar() {
+        if let popup = tempoPopup {
+            let title = "\(Int(options.bpm.rounded())) bpm"
+            let grid = stride(from: 40.0, through: 208.0, by: 4.0).map { "\(Int($0)) bpm" }
+            if !grid.contains(title) {
+                let items = (grid + [title]).sorted {
+                    (Int($0.split(separator: " ").first ?? "0") ?? 0) <
+                    (Int($1.split(separator: " ").first ?? "0") ?? 0)
+                }
+                popup.removeAllItems()
+                popup.addItems(withTitles: items)
+            }
+            popup.selectItem(withTitle: title)
+        }
+        meterPopup?.selectItem(withTitle: "\(options.numerator)/\(options.denominator)")
     }
 
     // MARK: content
@@ -240,7 +291,7 @@ final class SheetMusicController: NSObject {
         ])
 
         let tempo = makePopup(items: stride(from: 40.0, through: 208.0, by: 4.0).map { "\(Int($0)) bpm" })
-        tempo.selectItem(withTitle: "\(Int(options.bpm)) bpm")
+        tempo.selectItem(withTitle: "\(Int(options.bpm.rounded())) bpm")
         tempo.target = self
         tempo.action = #selector(tempoChanged)
         tempoPopup = tempo
@@ -310,7 +361,11 @@ final class SheetMusicController: NSObject {
     }
 
     @objc private func closeTapped() {
-        window?.close()
+        if let onClose {
+            onClose()
+        } else {
+            window?.close()
+        }
     }
 }
 
@@ -526,7 +581,7 @@ final class ScoreView: NSView {
             drawGlyph(bassClefGlyph, baselineAt: NSPoint(x: clefX, y: yOnBass(6)), font: musicFont, color: ink)
 
             // key signature
-            var keyX = clefX + 2.9 * gap
+            var keyX = clefX + 3.7 * gap
             for glyph in ScoreLayout.keyGlyphs(result.fifths) {
                 let codepoint = glyph.accidental == .sharp ? Glyph.accidentalSharp
                     : glyph.accidental == .flat ? Glyph.accidentalFlat : Glyph.accidentalNatural

@@ -305,42 +305,75 @@ final class PianoMixer: @unchecked Sendable {
 @MainActor
 final class PianoSampler {
     private let engine = AVAudioEngine()
+    /// The sampled grand: the system's General MIDI bank through an
+    /// `AVAudioUnitSampler`, which is velocity layered, full length and
+    /// stereo. When the bank can't be loaded the app falls back to the
+    /// bundled sample mixer below, so playback never goes silent.
+    private var sampler: AVAudioUnitSampler?
+    private var space: AVAudioUnitReverb?
     private let mixer = PianoMixer()
     private var source: AVAudioSourceNode?
     private var running = false
     private var samplesLoaded = false
+    /// The pitches the sampler is holding, so stop/silence can lift exactly
+    /// those keys instead of blasting all-notes-off at every channel.
+    private var held: Set<Int> = []
+
+    /// The system's instrument bank. Every macOS ships this file, so the app
+    /// carries no piano of its own beyond the small fallback samples.
+    static let systemBank = URL(fileURLWithPath:
+        "/System/Library/Components/CoreAudio.component/Contents/Resources/gs_instruments.dls")
 
     // MARK: public surface
 
-    /// Loads the samples and starts the engine. Idempotent, and cheap after
-    /// the first call: a session's Play button calls this every time.
+    /// Loads the instrument and starts the engine. Idempotent, and cheap
+    /// after the first call: a session's Play button calls this every time.
     func prepare() {
-        if !samplesLoaded {
+        if sampler == nil, !samplesLoaded {
+            loadSystemPiano()
+        }
+        if sampler == nil, !samplesLoaded {
             guard let directory = Self.samplesDirectory() else { return }
             loadSamples(from: directory)
             samplesLoaded = mixer.hasSamples
         }
-        guard samplesLoaded, !running else { return }
+        guard sampler != nil || samplesLoaded, !running else { return }
         startEngine()
     }
 
     /// A note from a recorded take sounds.
     func noteOn(pitch: Int, velocity: Int) {
         prepare()
-        mixer.enqueue(PianoMixer.Event(
-            kind: .on,
-            pitch: max(0, min(127, pitch)),
-            velocity: max(1, min(127, velocity))
-        ))
+        let key = max(0, min(127, pitch))
+        if let sampler {
+            sampler.startNote(UInt8(key), withVelocity: UInt8(max(1, min(127, velocity))), onChannel: 0)
+            held.insert(key)
+            return
+        }
+        mixer.enqueue(PianoMixer.Event(kind: .on, pitch: key, velocity: max(1, min(127, velocity))))
     }
 
-    /// The key lifts: the voice releases over a short fade.
+    /// The key lifts: the instrument damps it with its own release.
     func noteOff(pitch: Int) {
-        mixer.enqueue(PianoMixer.Event(kind: .off, pitch: max(0, min(127, pitch)), velocity: 0))
+        let key = max(0, min(127, pitch))
+        if let sampler {
+            sampler.stopNote(UInt8(key), onChannel: 0)
+            held.remove(key)
+            return
+        }
+        mixer.enqueue(PianoMixer.Event(kind: .off, pitch: key, velocity: 0))
     }
 
     /// Every voice lets go: pause, stop, panic.
     func silence() {
+        if let sampler {
+            for key in held { sampler.stopNote(UInt8(key), onChannel: 0) }
+            held.removeAll()
+            // pedal and the remaining voices: nothing rings past a stop
+            sampler.sendController(64, withValue: 0, onChannel: 0)
+            sampler.sendController(123, withValue: 0, onChannel: 0)
+            return
+        }
         mixer.enqueue(PianoMixer.Event(kind: .silence, pitch: 0, velocity: 0))
     }
 
@@ -358,6 +391,37 @@ final class PianoSampler {
     }
 
     // MARK: loading
+
+    /// Loads the system's acoustic grand into a sampler voice and runs it
+    /// through a small room. The room is deliberate: a touch of space sits
+    /// under the notes the transcriber missed, so a take sounds like a room
+    /// rather than like gaps.
+    private func loadSystemPiano() {
+        guard FileManager.default.fileExists(atPath: Self.systemBank.path) else { return }
+        let sampler = AVAudioUnitSampler()
+        do {
+            try sampler.loadSoundBankInstrument(
+                at: Self.systemBank,
+                program: 0,
+                bankMSB: UInt8(kAUSampler_DefaultMelodicBankMSB),
+                bankLSB: UInt8(kAUSampler_DefaultBankLSB)
+            )
+        } catch {
+            print("[piano] system bank failed: \(error.localizedDescription)")
+            return
+        }
+        let space = AVAudioUnitReverb()
+        space.loadFactoryPreset(.mediumRoom)
+        space.wetDryMix = 20
+        engine.attach(sampler)
+        engine.attach(space)
+        engine.connect(sampler, to: space, format: nil)
+        engine.connect(space, to: engine.mainMixerNode, format: nil)
+        engine.mainMixerNode.outputVolume = 0.85
+        self.sampler = sampler
+        self.space = space
+        print("[piano] system grand loaded with a medium room")
+    }
 
     /// The bundle's samples, or the repository's during `swift run`. One
     /// place knows the layout, so the offline probe finds the same wavs.
@@ -393,6 +457,16 @@ final class PianoSampler {
     // MARK: engine
 
     private func startEngine() {
+        if sampler != nil {
+            engine.prepare()
+            do {
+                try engine.start()
+                running = true
+            } catch {
+                print("[piano] engine start failed: \(error.localizedDescription)")
+            }
+            return
+        }
         if source == nil {
             guard let format = AVAudioFormat(
                 standardFormatWithSampleRate: PianoMixer.renderRate,

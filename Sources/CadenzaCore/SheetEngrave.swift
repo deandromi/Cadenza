@@ -382,20 +382,16 @@ public enum SheetEngraver {
         let values = notes.map { SheetDraft.noteValue($0.duration) }
         if values.allSatisfy({ $0.head == .whole }) {
             stems = []
-        } else if let change = values.firstIndex(where: { $0 != values[0] }) {
-            if values[0].head != .whole {
-                stems.append(SheetDraft.Stem(noteRange: 0..<change, up: false,
-                                             flags: values[0].flags, beamGroupId: nil))
-            }
-            if values[change].head != .whole {
-                stems.append(SheetDraft.Stem(noteRange: change..<notes.count, up: true,
-                                             flags: values[change].flags, beamGroupId: nil))
-            }
         } else {
+            // One stem per chord: the shortest printed value sets the flags and the
+            // average head position sets the direction. Splitting a chord into two
+            // voices drew two stems through the same heads, which reads as a bug.
+            var shortest = values[0]
+            for value in values where value.flags > shortest.flags { shortest = value }
             let positions = glyphs.map(\.staffPosition)
             let up = positions.reduce(0, +) / max(1, positions.count) < 4
             stems = [SheetDraft.Stem(noteRange: 0..<notes.count, up: up,
-                                     flags: values[0].flags, beamGroupId: nil)]
+                                     flags: shortest.flags, beamGroupId: nil)]
         }
         let end = notes.map { $0.start + $0.duration }.max() ?? start
         return SheetDraft.Chord(startTicks: start, endTicks: end, notes: glyphs, stems: stems)
@@ -486,10 +482,12 @@ public enum SheetEngraver {
             }
         }
 
-        /// One barline, air per rhythmic column, room for an accidental.
+        /// One barline, air per rhythmic column, room for an accidental. The
+        /// per-column air is wider than the closest two heads may sit, so a
+        /// bar is never handed a width that forces its columns to collide.
         func naturalWidth(_ measure: Int) -> Double {
             let columns = Set(starts(top, measure) + starts(bottom, measure)).count
-            return 2.2 + Double(max(1, columns)) * 1.7
+            return 2.8 + Double(max(1, columns)) * 2.0
         }
 
         var rows: [SheetDraft.Row] = []
@@ -512,7 +510,7 @@ public enum SheetEngraver {
             // squeezed rather than allowed to overflow.
             let naturalTotal = naturals.reduce(0, +)
             let stretch = naturalTotal > 0
-                ? min(max(usable / naturalTotal, 0.72), 1.9) : 1.0
+                ? min(max(usable / naturalTotal, 0.92), 1.9) : 1.0
             let widths = naturals.map { $0 * stretch }
 
             var topPlaced: [SheetDraft.Placed] = []

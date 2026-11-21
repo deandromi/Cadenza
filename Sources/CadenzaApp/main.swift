@@ -53,6 +53,15 @@ if CommandLine.arguments.contains("--screen-shot") {
     SmokeMain.runScreenShot()
     exit(0)
 }
+if CommandLine.arguments.contains("--sessions-probe") {
+    @MainActor func go() { SmokeMain.runSessionsProbe() }
+    MainActor.assumeIsolated { go() }
+    exit(0)
+}
+if CommandLine.arguments.contains("--sheet-open-probe") {
+    SmokeMain.runSheetOpenProbe()
+    exit(0)
+}
 if CommandLine.arguments.contains("--sheet-window-probe") {
     SheetBench.windowProbe()
     exit(0)

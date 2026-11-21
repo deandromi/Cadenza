@@ -139,6 +139,7 @@ final class SessionsOverlayView: NSView {
                 self?.transport.openSessionSheet(record)
             }
             row.onRename = { [weak self] in self?.rename(record) }
+            row.onDelete = { [weak self] in self?.delete(record) }
             row.onCopyMIDI = { [weak self] in self?.transport.copySessionMIDI(record) }
             row.onPlayAlong = { [weak self] in
                 self?.onLeave?()
@@ -172,6 +173,17 @@ final class SessionsOverlayView: NSView {
         transport.renameSession(record, field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    private func delete(_ record: SessionRecord) {
+        let alert = NSAlert()
+        alert.messageText = "Delete session"
+        alert.informativeText = "“\(record.label)” and its files — MIDI, audio and sheet — go away for good."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        transport.deleteSession(record)
+    }
+
     @objc private func newSessionTapped() {
         transport.toggleListening()
         syncTransport()
@@ -203,6 +215,7 @@ final class SessionRow: NSView {
     var onPlay: (() -> Void)?
     var onSheet: (() -> Void)?
     var onRename: (() -> Void)?
+    var onDelete: (() -> Void)?
     var onCopyMIDI: (() -> Void)?
     var onPlayAlong: (() -> Void)?
     var onExport: ((ExportChoice) -> Void)?
@@ -339,12 +352,16 @@ final class SessionRow: NSView {
         menu.addItem(.separator())
         let along = menu.addItem(withTitle: "Play along", action: #selector(playAlongTapped), keyEquivalent: "")
         along.target = self
+        menu.addItem(.separator())
+        let remove = menu.addItem(withTitle: "Delete…", action: #selector(deleteTapped), keyEquivalent: "")
+        remove.target = self
         menu.popUp(positioning: nil, at: NSPoint(x: bounds.maxX - 20, y: 8), in: self)
     }
 
     @objc private func sheetTapped() { onSheet?() }
     @objc private func copyTapped() { onCopyMIDI?() }
     @objc private func renameTapped() { onRename?() }
+    @objc private func deleteTapped() { onDelete?() }
     @objc private func playAlongTapped() { onPlayAlong?() }
     @objc private func exportMIDITapped() { onExport?(.midi) }
     @objc private func exportAudioTapped() { onExport?(.audio) }

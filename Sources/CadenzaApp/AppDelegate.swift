@@ -147,9 +147,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             },
             playbackPaused: { [weak self] in self?.playbackPaused ?? false },
             renameSession: { [weak self] record, name in
-                self?.store.rename(record, to: name)
-                self?.refreshSessions()
-                self?.screen?.setStatus(name.isEmpty ? "Session name cleared" : "Renamed to \"\(name)\"", error: false)
+                guard let self else { return }
+                guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                let renamed = self.store.rename(record, to: name)
+                self.refreshSessions()
+                if let renamed {
+                    self.screen?.setStatus("Renamed to \"\(renamed.name ?? name)\"", error: false)
+                } else {
+                    self.screen?.setStatus("Couldn't rename that session", error: true)
+                }
+            },
+            deleteSession: { [weak self] record in
+                guard let self else { return }
+                if self.playingRecord?.id == record.id { self.stopPlayback() }
+                self.store.delete(record)
+                self.refreshSessions()
+                self.screen?.setStatus("Deleted session", error: false)
             },
             copySessionMIDI: { [weak self] record in self?.copySessionMIDI(record) },
             openSessionSheet: { [weak self] record in self?.openSessionSheet(record) },
@@ -447,6 +460,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Puts a sheet in the card, live: the engraver redrafts while notes land.
     private func presentSheet(_ controller: SheetMusicController) {
         let content = controller.overlayContent()
+        controller.onClose = { [weak self] in
+            self?.screen?.dismissOverlay()
+            self?.sheetController?.overlayDismissed()
+            self?.sheetController = nil
+        }
         screen?.presentOverlay(content, size: NSSize(width: 980, height: 700)) { [weak controller] in
             controller?.overlayDismissed()
         }
@@ -549,7 +567,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// engraving leaves the session intact without it: nothing saved twice.
     private func engraveSessionPDF(_ record: SessionRecord, notes: [NoteEvent]) {
         guard !notes.isEmpty else { return }
-        let url = store.folderURL(for: record).appendingPathComponent("sheet.pdf")
+        let url = store.folderURL(for: record).appendingPathComponent(record.pdfFileName)
         // Engraving is the slowest thing a stop used to do, and the print
         // pipeline can stall behind the printing services: let the transport
         // answer first, then engrave on the next turn of the run loop.
@@ -824,7 +842,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Opens the sheet section on the current session: the choices step
     /// frames the performance, then the engraver cuts it into measures.
     private func openSheetMusic() {
-        if let controller = sheetController, controller.isOpen {
+        // a controller that believes it is open while its card is gone used to
+        // swallow the tap: the sheet "opened" onto the home screen and nothing
+        // changed. Only a card that is actually on screen gets synced.
+        if let controller = sheetController, controller.isOpen,
+           screen?.overlayPresented == true {
             controller.sync(notes: engine.notes)
             return
         }

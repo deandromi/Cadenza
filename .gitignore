@@ -11,3 +11,7 @@ AGENTS.md
 build/
 Fixtures/golden/*.f32
 Fixtures/golden/*.npy
+
+# reference scores used for engraver comparisons
+je-te-veux-satie.mid
+je-te-veux-satie.pdf

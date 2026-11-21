@@ -316,20 +316,28 @@ public enum SheetDraft {
         for pitch in pitches {
             histogram[((pitch % 12) + 12) % 12] += 1
         }
-        var bestFifths = 0
-        var bestOutside = Int.max
-        for fifths in -6...5 {
+        // A key signature is a guess, and a wrong guess with five accidentals is
+        // worse than a plain signature with one passing note outside it. So: score
+        // every key by the time spent outside it, then prefer the key with the
+        // fewest accidentals among those within a note or so of the best score.
+        var scored: [(fifths: Int, outside: Int)] = []
+        for fifths in -4...4 {
             let scale = majorScalePitchClasses(fifths)
             var outside = 0
             for pitchClass in 0..<12 where !scale.contains(pitchClass) {
                 outside += histogram[pitchClass]
             }
-            if outside < bestOutside {
-                bestOutside = outside
-                bestFifths = fifths
-            }
+            scored.append((fifths, outside))
         }
-        return bestFifths
+        guard let best = scored.map(\.outside).min() else { return 0 }
+        let tolerance = max(1, pitches.count / 40)
+        let near = scored.filter { $0.outside <= best + tolerance }
+        let chosen = near.sorted { a, b in
+            if a.outside != b.outside { return a.outside < b.outside }
+            if abs(a.fifths) != abs(b.fifths) { return abs(a.fifths) < abs(b.fifths) }
+            return a.fifths < b.fifths
+        }.first
+        return chosen?.fifths ?? 0
     }
 
     /// The accidental a played pitch class needs in a key signature.

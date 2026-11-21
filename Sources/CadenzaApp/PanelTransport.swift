@@ -25,6 +25,8 @@ struct PanelTransport {
     /// session, copy its MIDI file to the clipboard, open its sheet, play
     /// along with it, export MIDI, audio or both.
     var renameSession: (SessionRecord, String) -> Void = { _, _ in }
+    /// Removes a session and everything it owns on disk.
+    var deleteSession: (SessionRecord) -> Void = { _ in }
     var copySessionMIDI: (SessionRecord) -> Void = { _ in }
     var openSessionSheet: (SessionRecord) -> Void = { _ in }
     var playAlong: (SessionRecord) -> Void = { _ in }

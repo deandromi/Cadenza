@@ -20,9 +20,15 @@ struct SessionRecord: Codable, Identifiable, Sendable, Equatable {
     var hasAudio: Bool = false
     /// Whether the session folder carries its engraved sheet.pdf.
     var hasPDF: Bool = false
+    /// File names inside the folder. Defaulted so indexes written before a
+    /// rename still decode; a renamed session carries its own name here.
+    var midiFile: String? = nil
+    var audioFile: String? = nil
+    var pdfFile: String? = nil
 
-    var midiFileName: String { "session.mid" }
-    var audioFileName: String { "audio.wav" }
+    var midiFileName: String { midiFile ?? "session.mid" }
+    var audioFileName: String { audioFile ?? "audio.wav" }
+    var pdfFileName: String { pdfFile ?? "sheet.pdf" }
 
     /// The one-line label the panel shows: the name if given, else when it
     /// was, how long, how big.
@@ -196,12 +202,104 @@ final class SessionStore {
         }
     }
 
-    /// Renames a session; the name shows in the panel instead of the
-    /// date/duration label.
-    func rename(_ record: SessionRecord, to name: String) {
-        guard let index = sessions.firstIndex(where: { $0.id == record.id }) else { return }
-        sessions[index].name = name.isEmpty ? nil : name
+    /// Names a session for good. The name is the session's identity on disk:
+    /// the folder under the session directory and the MIDI, WAV and sheet PDF
+    /// inside it all take it, so what the panel lists is what a Finder window
+    /// shows. An empty name keeps everything as it is.
+    @discardableResult
+    func rename(_ record: SessionRecord, to rawName: String) -> SessionRecord? {
+        guard let index = sessions.firstIndex(where: { $0.id == record.id }) else { return nil }
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let name = Self.fileSafeName(trimmed)
+        guard !name.isEmpty else { return nil }
+        var updated = sessions[index]
+        let manager = FileManager.default
+
+        if let folderName = updated.folderName {
+            let oldFolder = directory.appendingPathComponent(folderName, isDirectory: true)
+            var folder = oldFolder
+            if name != folderName {
+                let target = uniqueFolder(named: name, excluding: folderName)
+                try? manager.moveItem(at: oldFolder, to: target)
+                folder = target
+                updated.folderName = target.lastPathComponent
+            }
+            // the files inside follow the folder's name
+            let base = folder.lastPathComponent
+            let files: [(keyPath: WritableKeyPath<SessionRecord, String?>, current: String, suffix: String)] = [
+                (\.midiFile, updated.midiFileName, ".mid"),
+                (\.audioFile, updated.audioFileName, ".wav"),
+                (\.pdfFile, updated.pdfFileName, ".pdf"),
+            ]
+            for file in files {
+                let source = folder.appendingPathComponent(file.current)
+                guard manager.fileExists(atPath: source.path) else { continue }
+                let targetName = base + file.suffix
+                if file.current != targetName {
+                    try? manager.moveItem(at: source, to: folder.appendingPathComponent(targetName))
+                }
+                updated[keyPath: file.keyPath] = targetName
+            }
+        } else {
+            // a legacy flat .mid next to the index
+            let source = directory.appendingPathComponent(record.id.uuidString + ".mid")
+            let target = uniqueFolder(named: name, excluding: nil) // folder helper, file below
+            let flat = directory.appendingPathComponent(name + ".mid")
+            if manager.fileExists(atPath: source.path), !manager.fileExists(atPath: flat.path) {
+                try? manager.moveItem(at: source, to: flat)
+            }
+            updated.midiFile = flat.lastPathComponent
+            _ = target
+        }
+
+        updated.name = name
+        sessions[index] = updated
         try? JSONEncoder().encode(sessions).write(to: indexURL, options: .atomic)
+        return updated
+    }
+
+    /// Removes a session completely: its folder (MIDI, WAV, sheet PDF) or its
+    /// legacy flat file, and its row in the index.
+    @discardableResult
+    func delete(_ record: SessionRecord) -> Bool {
+        let manager = FileManager.default
+        if let folderName = record.folderName {
+            let folder = directory.appendingPathComponent(folderName, isDirectory: true)
+            try? manager.removeItem(at: folder)
+        } else {
+            try? manager.removeItem(at: midiURL(for: record))
+            try? manager.removeItem(at: audioURL(for: record))
+        }
+        sessions.removeAll { $0.id == record.id }
+        try? JSONEncoder().encode(sessions).write(to: indexURL, options: .atomic)
+        return true
+    }
+
+    /// A folder name that is safe on disk and free to use: path separators and
+    /// colons stripped, leading dots avoided, and a number added when the name
+    /// is already taken by another session.
+    private func uniqueFolder(named name: String, excluding current: String?) -> URL {
+        let existing = Set(sessions.compactMap { $0.folderName })
+        var candidate = name
+        var n = 2
+        while (existing.contains(candidate) && candidate != current)
+            || FileManager.default.fileExists(atPath: directory.appendingPathComponent(candidate).path)
+                && candidate != current {
+            candidate = "\(name) \(n)"
+            n += 1
+        }
+        return directory.appendingPathComponent(candidate, isDirectory: true)
+    }
+
+    /// The name as a file name: separators, colons and control characters
+    /// removed, runs of spaces collapsed, length capped.
+    static func fileSafeName(_ name: String) -> String {
+        let banned = CharacterSet(charactersIn: "/\\:\0").union(.controlCharacters)
+        let cleaned = name.components(separatedBy: banned).joined(separator: " ")
+            .split(separator: " ").joined(separator: " ")
+            .trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+        return String(cleaned.prefix(60))
     }
 
     /// Marks a session's sheet as engraved once its PDF landed.
