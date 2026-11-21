@@ -330,7 +330,9 @@ Same note-length bench with `CDZ_REFINER=0`: F1 0.800, recall 0.667, offsets
 synth.
 
 So the bass fallback is now **off by default** (`CDZ_LOW=1` turns it on): real
-timbre never needed it, and it cost about a fifth of a second per window. Its
+timbre never needed it, and it cost 0.02 s per window (the attribute stage
+runs 0.18 s with it against 0.16 s without), so the reason to switch it off is
+trust rather than speed. Its
 code and checks stay, because it is still the answer for material whose bass
 the model genuinely drops — which so far is the synth's bare stacks only.
 
