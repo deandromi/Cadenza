@@ -30,7 +30,7 @@ enum SheetBench {
             for (name, notes) in cases {
                 print("  \(name) … ", terminator: "")
                 let began = CACurrentMediaTime()
-                let result = SheetDraft.draft(notes: notes, options: options, pageWidth: 86)
+                let result = SheetDraft.draft(notes: notes, options: options, pageWidth: SheetEngraver.pageWidth)
                 let milliseconds = (CACurrentMediaTime() - began) * 1000
                 print(String(format: "%.0f ms, %d rows, %d symbols, %d beams",
                              milliseconds, result.rows.count,

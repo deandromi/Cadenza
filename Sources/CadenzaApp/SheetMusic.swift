@@ -32,7 +32,7 @@ final class SheetMusicController: NSObject {
 
     /// Staff spaces the page holds before wrapping: the window width at
     /// default zoom, minus the sheet's margins.
-    private let pageSpaces: Double = 86
+    private let pageSpaces = SheetEngraver.pageWidth
 
     init(notes: [NoteEvent], options: SheetDraft.Options = SheetDraft.Options(),
          pedals: [(start: Double, end: Double)] = []) {
@@ -567,7 +567,87 @@ final class ScoreView: NSView {
             // beams across the row's members
             drawBeams(row: row, topY: yOnTreble, bottomY: yOnBass, gap: gap, ink: ink)
 
+            // a note still sounding at the barline carries a tie over it
+            drawTies(row: row, track: 0, yOn: yOnTreble, gap: gap, ink: ink)
+            drawTies(row: row, track: 1, yOn: yOnBass, gap: gap, ink: ink)
+
         }
+    }
+
+    // MARK: ties
+
+    /// Ties are drawn as two halves, one either side of the barline, the way
+    /// an engraver writes a note that crosses the bar. The outgoing half
+    /// comes from the note the engraver marked, the incoming half from the
+    /// same pitch ending the bar before.
+    private func drawTies(row: SheetDraft.Row, track: Int,
+                          yOn: (Int) -> CGFloat, gap: CGFloat, ink: NSColor) {
+        let placed = track == 0 ? row.top : row.bottom
+        var barXs: [CGFloat] = []
+        var chords: [(x: CGFloat, chord: SheetDraft.Chord)] = []
+        for item in placed {
+            let x = marginX + CGFloat(item.x) * gap
+            switch item.symbol {
+            case .bar, .finalBar:
+                barXs.append(x)
+            case .chord(let chord):
+                chords.append((x, chord))
+            default:
+                break
+            }
+        }
+        guard !chords.isEmpty else { return }
+        barXs.sort()
+        chords.sort { $0.x < $1.x }
+
+        for (index, item) in chords.enumerated() {
+            let leftBar = barXs.last(where: { $0 <= item.x + 1 }) ?? (marginX + 1)
+            guard let rightBar = barXs.first(where: { $0 > item.x + 1 }) else { continue }
+            let headHalf = 0.6 * gap
+            let next = index + 1 < chords.count ? chords[index + 1] : nil
+            let previous = index > 0 ? chords[index - 1] : nil
+            // a tie only exists when the same pitch is struck again on the
+            // next downbeat: half a tie hanging over a barline is not music
+            let resumesNextBar = next.map { $0.x >= rightBar && $0.x - rightBar < 1.9 * gap } ?? false
+            let cameFromPrevious = previous.map { $0.x < leftBar && leftBar - $0.x < 1.9 * gap } ?? false
+            let startsThisBar = item.x - leftBar < 1.9 * gap
+
+            for note in item.chord.notes {
+                let y = yOn(note.staffPosition)
+                // ties bow away from the stems, the way an engraver sets them
+                let middle = yOn(4)
+                let bow: CGFloat = y > middle ? 0.48 * gap : -0.48 * gap
+
+                if note.tieToNext, resumesNextBar,
+                   let next, next.chord.notes.contains(where: { $0.pitch == note.pitch }) {
+                    tie(from: NSPoint(x: item.x + headHalf + 0.12 * gap, y: y),
+                        to: NSPoint(x: rightBar - 0.34 * gap, y: y),
+                        bow: bow, gap: gap, ink: ink)
+                }
+                if startsThisBar, cameFromPrevious,
+                   let previous, previous.chord.notes.contains(where: {
+                       $0.pitch == note.pitch && $0.tieToNext
+                   }) {
+                    tie(from: NSPoint(x: leftBar + 0.34 * gap, y: y),
+                        to: NSPoint(x: item.x - headHalf - 0.12 * gap, y: y),
+                        bow: bow, gap: gap, ink: ink)
+                }
+            }
+        }
+    }
+
+    private func tie(from start: NSPoint, to end: NSPoint, bow: CGFloat,
+                     gap: CGFloat, ink: NSColor) {
+        guard end.x - start.x > 0.6 * gap else { return }
+        let path = NSBezierPath()
+        path.move(to: start)
+        let lift = abs(end.x - start.x) > 2.2 * gap ? bow : bow * 0.75
+        path.curve(to: end,
+                   controlPoint1: NSPoint(x: start.x + (end.x - start.x) * 0.3, y: start.y + lift),
+                   controlPoint2: NSPoint(x: start.x + (end.x - start.x) * 0.7, y: end.y + lift))
+        path.lineWidth = 0.13 * gap
+        ink.setStroke()
+        path.stroke()
     }
 
     // MARK: symbols
@@ -643,18 +723,34 @@ final class ScoreView: NSView {
         }
     }
 
+    /// Rests are placed by their ink, not by their baseline: a whole rest
+    /// hangs from the fourth line, a half rest sits on the middle line, and
+    /// the hooked rests are centred on it. Their baselines differ from glyph
+    /// to glyph, their boxes do not.
     private func drawRest(_ kind: SheetDraft.RestKind, at x: CGFloat, yOn: (Int) -> CGFloat, gap: CGFloat, ink: NSColor) {
-        let (codepoint, position): (UInt32, Int)
+        let codepoint: UInt32
         switch kind {
-        case .whole: (codepoint, position) = (Glyph.restWhole, 6)
-        case .half: (codepoint, position) = (Glyph.restHalf, 4)
-        case .quarter: (codepoint, position) = (Glyph.restQuarter, 4)
-        case .eighth: (codepoint, position) = (Glyph.restEighth, 4)
-        case .sixteenth: (codepoint, position) = (Glyph.restSixteenth, 4)
-        default: (codepoint, position) = (Glyph.restQuarter, 4)
+        case .whole: codepoint = Glyph.restWhole
+        case .half: codepoint = Glyph.restHalf
+        case .eighth: codepoint = Glyph.restEighth
+        case .sixteenth: codepoint = Glyph.restSixteenth
+        default: codepoint = Glyph.restQuarter
         }
-        let width = MusicFont.info(codepoint).map { $0.width * fontSize } ?? gap
-        drawGlyph(codepoint, baselineAt: NSPoint(x: x - width / 2, y: yOn(position)), font: musicFont, color: ink)
+        let info = MusicFont.info(codepoint)
+        let width = (info?.width ?? 1) * fontSize
+        var baselineY: CGFloat
+        switch kind {
+        case .whole:
+            // its top edge touches the fourth line and it hangs below it
+            baselineY = yOn(6) + CGFloat(info?.y1 ?? 0) * fontSize
+        case .half:
+            // it sits on the middle line
+            baselineY = yOn(4) + CGFloat(info?.y0 ?? 0) * fontSize
+        default:
+            baselineY = yOn(4) + CGFloat(info?.centerY ?? 0) * fontSize
+        }
+        if kind == .whole, info == nil { baselineY = yOn(6) }
+        drawGlyph(codepoint, baselineAt: NSPoint(x: x - width / 2, y: baselineY), font: musicFont, color: ink)
     }
 
     private func drawChord(_ chord: SheetDraft.Chord, at x: CGFloat, yOn: (Int) -> CGFloat, gap: CGFloat, ink: NSColor) {
@@ -689,24 +785,23 @@ final class ScoreView: NSView {
             if note.accidental != .none {
                 let cp = note.accidental == .sharp ? Glyph.accidentalSharp
                     : note.accidental == .flat ? Glyph.accidentalFlat : Glyph.accidentalNatural
-                let accWidth = MusicFont.info(cp).map { $0.width * fontSize } ?? 0.9 * gap
-                drawGlyph(cp, baselineAt: NSPoint(x: cx - 0.85 * gap - accWidth - 0.2 * gap, y: cy),
-                          font: musicFont, color: ink)
+                let acc = MusicFont.info(cp)
+                let accWidth = (acc?.width ?? 0.9) * fontSize
+                inkGlyph(cp, centerX: cx - 0.55 * gap - accWidth / 2, centerY: cy, gap: gap, ink: ink)
             }
             let headGlyph = note.head == .whole ? Glyph.noteheadWhole
                 : note.head == .half ? Glyph.noteheadHalf : Glyph.noteheadBlack
             let headInfo = MusicFont.info(headGlyph)
-            let headWidth = headInfo.map { $0.width * fontSize } ?? 1.18 * gap
-            drawGlyph(headGlyph, baselineAt: NSPoint(x: cx - headWidth / 2, y: cy), font: musicFont, color: ink)
+            let headWidth = (headInfo?.width ?? 1.18) * fontSize
+            inkHead(headGlyph, centerX: cx, centerY: cy, gap: gap, ink: ink)
             if note.dots > 0 {
                 // a dot beside a line note sits in the space above it
                 let onLine = note.staffPosition % 2 == 0
                 let dotY = onLine ? cy - gap / 2 : cy
                 for dot in 0..<note.dots {
-                    drawGlyph(Glyph.augmentationDot,
-                              baselineAt: NSPoint(x: cx + headWidth / 2 + 0.45 * gap + CGFloat(dot) * 0.7 * gap,
-                                                  y: dotY),
-                              font: musicFont, color: ink)
+                    inkGlyph(Glyph.augmentationDot,
+                             centerX: cx + headWidth / 2 + 0.42 * gap + CGFloat(dot) * 0.66 * gap,
+                             centerY: dotY, gap: gap, ink: ink)
                 }
             }
         }
@@ -735,7 +830,9 @@ final class ScoreView: NSView {
                 let flag = stem.flags >= 2
                     ? (stem.up ? Glyph.flag16thUp : Glyph.flag16thDown)
                     : (stem.up ? Glyph.flag8thUp : Glyph.flag8thDown)
-                drawGlyph(flag, baselineAt: NSPoint(x: stemX, y: nearY), font: musicFont, color: ink)
+                let flagShift = MusicFont.info(flag).map { -CGFloat($0.x0) * fontSize } ?? 0
+                drawGlyph(flag, baselineAt: NSPoint(x: stemX + flagShift, y: nearY),
+                          font: musicFont, color: ink)
             }
         }
     }
@@ -830,6 +927,32 @@ final class ScoreView: NSView {
     /// point, upright inside the flipped view. CoreText draws the glyph
     /// with its origin on the baseline, which NSString drawing does not
     /// guarantee for fonts with unusual metrics like Bravura.
+    /// Inks a glyph so that its bounding box is centred on a staff line or
+    /// space. Baselines drift from glyph to glyph; the box never lies.
+    private func inkGlyph(_ codepoint: UInt32, centerX: CGFloat, centerY: CGFloat,
+                          gap: CGFloat, ink: NSColor) {
+        guard let info = MusicFont.info(codepoint) else { return }
+        let dx = (CGFloat(info.x0) + CGFloat(info.x1)) / 2 * fontSize
+        let dy = CGFloat(info.centerY) * fontSize
+        drawGlyph(codepoint, baselineAt: NSPoint(x: centerX - dx, y: centerY + dy),
+                  font: musicFont, color: ink)
+    }
+
+    /// A notehead sits so that its ink is centred on the note's line: the
+    /// glyph's own vertical centre, never its baseline.
+    private func inkHead(_ codepoint: UInt32, centerX: CGFloat, centerY: CGFloat,
+                         gap: CGFloat, ink: NSColor) {
+        guard let info = MusicFont.info(codepoint) else {
+            drawGlyph(codepoint, baselineAt: NSPoint(x: centerX, y: centerY),
+                      font: musicFont, color: ink)
+            return
+        }
+        let dx = (CGFloat(info.x0) + CGFloat(info.x1)) / 2 * fontSize
+        drawGlyph(codepoint, baselineAt: NSPoint(x: centerX - dx,
+                                                 y: centerY + CGFloat(info.centerY) * fontSize),
+                  font: musicFont, color: ink)
+    }
+
     private func drawGlyph(_ codepoint: UInt32, baselineAt point: NSPoint, font: CTFont, color: NSColor) {
         guard let info = MusicFont.info(codepoint) else { return }
         guard let cg = NSGraphicsContext.current?.cgContext else { return }

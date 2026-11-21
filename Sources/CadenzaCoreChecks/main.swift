@@ -886,6 +886,55 @@ sheetLayout: do {
     } ?? false, "the system closes with a final barline")
     expect(draft.rowsPerPage == SheetEngraver.systemsPerPage,
            "systems are grouped into pages")
+
+    // Every column of a bar keeps its own place: two sixteenths share a bar
+    // without their noteheads landing on top of each other, and nothing is
+    // ever pushed past the bar's closing line.
+    let sixteenths = [
+        NoteEvent(pitch: 72, velocity: 80, onset: 0.00, duration: 0.2),
+        NoteEvent(pitch: 74, velocity: 80, onset: 0.25, duration: 0.2),
+        NoteEvent(pitch: 76, velocity: 80, onset: 0.50, duration: 0.2),
+        NoteEvent(pitch: 77, velocity: 80, onset: 0.75, duration: 0.2),
+        NoteEvent(pitch: 43, velocity: 80, onset: 0.0, duration: 1.4),
+    ]
+    let dense = SheetDraft.draft(notes: sixteenths,
+                                 options: SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4))
+    if let row = dense.rows.first {
+        let xs = row.top.compactMap { placed -> Double? in
+            guard case .chord = placed.symbol else { return nil }
+            return placed.x
+        }.sorted()
+        let gaps = zip(xs.dropFirst(), xs).map { $0 - $1 }
+        expect(gaps.allSatisfy { $0 >= 1.2 }, "sixteenths get a column of their own")
+        let widest = row.top.map(\.x).max() ?? 0
+        expect(widest <= row.width, "no head crosses the closing barline")
+    } else {
+        expect(false, "a dense bar still engraves")
+    }
+
+    // A key held past the barline is written again on the next downbeat and
+    // tied to what came before, never restruck and never closed by a rest.
+    let heldChord = [
+        NoteEvent(pitch: 72, velocity: 80, onset: 0.0, duration: 2.4),
+        NoteEvent(pitch: 43, velocity: 80, onset: 0.0, duration: 0.4),
+    ]
+    let held = SheetDraft.draft(notes: heldChord,
+                                options: SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4))
+    var tied = false
+    var continued = false
+    for row in held.rows {
+        for placed in row.top {
+            guard case .chord(let chord) = placed.symbol else { continue }
+            if chord.notes.contains(where: { $0.pitch == 72 && $0.tieToNext }) { tied = true }
+        }
+    }
+    for track in held.topTrack {
+        guard case .chord(let chord) = track else { continue }
+        if chord.startTicks == held.options.measureTicks,
+           chord.notes.contains(where: { $0.pitch == 72 }) { continued = true }
+    }
+    expect(tied, "a note held over the barline is tied")
+    expect(continued, "the tied note resumes on the next downbeat")
 }
 
 if failures == 0 {

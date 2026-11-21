@@ -1049,7 +1049,7 @@ enum SmokeMain {
             if path == "test" {
                 let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
                 let result = SheetDraft.draft(notes: calibrationNotes(), options: options,
-                                              pageWidth: 86)
+                                              pageWidth: SheetEngraver.pageWidth)
                 print("sheet draft: \(result.rows.count) rows, fifths \(result.fifths), "
                     + "\(result.beamGroups.count) beams")
                 writeSheet(result, to: "/tmp/cadenza_sheet.png")
@@ -1074,7 +1074,7 @@ enum SmokeMain {
                         endTick: SheetDraft.ticks(seconds: span.end, options: options))
                 }
                 : []
-            let result = SheetDraft.draft(notes: file.notes, options: options, pageWidth: 86,
+            let result = SheetDraft.draft(notes: file.notes, options: options, pageWidth: SheetEngraver.pageWidth,
                                           pedals: pedalSpans)
             print("sheet draft: \(result.rows.count) rows, fifths \(result.fifths), "
                 + "\(result.beamGroups.count) beams, options \(result.options.numerator)/\(result.options.denominator)")
@@ -1274,7 +1274,7 @@ enum SmokeMain {
                 SheetDraft.PedalSpan(startTick: SheetDraft.ticks(seconds: span.start, options: options),
                                      endTick: SheetDraft.ticks(seconds: span.end, options: options))
             }
-            let result = SheetDraft.draft(notes: file.notes, options: options, pageWidth: 86, pedals: pedals)
+            let result = SheetDraft.draft(notes: file.notes, options: options, pageWidth: SheetEngraver.pageWidth, pedals: pedals)
             let guessed = SheetDraft.inferredOptions(notes: file.notes)
             print("report: inferred tempo \(Int(guessed.bpm)) meter \(guessed.numerator)/\(guessed.denominator)")
             print("report: notes \(file.notes.count), range \(file.notes.map(\.pitch).min() ?? 0)-\(file.notes.map(\.pitch).max() ?? 0), "

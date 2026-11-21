@@ -7,16 +7,14 @@ import CadenzaCore
 /// print pipeline used to slice the tall scroll view wherever the paper
 /// ended, which cut staves in half. Here every page is written straight into
 /// a vector PDF context, so the file is sharp at any zoom and a system is
-/// never split.
+/// never split. Pages follow the engraver's own page groups, so the printed
+/// sheet breaks exactly where the scrolling sheet does.
 @MainActor
 enum SheetPDF {
-    /// Systems on one page. Three fills A4 at the engraving's own size.
-    static let systemsPerPage = 3
-
     static func write(notes: [NoteEvent], to url: URL) throws {
         let result = SheetDraft.draft(
             notes: notes, options: SheetDraft.inferredOptions(notes: notes),
-            pageWidth: 86, pedals: [])
+            pageWidth: SheetEngraver.pageWidth, pedals: [])
         try write(result: result, to: url)
     }
 
@@ -25,7 +23,8 @@ enum SheetPDF {
         let rowHeight = CGFloat(result.rowHeight) * gap
         let margin: CGFloat = 36
         let pageWidth = CGFloat(result.width) * gap + 2 * margin
-        let pageHeight = CGFloat(systemsPerPage) * rowHeight + 2 * margin
+        let perPage = max(1, result.rowsPerPage)
+        let pageHeight = CGFloat(perPage) * rowHeight + 2 * margin
 
         guard let consumer = CGDataConsumer(url: url as CFURL) else {
             throw PDFError.nothingWritten(url)
@@ -40,10 +39,10 @@ enum SheetPDF {
         view.topInset = margin
 
         let rows = result.rows.count
-        let pageCount = max(1, (rows + systemsPerPage - 1) / systemsPerPage)
+        let pageCount = max(1, (rows + perPage - 1) / perPage)
         for page in 0..<pageCount {
-            let from = page * systemsPerPage
-            let to = min(rows, from + systemsPerPage)
+            let from = page * perPage
+            let to = min(rows, from + perPage)
             guard from < to else { continue }
             view.visibleRows = from...(to - 1)
 

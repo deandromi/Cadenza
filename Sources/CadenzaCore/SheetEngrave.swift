@@ -30,6 +30,9 @@ public enum SheetEngraver {
         var start: Int
         var duration: Int
         var pitch: Int
+        /// The finger holds the key past the barline: the sheet ties the
+        /// note over instead of closing it with a rest.
+        var tied: Bool = false
     }
 
     /// One rhythmic column of a measure: a chord or a rest.
@@ -117,10 +120,29 @@ public enum SheetEngraver {
             let local = max(0, absolute - barStart)
             guard local < measureTicks else { continue }
             for note in cluster {
-                let duration = max(grid, min(snap(note.duration, to: grid), measureTicks - local))
-                let key = "\(bar)-\(local)-\(note.pitch)"
-                if let existing = strongest[key], existing.duration >= duration { continue }
-                strongest[key] = Event(start: local, duration: duration, pitch: note.pitch)
+                // A note still sounding at the barline is written again on
+                // the next downbeat and tied to what came before: one note
+                // across two bars, the way a score writes a held key. It is
+                // never closed with a rest under the finger.
+                var remaining = snap(note.duration, to: grid)
+                var barIndex = bar
+                var startLocal = local
+                while remaining > 0, barIndex < byMeasure.count {
+                    let room = measureTicks - startLocal
+                    let inThisBar = min(remaining, room)
+                    let overflows = remaining > room
+                    if inThisBar >= grid || room == measureTicks {
+                        let key = "\(barIndex)-\(startLocal)-\(note.pitch)"
+                        let length = max(grid, inThisBar)
+                        if (strongest[key]?.duration ?? -1) < length {
+                            strongest[key] = Event(start: startLocal, duration: length,
+                                                   pitch: note.pitch, tied: overflows)
+                        }
+                    }
+                    remaining -= inThisBar
+                    barIndex += 1
+                    startLocal = 0
+                }
             }
         }
         // each key carries its measure, so the symbols land in order
@@ -164,10 +186,15 @@ public enum SheetEngraver {
         // is worse than no mark, and this edition shows none.
         _ = pedals
 
+        // A system never spills past the paper: if one bar is dense enough to
+        // need more room than the page has, the sheet widens a little rather
+        // than losing the notes off the edge.
+        let widest = rows.map(\.width).max() ?? pageWidth
+
         return SheetDraft.Result(options: options, fifths: fifths,
                                  topTrack: top.symbols, bottomTrack: bottom.symbols,
                                  rows: rows, beamGroups: groups,
-                                 width: pageWidth, rowHeight: rowHeight,
+                                 width: max(pageWidth, widest), rowHeight: rowHeight,
                                  totalHeight: totalHeight(forRows: rows.count),
                                  rowsPerPage: systemsPerPage)
     }
@@ -178,6 +205,9 @@ public enum SheetEngraver {
     /// of an engraved edition rather than a scrolling strip.
     public static let measuresPerSystem = 10
     public static let systemsPerPage = 4
+    /// How wide a system is, in staff spaces: the paper the sheet is laid
+    /// out for, and the width the renderer and the PDF agree on.
+    public static let pageWidth = 86.0
 
     /// Two staves with air between them, then the gap that separates one
     /// system from the next.
@@ -237,7 +267,7 @@ public enum SheetEngraver {
                 if moment > cursor {
                     for rest in rests(from: cursor, to: moment, options: options) {
                         indices.append(result.symbols.count)
-                        result.symbols.append(rest)
+                        result.symbols.append(lifted(rest, by: absolute))
                     }
                 }
                 // A played length includes every gap a finger leaves. On
@@ -247,6 +277,9 @@ public enum SheetEngraver {
                 // between.
                 let next = momentIndex + 1 < moments.count ? moments[momentIndex + 1] : end
                 let room = end - moment
+                // which of these notes is still sounding when the bar ends:
+                // those get a tie over the barline
+                let held = Set(notes.filter(\.tied).map(\.pitch))
                 notes = notes.map { note in
                     var copy = note
                     copy.duration = max(gridSmall, min(room, next - moment))
@@ -254,14 +287,14 @@ public enum SheetEngraver {
                 }
                 indices.append(result.symbols.count)
                 result.symbols.append(.chord(chord(from: notes, at: absolute + moment,
-                                                   clef: clef, fifths: fifths)))
+                                                   clef: clef, fifths: fifths, held: held)))
                 let chordEnd = min(end, notes.map { $0.start + $0.duration }.max() ?? moment)
                 cursor = max(cursor, chordEnd)
             }
             if cursor < end {
                 for rest in rests(from: cursor, to: end, options: options) {
                     indices.append(result.symbols.count)
-                    result.symbols.append(rest)
+                    result.symbols.append(lifted(rest, by: absolute))
                 }
             }
             if indices.isEmpty {
@@ -272,6 +305,13 @@ public enum SheetEngraver {
         }
         result.symbols.append(.finalBar(startTicks: measureCount * measureTicks))
         return result
+    }
+
+    /// Rests are built bar by bar; the symbol list keeps one timeline for
+    /// the whole piece, so every symbol can be placed the same way.
+    private static func lifted(_ symbol: SheetDraft.Symbol, by offset: Int) -> SheetDraft.Symbol {
+        guard case .rest(let start, let kind) = symbol else { return symbol }
+        return .rest(startTicks: start + offset, kind: kind)
     }
 
     /// Fills a stretch of time with the largest rests that fit, so a bar
@@ -315,7 +355,8 @@ public enum SheetEngraver {
 
     /// One chord from the notes sharing a grid moment.
     private static func chord(from notes: [Event], at start: Int,
-                              clef: SheetDraft.Clef, fifths: Int) -> SheetDraft.Chord {
+                              clef: SheetDraft.Clef, fifths: Int,
+                              held: Set<Int> = []) -> SheetDraft.Chord {
         var glyphs: [SheetDraft.NoteGlyph] = []
         var shown = Set<String>()
         for note in notes {
@@ -334,7 +375,8 @@ public enum SheetEngraver {
                 head: value.head,
                 dots: value.dots,
                 accidental: accidental,
-                ledgers: SheetDraft.ledgers(forPosition: position)))
+                ledgers: SheetDraft.ledgers(forPosition: position),
+                tieToNext: held.contains(note.pitch)))
         }
         var stems: [SheetDraft.Stem] = []
         let values = notes.map { SheetDraft.noteValue($0.duration) }
@@ -430,12 +472,15 @@ public enum SheetEngraver {
         let framing = 9.5
         let usable = max(20.0, pageWidth - framing - 3.0)
 
+        /// The moments of one bar, counted from the barline rather than from
+        /// the start of the piece.
         func starts(_ staff: Staff, _ measure: Int) -> [Int] {
             guard measure < staff.measures.count else { return [] }
+            let barStart = measure * measureTicks
             return staff.measures[measure].compactMap { index in
                 switch staff.symbols[index] {
-                case .chord(let chord): return chord.startTicks
-                case .rest(let start, _): return start
+                case .chord(let chord): return max(0, chord.startTicks - barStart)
+                case .rest(let start, _): return max(0, start - barStart)
                 default: return nil
                 }
             }
@@ -453,19 +498,21 @@ public enum SheetEngraver {
         while measure < count {
             var chosen: [Int] = []
             var naturals: [Double] = []
+            // Bars are taken while they fit: a system gives up a bar rather
+            // than squeezing heads or running over the page edge.
             while chosen.count < measuresPerSystem, measure + chosen.count < count {
                 let candidate = measure + chosen.count
+                let width = naturalWidth(candidate)
+                if chosen.count >= 2, naturals.reduce(0, +) + width > usable { break }
                 chosen.append(candidate)
-                naturals.append(naturalWidth(candidate))
+                naturals.append(width)
             }
-            // a crowded system gives up a bar rather than squeezing heads
-            while chosen.count > 4, naturals.reduce(0, +) > usable * 1.15 {
-                chosen.removeLast()
-                naturals.removeLast()
-            }
+            // The system closes flush right: the paper left over is shared
+            // out between the bars. A single bar too dense for the page is
+            // squeezed rather than allowed to overflow.
             let naturalTotal = naturals.reduce(0, +)
-            let stretch = (chosen.count >= 6 && naturalTotal > 0)
-                ? max(1.0, usable / naturalTotal) : 1.0
+            let stretch = naturalTotal > 0
+                ? min(max(usable / naturalTotal, 0.72), 1.9) : 1.0
             let widths = naturals.map { $0 * stretch }
 
             var topPlaced: [SheetDraft.Placed] = []
@@ -477,12 +524,20 @@ public enum SheetEngraver {
                                                    symbol: .bar(startTicks: start)))
                 bottomPlaced.append(SheetDraft.Placed(x: x, trackIndex: barIndex(in: bottom, before: index),
                                                       symbol: .bar(startTicks: start)))
+                // Every moment of the bar gets its own column, and the
+                // columns share the bar by how long they last — but never
+                // closer than a head's width, so two sixteenths can sit in
+                // one bar without their noteheads landing on each other.
+                let moments = Set(starts(top, index) + starts(bottom, index)).sorted()
+                let columns = columnMap(moments: moments, x: x,
+                                        measureWidth: widths[offset],
+                                        measureTicks: measureTicks)
                 place(staff: top, measure: index, start: start, x: x,
                       measureWidth: widths[offset], measureTicks: measureTicks,
-                      into: &topPlaced)
+                      columns: columns, into: &topPlaced)
                 place(staff: bottom, measure: index, start: start, x: x,
                       measureWidth: widths[offset], measureTicks: measureTicks,
-                      into: &bottomPlaced)
+                      columns: columns, into: &bottomPlaced)
                 x += widths[offset]
             }
             // the system closes with a barline, a thin double one at the end
@@ -518,16 +573,43 @@ public enum SheetEngraver {
         return staff.symbols.count - 1
     }
 
+    /// Where each rhythmic column of one bar sits, in staff spaces. The
+    /// gaps are proportional to the time each column holds, with a floor of
+    /// one head's width so dense bars stay readable, then fitted to the bar.
+    private static func columnMap(moments: [Int], x: Double,
+                                  measureWidth: Double, measureTicks: Int) -> [Int: Double] {
+        let inner = max(3.0, measureWidth - 2.6)
+        let floorGap = 1.55
+        guard !moments.isEmpty else { return [:] }
+        var gaps: [Double] = []
+        for (offset, moment) in moments.enumerated() {
+            let next = offset + 1 < moments.count ? moments[offset + 1] : measureTicks
+            let span = Double(max(0, next - moment)) / Double(measureTicks)
+            gaps.append(max(floorGap, span * inner))
+        }
+        let total = gaps.reduce(0, +)
+        let fit = total > 0 ? inner / total : 1
+        var map: [Int: Double] = [:]
+        var cursor = x + 1.1
+        for (offset, moment) in moments.enumerated() {
+            map[moment] = cursor
+            cursor += gaps[offset] * fit
+        }
+        return map
+    }
+
     private static func place(staff: Staff, measure: Int, start: Int, x: Double,
                               measureWidth: Double, measureTicks: Int,
+                              columns: [Int: Double],
                               into placed: inout [SheetDraft.Placed]) {
         guard measure < staff.measures.count else { return }
         for index in staff.measures[measure] {
             let symbol = staff.symbols[index]
             switch symbol {
             case .chord(let chord):
-                let fraction = Double(max(0, chord.startTicks - start)) / Double(measureTicks)
-                let px = x + 1.1 + fraction * (measureWidth - 2.6)
+                // never let a head cross its own closing barline
+                let moment = max(0, chord.startTicks - start)
+                let px = min(columns[moment] ?? x + 1.1, x + measureWidth - 1.5)
                 placed.append(SheetDraft.Placed(x: px, trackIndex: index, symbol: symbol))
             case .rest(let restStart, _):
                 let wholeMeasure = staff.measures[measure].count == 1
@@ -535,8 +617,8 @@ public enum SheetEngraver {
                 if wholeMeasure {
                     px = x + measureWidth / 2
                 } else {
-                    let fraction = Double(max(0, restStart - start)) / Double(measureTicks)
-                    px = x + 1.1 + fraction * (measureWidth - 2.6)
+                    let moment = max(0, restStart - start)
+                    px = columns[moment] ?? x + 1.1
                 }
                 placed.append(SheetDraft.Placed(x: px, trackIndex: -1, symbol: symbol))
             default:

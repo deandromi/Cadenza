@@ -136,6 +136,9 @@ public enum SheetDraft {
         public let accidental: Accidental
         /// Ledger lines the head needs, outermost first.
         public let ledgers: [Int]
+        /// The played note runs past this barline: the sheet ties the head
+        /// over the bar instead of striking it again on the next downbeat.
+        public var tieToNext: Bool = false
     }
 
     /// One stem of a chord: the notes it carries, its direction, its flags,
