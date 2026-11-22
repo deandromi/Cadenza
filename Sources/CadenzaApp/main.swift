@@ -201,9 +201,11 @@ if CommandLine.arguments.contains("--capture") {
 }
 
 // GUI mode: tee console output to a fixed file so diagnostics can be read
-// no matter how the app was launched.
-freopen("/tmp/cadenza_gui.log", "a", stdout)
-freopen("/tmp/cadenza_gui.log", "a", stderr)
+// no matter how the app was launched. The file is capped, so a year of
+// launches cannot become a pile of text.
+StorageHygiene.rotateLogIfNeeded()
+freopen(StorageHygiene.logPath, "a", stdout)
+freopen(StorageHygiene.logPath, "a", stderr)
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

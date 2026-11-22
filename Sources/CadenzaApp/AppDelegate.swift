@@ -48,6 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
         // the notation font for the sheet music section
         MusicFont.register()
+        // a scratch recording an interrupted run left behind, and nothing else
+        StorageHygiene.sweepScratch()
 
         publisher.setup()
         installMainMenu()

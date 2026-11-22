@@ -39,7 +39,7 @@ final class InferenceContext: @unchecked Sendable {
     init(tensorsDir: URL, modelURL: URL) throws {
         mel = try MelFrontEnd(tensorsDir: tensorsDir)
         heads = try AttributeHeads(tensorsDir: tensorsDir)
-        let compiled = try MLModel.compileModel(at: modelURL)
+        let compiled = try CompiledModelCache.prepare(modelURL)
         let configuration = MLModelConfiguration()
         configuration.computeUnits = Self.computeUnits
         model = try MLModel(contentsOf: compiled, configuration: configuration)
@@ -248,7 +248,8 @@ final class InferenceContext: @unchecked Sendable {
                 onsetSeconds: event.onsetSeconds,
                 offsetSeconds: refined[index].offset,
                 hasOnset: event.hasOnset,
-                hasOffset: true
+                hasOffset: true,
+                keyOffsetSeconds: event.offsetSeconds
             )
         }
         return result
