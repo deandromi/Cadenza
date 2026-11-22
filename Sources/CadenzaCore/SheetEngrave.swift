@@ -227,6 +227,8 @@ public enum SheetEngraver {
 
         let ties = SheetEngraver.ties(in: top.symbols, track: 0)
             + SheetEngraver.ties(in: bottom.symbols, track: 1)
+        let slurs = SheetEngraver.slurs(in: top.symbols, measureTicks: measureTicks, track: 0)
+            + SheetEngraver.slurs(in: bottom.symbols, measureTicks: measureTicks, track: 1)
         let rows = layout(top: top, bottom: bottom, options: options, pageWidth: pageWidth)
 
         // Pedal spans are known but not inked yet: a mark in the wrong place
@@ -240,13 +242,45 @@ public enum SheetEngraver {
 
         return SheetDraft.Result(options: options, fifths: fifths,
                                  topTrack: top.symbols, bottomTrack: bottom.symbols,
-                                 rows: rows, beamGroups: groups, ties: ties,
+                                 rows: rows, beamGroups: groups, ties: ties, slurs: slurs,
                                  width: max(pageWidth, widest), rowHeight: rowHeight,
                                  totalHeight: totalHeight(forRows: rows.count),
                                  rowsPerPage: systemsPerPage)
     }
 
     // MARK: ties
+
+    /// The phrase marks a track carries: runs of notes the player joined
+    /// without lifting the key, kept inside one bar and capped at four notes,
+    /// which is how a phrase is written rather than how a finger moves.
+    static func slurs(in symbols: [SheetDraft.Symbol], measureTicks: Int,
+                      track: Int) -> [SheetDraft.Slur] {
+        let columns = symbols.compactMap { symbol -> SheetDraft.Chord? in
+            if case .chord(let chord) = symbol { return chord }
+            return nil
+        }.sorted { $0.startTicks < $1.startTicks }
+        var runs: [[SheetDraft.Chord]] = []
+        var run: [SheetDraft.Chord] = []
+        func flush() {
+            if run.count >= 2 { runs.append(run) }
+            run = []
+        }
+        for chord in columns {
+            if let last = run.last {
+                let sameBar = chord.startTicks / measureTicks == last.startTicks / measureTicks
+                let joined = chord.startTicks == last.endTicks
+                if !sameBar || !joined || run.count == 4 { flush() }
+            }
+            run.append(chord)
+        }
+        flush()
+        return runs.compactMap { group in
+            guard let first = group.first, let last = group.last,
+                  first.startTicks != last.startTicks else { return nil }
+            return SheetDraft.Slur(track: track, fromTicks: first.startTicks,
+                                   toTicks: last.startTicks)
+        }
+    }
 
     /// The ties a track's own symbols ask for: wherever a head says it keeps
     /// sounding and the very next column carries the same pitch, the two are

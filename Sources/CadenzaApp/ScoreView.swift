@@ -184,6 +184,8 @@ final class ScoreView: NSView {
             // a note still sounding at the barline carries a tie over it
             drawTies(row: row, track: 0, yOn: yOnTreble, gap: gap, ink: ink)
             drawTies(row: row, track: 1, yOn: yOnBass, gap: gap, ink: ink)
+            drawSlurs(row: row, track: 0, yOn: yOnTreble, gap: gap, ink: ink)
+            drawSlurs(row: row, track: 1, yOn: yOnBass, gap: gap, ink: ink)
 
         }
     }
@@ -194,6 +196,40 @@ final class ScoreView: NSView {
     /// barline the way a score sets them: one arc closing the measure, one
     /// opening the next. Nothing here guesses — if the model did not ask for
     /// a tie, no curve appears.
+    /// Phrase marks: one arc over (or under) the notes a player joined. The
+    /// run's own notes decide the side of the staff and the height of the
+    /// arc, so a phrase in the treble bows over the melody instead of
+    /// crossing the staff.
+    private func drawSlurs(row: SheetDraft.Row, track: Int,
+                           yOn: (Int) -> CGFloat, gap: CGFloat, ink: NSColor) {
+        let slurs = result.slurs.filter { $0.track == track }
+        guard !slurs.isEmpty else { return }
+        let placed = track == 0 ? row.top : row.bottom
+        var chords: [Int: SheetDraft.Chord] = [:]
+        var xs: [Int: CGFloat] = [:]
+        for item in placed {
+            guard case .chord(let chord) = item.symbol else { continue }
+            chords[chord.startTicks] = chord
+            xs[chord.startTicks] = marginX + CGFloat(item.x) * gap
+        }
+        for slur in slurs {
+            guard let fromX = xs[slur.fromTicks], let toX = xs[slur.toTicks],
+                  toX > fromX else { continue }
+            let notes = chords.filter { $0.key >= slur.fromTicks && $0.key <= slur.toTicks }
+                .flatMap { $0.value.notes }
+            guard !notes.isEmpty else { continue }
+            let positions = notes.map(\.staffPosition)
+            let highest = positions.max() ?? 4
+            let lowest = positions.min() ?? 4
+            let above = Double(highest + lowest) / 2 >= 4
+            let edge = above ? yOn(highest) : yOn(lowest)
+            let baseline = edge + (above ? -0.72 : 0.72) * gap
+            tie(from: NSPoint(x: fromX - 0.15 * gap, y: baseline),
+                to: NSPoint(x: toX + 0.15 * gap, y: baseline),
+                bow: (above ? -0.85 : 0.85) * gap, gap: gap, ink: ink)
+        }
+    }
+
     private func drawTies(row: SheetDraft.Row, track: Int,
                           yOn: (Int) -> CGFloat, gap: CGFloat, ink: NSColor) {
         let ties = result.ties.filter { $0.track == track }

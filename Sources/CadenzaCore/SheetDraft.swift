@@ -290,6 +290,21 @@ public enum SheetDraft {
         }
     }
 
+    /// One phrase mark: the notes a player joined without lifting the key,
+    /// from the first of the run to the last. The engraver decides where a
+    /// slur begins and ends; the renderer draws exactly these.
+    public struct Slur: Sendable, Equatable, Hashable {
+        public let track: Int
+        public let fromTicks: Int
+        public let toTicks: Int
+
+        public init(track: Int, fromTicks: Int, toTicks: Int) {
+            self.track = track
+            self.fromTicks = fromTicks
+            self.toTicks = toTicks
+        }
+    }
+
     /// One system row: the top and bottom staves with their placed symbols.
     public struct Row: Sendable, Equatable {
         public let clefTop: Clef
@@ -315,6 +330,8 @@ public enum SheetDraft {
         public let beamGroups: [BeamGroup]
         /// The ties the score carries, one per pitched continuation.
         public let ties: [Tie]
+        /// The phrase marks the score carries, one per joined run of notes.
+        public let slurs: [Slur]
         /// Page width in staff spaces.
         public let width: Double
         /// Height of one row in staff spaces.
@@ -327,6 +344,7 @@ public enum SheetDraft {
 
         public init(options: Options, fifths: Int, topTrack: [Symbol], bottomTrack: [Symbol],
                     rows: [Row], beamGroups: [BeamGroup], ties: [Tie] = [],
+                    slurs: [Slur] = [],
                     width: Double, rowHeight: Double,
                     totalHeight: Double, rowsPerPage: Int = 0) {
             self.options = options
@@ -334,6 +352,7 @@ public enum SheetDraft {
             self.topTrack = topTrack
             self.bottomTrack = bottomTrack
             self.ties = ties
+            self.slurs = slurs
             self.rows = rows
             self.beamGroups = beamGroups
             self.width = width
