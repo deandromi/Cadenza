@@ -373,6 +373,7 @@ extension SmokeMain {
                     let notes = chord.notes.map { "\($0.pitch)@\($0.staffPosition)/\($0.head)/dot\($0.dots)/acc\($0.accidental)" }
                     return "chord t\(chord.startTicks)-\(chord.endTicks) [\(notes.joined(separator: " "))]"
                 case .rest(let t, let kind): return "rest t\(t) \(kind)"
+                case .restVoiced(let t, let kind, let voice): return "rest t\(t) \(kind) v\(voice)"
                 case .bar(let t): return "bar t\(t)"
                 case .finalBar(let t): return "final t\(t)"
                 case .clefChange(let clef, let t): return "clef \(clef) t\(t)"
@@ -556,6 +557,8 @@ extension SmokeMain {
             return "x\(x) final t\(start)"
         case .rest(let start, let kind):
             return "x\(x) rest t\(start) \(kind)"
+        case .restVoiced(let start, let kind, let voice):
+            return "x\(x) rest t\(start) \(kind) v\(voice)"
         case .clefChange(let clef, let start):
             return "x\(x) clefChange \(clef) t\(start)"
         case .blank(let start):

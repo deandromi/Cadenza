@@ -216,14 +216,14 @@ public enum SheetEngraver {
                 }
             }
         }
-        var top = staff(events: treble, clef: .treble, options: options, fifths: fifths)
-        var bottom = staff(events: bass, clef: .bass, options: options, fifths: fifths)
-
-        // 6. beaming inside the beat, then the systems.
+        // 6. each staff splits into voices, fills its rests and beams inside
+        // the beat; then the systems.
         var groups: [SheetDraft.BeamGroup] = []
         var nextID = 0
-        applyBeams(to: &top, track: 0, options: options, groups: &groups, nextID: &nextID)
-        applyBeams(to: &bottom, track: 1, options: options, groups: &groups, nextID: &nextID)
+        let top = staff(events: treble, clef: .treble, options: options, fifths: fifths,
+                        track: 0, groups: &groups, nextID: &nextID)
+        let bottom = staff(events: bass, clef: .bass, options: options, fifths: fifths,
+                           track: 1, groups: &groups, nextID: &nextID)
 
         let ties = SheetEngraver.ties(in: top.symbols, measureTicks: measureTicks, track: 0)
             + SheetEngraver.ties(in: bottom.symbols, measureTicks: measureTicks, track: 1)
@@ -314,81 +314,121 @@ public enum SheetEngraver {
 
     /// One staff's symbol list: barline, columns, rests filling every gap,
     /// measure after measure.
+    ///
+    /// A staff holds up to two voices, the way a piano score does: a chord
+    /// struck while the previous one is still sounding belongs to the second
+    /// voice — the same rule MuseScore's MIDI import uses to split a taken
+    /// staff. Voice one stems up and voice two stems down, each voice fills
+    /// its own silences and beams inside its own beats, and that is what turns
+    /// one chord stream into a melody sitting over an accompaniment.
     private static func staff(events: [[Event]], clef: SheetDraft.Clef,
-                              options: SheetDraft.Options, fifths: Int) -> Staff {
+                              options: SheetDraft.Options, fifths: Int, track: Int,
+                              groups: inout [SheetDraft.BeamGroup],
+                              nextID: inout Int) -> Staff {
         let measureTicks = options.measureTicks
         let gridSmall = max(1, SheetDraft.ticksPerQuarter / 4)
+        let beat = SheetDraft.ticksPerQuarter
         var result = Staff()
         let measureCount = events.count
         for measure in 0..<measureCount {
+            let absolute = measure * measureTicks
+            result.symbols.append(.bar(startTicks: absolute))
+            var indices: [Int] = []
+            // what each voice prints in this bar, in order: a rest in the
+            // sequence closes the beam it interrupts
+            var sequences: [[(isChord: Bool, index: Int)]] = [[], []]
+
             var grouped: [Int: [Event]] = [:]
             for event in events[measure] {
                 grouped[event.start, default: []].append(event)
             }
-            // events carry their bar-relative position; the symbol list
-            // records where the bar sits in the piece
-            let absolute = measure * measureTicks
-            let end = measureTicks
-            result.symbols.append(.bar(startTicks: absolute))
-            var indices: [Int] = []
-            var cursor = 0
-            // the accidentals this measure has already printed, by line
-            var shownAccidentals = Set<String>()
             let moments = grouped.keys.sorted()
-            if moments.isEmpty {
+            guard !moments.isEmpty else {
                 // an empty bar is one whole rest, centred, not a bar of beats
-                result.measures.append([result.symbols.count])
+                indices.append(result.symbols.count)
                 result.symbols.append(.rest(startTicks: absolute, kind: .whole))
+                result.measures.append(indices)
                 continue
             }
-            for (momentIndex, moment) in moments.enumerated() {
+
+            // 1. the columns of the bar, then their voices
+            var columns: [(start: Int, notes: [Event], voice: Int)] = []
+            for moment in moments {
                 var notes = grouped[moment] ?? []
                 notes.sort { $0.pitch < $1.pitch }
-                guard !notes.isEmpty else { continue }
-                if moment > cursor {
-                    for rest in SheetDraft.rests(start: cursor, end: moment) {
-                        indices.append(result.symbols.count)
-                        result.symbols.append(lifted(rest, by: absolute))
-                    }
-                }
-                // A played length includes every gap a finger leaves. On
-                // paper the note carries the beat: it lasts until the next
-                // chord of its staff, never past the bar. This is what
-                // stops a legato waltz from reading as rests with notes in
-                // between.
-                let next = momentIndex + 1 < moments.count ? moments[momentIndex + 1] : end
-                let room = end - moment
-                // which of these notes is still sounding when the bar ends:
-                // those get a tie over the barline
-                let held = Set(notes.filter(\.tied).map(\.pitch))
-                // The slot this column owns: until the hand's next column,
-                // never past the bar. A chord is one vertical unit, so every
-                // head in it takes the same value — one hand cannot hold a
-                // half and strike an eighth under one stem. The value fills
-                // the slot when the player held the key through it; a note
-                // let go early prints short and rests close the bar after it,
-                // instead of stretching a staccato to the barline.
-                let slot = max(gridSmall, min(room, next - moment))
-                let played = min(notes.map(\.duration).max() ?? slot, slot)
-                let value = played * 2 >= slot
-                    ? slot
-                    : max(gridSmall, (played / gridSmall) * gridSmall)
-                notes = notes.map { note in
-                    var copy = note
-                    copy.duration = value
-                    return copy
-                }
-                indices.append(result.symbols.count)
-                result.symbols.append(.chord(chord(from: notes, at: absolute + moment,
-                                                   clef: clef, fifths: fifths, held: held,
-                                                   shown: &shownAccidentals)))
-                let chordEnd = min(end, notes.map { $0.start + $0.duration }.max() ?? moment)
-                cursor = max(cursor, chordEnd)
+                columns.append((moment, notes, 0))
             }
-            if cursor < end {
-                for rest in SheetDraft.rests(start: cursor, end: end) {
+            var voiceEnd = [0, 0]
+            for index in columns.indices {
+                let start = columns[index].start
+                let voice = (0..<2).first { voiceEnd[$0] <= start } ?? 0
+                columns[index].voice = voice
+                voiceEnd[voice] = max(voiceEnd[voice],
+                                      start + (columns[index].notes.map(\.duration).max() ?? 0))
+            }
+            let voiceCount = Set(columns.map(\.voice)).count
+
+            var shownAccidentals = Set<String>()
+            for voice in 0..<2 {
+                let mine = columns.indices.filter { columns[$0].voice == voice }
+                if mine.isEmpty {
+                    // a silent upper voice still prints its whole-bar rest,
+                    // above the lower voice's music
+                    if voice == 0, columns.contains(where: { $0.voice == 1 }) {
+                        sequences[0].append((false, result.symbols.count))
+                        indices.append(result.symbols.count)
+                        result.symbols.append(.restVoiced(startTicks: absolute, kind: .whole, voice: 0))
+                    }
+                    continue
+                }
+                var cursor = 0
+                for (position, columnIndex) in mine.enumerated() {
+                    let column = columns[columnIndex]
+                    if column.start > cursor {
+                        for rest in SheetDraft.rests(start: cursor, end: column.start) {
+                            sequences[voice].append((false, result.symbols.count))
+                            indices.append(result.symbols.count)
+                            result.symbols.append(lifted(rest, by: absolute,
+                                                         voice: voiceCount > 1 ? voice : nil))
+                        }
+                    }
+                    let next = position + 1 < mine.count ? columns[mine[position + 1]].start : measureTicks
+                    // The slot this column owns: until the same voice's next
+                    // column, never past the bar. A chord is one vertical
+                    // unit, so every head in it takes the same value. The
+                    // value fills the slot when the player held the key
+                    // through it; a note let go early prints short and rests
+                    // close the bar after it, instead of stretching a
+                    // staccato to the barline.
+                    let slot = max(gridSmall, min(measureTicks - column.start, next - column.start))
+                    let played = min(column.notes.map(\.duration).max() ?? slot, slot)
+                    let value = played * 2 >= slot
+                        ? slot
+                        : max(gridSmall, (played / gridSmall) * gridSmall)
+                    let notes = column.notes.map { note -> Event in
+                        var copy = note
+                        copy.duration = value
+                        return copy
+                    }
+                    // which of these notes is still sounding when the bar
+                    // ends: those get a tie over the barline
+                    let held = Set(notes.filter(\.tied).map(\.pitch))
+                    sequences[voice].append((true, result.symbols.count))
                     indices.append(result.symbols.count)
-                    result.symbols.append(lifted(rest, by: absolute))
+                    result.symbols.append(.chord(chord(from: notes, at: absolute + column.start,
+                                                       clef: clef, fifths: fifths, held: held,
+                                                       shown: &shownAccidentals,
+                                                       voice: voice,
+                                                       polyphonic: voiceCount > 1)))
+                    cursor = max(cursor, column.start + value)
+                }
+                if cursor < measureTicks {
+                    for rest in SheetDraft.rests(start: cursor, end: measureTicks) {
+                        sequences[voice].append((false, result.symbols.count))
+                        indices.append(result.symbols.count)
+                        result.symbols.append(lifted(rest, by: absolute,
+                                                     voice: voiceCount > 1 ? voice : nil))
+                    }
                 }
             }
             if indices.isEmpty {
@@ -396,15 +436,77 @@ public enum SheetEngraver {
                 result.symbols.append(.rest(startTicks: absolute, kind: .whole))
             }
             result.measures.append(indices)
+
+            // 2. beams, inside the beat and inside the voice
+            for voice in 0..<2 {
+                beam(sequence: sequences[voice], symbols: &result.symbols,
+                     track: track, beat: beat, groups: &groups, nextID: &nextID)
+            }
         }
         result.symbols.append(.finalBar(startTicks: measureCount * measureTicks))
         return result
     }
 
+    /// Beam the eighths and sixteenths of one voice inside one beat: a rest,
+    /// a barline, a longer note or a new beat closes the group, and four is
+    /// the longest run a beat can hold.
+    private static func beam(sequence: [(isChord: Bool, index: Int)],
+                             symbols: inout [SheetDraft.Symbol], track: Int, beat: Int,
+                             groups: inout [SheetDraft.BeamGroup], nextID: inout Int) {
+        var run: [Int] = []
+        func close() {
+            defer { run = [] }
+            guard run.count >= 2 else { return }
+            var up = true
+            var flags = 1
+            if case .chord(let first) = symbols[run[0]], let stem = first.stems.first {
+                up = stem.up
+                flags = stem.flags
+            }
+            for index in run {
+                if case .chord(let chord) = symbols[index], let stem = chord.stems.first {
+                    flags = max(flags, stem.flags)
+                }
+            }
+            for index in run {
+                guard case .chord(let chord) = symbols[index] else { continue }
+                let stems = chord.stems.map { stem in
+                    SheetDraft.Stem(noteRange: stem.noteRange, up: stem.up,
+                                    flags: max(stem.flags, flags), beamGroupId: nextID)
+                }
+                symbols[index] = .chord(SheetDraft.Chord(startTicks: chord.startTicks,
+                                                         endTicks: chord.endTicks,
+                                                         notes: chord.notes, stems: stems))
+            }
+            groups.append(SheetDraft.BeamGroup(id: nextID, track: track,
+                                               chordIndices: run, up: up, flags: flags))
+            nextID += 1
+        }
+        for entry in sequence {
+            guard entry.isChord, case .chord(let chord) = symbols[entry.index],
+                  let stem = chord.stems.first else { close(); continue }
+            let beamable = stem.flags > 0 && chord.notes.allSatisfy { $0.dots == 0 }
+            guard beamable else { close(); continue }
+            if let last = run.last, case .chord(let previous) = symbols[last],
+               previous.startTicks / beat != chord.startTicks / beat {
+                close()
+            }
+            run.append(entry.index)
+            if run.count == 4 { close() }
+        }
+        close()
+    }
+
     /// Rests are built bar by bar; the symbol list keeps one timeline for
-    /// the whole piece, so every symbol can be placed the same way.
-    private static func lifted(_ symbol: SheetDraft.Symbol, by offset: Int) -> SheetDraft.Symbol {
+    /// the whole piece, so every symbol can be placed the same way. A bar
+    /// with two voices marks its rests so each sits in its own half of the
+    /// staff.
+    private static func lifted(_ symbol: SheetDraft.Symbol, by offset: Int,
+                               voice: Int?) -> SheetDraft.Symbol {
         guard case .rest(let start, let kind) = symbol else { return symbol }
+        if let voice {
+            return .restVoiced(startTicks: start + offset, kind: kind, voice: voice)
+        }
         return .rest(startTicks: start + offset, kind: kind)
     }
 
@@ -412,7 +514,9 @@ public enum SheetEngraver {
     private static func chord(from notes: [Event], at start: Int,
                               clef: SheetDraft.Clef, fifths: Int,
                               held: Set<Int> = [],
-                              shown: inout Set<String>) -> SheetDraft.Chord {
+                              shown: inout Set<String>,
+                              voice: Int = 0,
+                              polyphonic: Bool = false) -> SheetDraft.Chord {
         var glyphs: [SheetDraft.NoteGlyph] = []
         for note in notes {
             let value = SheetDraft.noteValue(note.duration)
@@ -443,13 +547,15 @@ public enum SheetEngraver {
         if values.allSatisfy({ $0.head == .whole }) {
             stems = []
         } else {
-            // One stem per chord: the shortest printed value sets the flags and the
-            // average head position sets the direction. Splitting a chord into two
-            // voices drew two stems through the same heads, which reads as a bug.
+            // One stem per chord: the shortest printed value sets the flags.
+            // In a bar with two voices the voice decides the direction, the
+            // way polyphony is written; with one voice the classic rule does.
             var shortest = values[0]
             for value in values where value.flags > shortest.flags { shortest = value }
             let positions = glyphs.map(\.staffPosition)
-            let up = positions.reduce(0, +) / max(1, positions.count) < 4
+            let up = polyphonic
+                ? voice == 0
+                : positions.reduce(0, +) / max(1, positions.count) < 4
             stems = [SheetDraft.Stem(noteRange: 0..<notes.count, up: up,
                                      flags: shortest.flags, beamGroupId: nil)]
         }
@@ -460,70 +566,21 @@ public enum SheetEngraver {
                                notes: glyphs, stems: stems)
     }
 
-    // MARK: beaming
-
-    /// Beams neighbouring eighths and sixteenths inside one beat of one
-    /// measure. A rest, a barline or a longer note ends the group.
-    private static func applyBeams(to staff: inout Staff, track: Int,
-                                   options: SheetDraft.Options,
-                                   groups: inout [SheetDraft.BeamGroup],
-                                   nextID: inout Int) {
-        let beat = SheetDraft.ticksPerQuarter
-        for indices in staff.measures {
-            var run: [Int] = []
-            func close() {
-                guard run.count >= 2 else { run = []; return }
-                var up = true
-                var flags = 1
-                if case .chord(let first) = staff.symbols[run[0]],
-                   let stem = first.stems.first {
-                    up = stem.up
-                    flags = stem.flags
-                }
-                for index in run {
-                    guard case .chord(let chord) = staff.symbols[index],
-                          let stem = chord.stems.first else { continue }
-                    flags = max(flags, stem.flags)
-                }
-                for index in run {
-                    guard case .chord(let chord) = staff.symbols[index] else { continue }
-                    let stems = chord.stems.map { stem in
-                        SheetDraft.Stem(noteRange: stem.noteRange, up: stem.up,
-                                        flags: max(stem.flags, flags), beamGroupId: nextID)
-                    }
-                    staff.symbols[index] = .chord(SheetDraft.Chord(
-                        startTicks: chord.startTicks, endTicks: chord.endTicks,
-                        notes: chord.notes, stems: stems))
-                }
-                groups.append(SheetDraft.BeamGroup(id: nextID, track: track,
-                                                   chordIndices: run, up: up, flags: flags))
-                nextID += 1
-                run = []
-            }
-            for index in indices {
-                guard case .chord(let chord) = staff.symbols[index] else {
-                    close()
-                    continue
-                }
-                let flags = chord.stems.first?.flags ?? 0
-                let beamable = flags > 0 && chord.notes.allSatisfy { $0.dots == 0 }
-                guard beamable else { close(); continue }
-                if let last = run.last, case .chord(let previous) = staff.symbols[last],
-                   previous.startTicks / beat != chord.startTicks / beat {
-                    close()
-                }
-                run.append(index)
-                if run.count == 4 { close() }
-            }
-            close()
-        }
-    }
-
     // MARK: systems
 
     /// Systems take ten measures, then stretch to fill the page: a dense
     /// bar takes the width its rhythm needs, air is shared out between the
     /// rest, and every system ends flush right the way an engraved page does.
+    /// One rhythmic column of a bar: when it sounds, the distance the
+    /// engraver wants to the next column, and how far its ink reaches on each
+    /// side of that column, in staff spaces.
+    struct RhythmColumn {
+        let moment: Int
+        let gap: Double
+        let left: Double
+        let right: Double
+    }
+
     private static func layout(top: Staff, bottom: Staff, options: SheetDraft.Options,
                                pageWidth: Double) -> [SheetDraft.Row] {
         let measureTicks = options.measureTicks
@@ -540,20 +597,101 @@ public enum SheetEngraver {
                 switch staff.symbols[index] {
                 case .chord(let chord): return max(0, chord.startTicks - barStart)
                 case .rest(let start, _): return max(0, start - barStart)
+                case .restVoiced(let start, _, _): return max(0, start - barStart)
                 default: return nil
                 }
             }
         }
 
-        /// One barline, air per rhythmic column, room for an accidental. The
-        /// per-column air is wider than the closest two heads may sit, so a
-        /// bar is never handed a width that forces its columns to collide.
+        /// How much room a symbol needs on each side of its column, in staff
+        /// spaces: a head is about a head wide, an accidental adds its own
+        /// air to the left, dots reach right.
+        func extents(_ symbol: SheetDraft.Symbol) -> (left: Double, right: Double) {
+            switch symbol {
+            case .chord(let chord):
+                let accidental = chord.notes.contains { $0.accidental != .none } ? 0.95 : 0
+                let dots = (chord.notes.map(\.dots).max() ?? 0) > 0 ? 0.72 : 0
+                return (0.6 + accidental, 0.6 + dots)
+            case .rest(_, let kind), .restVoiced(_, let kind, _):
+                // an eighth rest has a hook that reaches, a whole rest is a
+                // small block sitting under the fourth line
+                let width = kind == .whole || kind == .half ? 0.8 : 0.6
+                return (width, width)
+            default:
+                return (0, 0)
+            }
+        }
+
+        /// The rhythm's own share of the beat, as MuseScore spaces it: a
+        /// quarter note gets a quarter's air, an eighth half of that, and no
+        /// two columns ever sit closer than a head plus a hair.
+        func rhythmGap(_ ticks: Int) -> Double {
+            let quarter = Double(SheetDraft.ticksPerQuarter)
+            if ticks >= Int(4 * quarter) { return 4.0 }
+            if ticks >= Int(2 * quarter) { return 3.2 }
+            if ticks >= Int(quarter) { return 2.45 }
+            if ticks >= Int(quarter / 2) { return 1.85 }
+            if ticks >= Int(quarter / 4) { return 1.55 }
+            return 1.35
+        }
+
+        /// The moment and symbol of a bar's columns, both hands together.
+        func momentsOf(_ staff: Staff, _ measure: Int) -> [(Int, SheetDraft.Symbol)] {
+            guard measure < staff.measures.count else { return [] }
+            let barStart = measure * measureTicks
+            return staff.measures[measure].compactMap { index in
+                let symbol = staff.symbols[index]
+                switch symbol {
+                case .chord(let chord): return (max(0, chord.startTicks - barStart), symbol)
+                case .rest(let start, _): return (max(0, start - barStart), symbol)
+                case .restVoiced(let start, _, _): return (max(0, start - barStart), symbol)
+                default: return nil
+                }
+            }
+        }
+
+        /// A bar's columns in time order, with the gap each one needs to the
+        /// next. A column's air is the rhythm's share, but never less than the
+        /// ink standing in it: an eighth rest followed by a chord needs room
+        /// for both, whatever the beat says. This is the pass that keeps a
+        /// dense waltz from printing a rest through a notehead.
+        func columnsOf(_ measure: Int) -> [RhythmColumn] {
+            var atMoment: [Int: (left: Double, right: Double)] = [:]
+            for staff in [top, bottom] {
+                for (moment, symbol) in momentsOf(staff, measure) {
+                    let extent = extents(symbol)
+                    let current = atMoment[moment] ?? (0, 0)
+                    atMoment[moment] = (max(current.left, extent.left),
+                                        max(current.right, extent.right))
+                }
+            }
+            let moments = atMoment.keys.sorted()
+            return moments.enumerated().map { offset, moment in
+                let ink = atMoment[moment] ?? (0, 0)
+                guard offset + 1 < moments.count else {
+                    return RhythmColumn(moment: moment, gap: ink.right, left: ink.left, right: ink.right)
+                }
+                let next = moments[offset + 1]
+                let nextInk = atMoment[next] ?? (0, 0)
+                let rhythm = rhythmGap(max(1, next - moment))
+                let clearance = ink.right + nextInk.left + 0.3
+                return RhythmColumn(moment: moment, gap: max(rhythm, clearance),
+                                    left: ink.left, right: ink.right)
+            }
+        }
+
+        /// A bar's width before justification: the ink of its first and last
+        /// columns plus the air between them. A bar holding one whole rest is
+        /// given a fixed narrow width, the way a printed score gives an empty
+        /// bar half the room of a busy one.
         func naturalWidth(_ measure: Int) -> Double {
-            let columns = Set(starts(top, measure) + starts(bottom, measure)).count
-            // A bar's width is its rhythm: one column of air per moment, plus
-            // the barline. An engraver fits ten bars on this page, so the
-            // column is about one head wide, not a head plus a gap.
-            return 0.9 + Double(max(1, columns)) * 1.45
+            let columns = columnsOf(measure)
+            guard let first = columns.first, let last = columns.last else { return 3.2 }
+            let lead = first.left + 0.35
+            let trail = last.right + 0.35
+            if columns.count == 1 { return max(3.2, lead + trail) }
+            let air = columns.dropLast().map(\.gap).reduce(0, +)
+            return max(3.2, lead + air + trail)
         }
 
         var rows: [SheetDraft.Row] = []
@@ -566,7 +704,9 @@ public enum SheetEngraver {
             // than squeezing heads or running over the page edge.
             while chosen.count < measuresPerSystem, measure + chosen.count < count {
                 let candidate = measure + chosen.count
-                let width = naturalWidth(candidate)
+                // the first bar of a page opens with a clef, a key and a
+                // meter in front of its music: that framing is real width
+                let width = naturalWidth(candidate) + (candidate == 0 ? 6.8 : 0)
                 if chosen.count >= 2, naturals.reduce(0, +) + width > usable { break }
                 chosen.append(candidate)
                 naturals.append(width)
@@ -599,10 +739,8 @@ public enum SheetEngraver {
                 let inset: Double = (index == 0 && rows.isEmpty) ? 6.8 : 0
                 let musicX = x + inset
                 let musicWidth = max(3.0, widths[offset] - inset)
-                let moments = Set(starts(top, index) + starts(bottom, index)).sorted()
-                let columns = columnMap(moments: moments, x: musicX,
-                                        measureWidth: musicWidth,
-                                        measureTicks: measureTicks)
+                let columns = columnMap(columnsOf(index), x: musicX,
+                                        measureWidth: musicWidth)
                 place(staff: top, measure: index, start: start, x: musicX,
                       measureWidth: musicWidth, measureTicks: measureTicks,
                       columns: columns, into: &topPlaced)
@@ -644,29 +782,24 @@ public enum SheetEngraver {
         return staff.symbols.count - 1
     }
 
-    /// Where each rhythmic column of one bar sits, in staff spaces. The
-    /// gaps are proportional to the time each column holds, with a floor of
-    /// one head's width so dense bars stay readable, then fitted to the bar.
-    private static func columnMap(moments: [Int], x: Double,
-                                  measureWidth: Double, measureTicks: Int) -> [Int: Double] {
-        let inner = max(3.0, measureWidth - 2.6)
-        // an accidental needs its own air to the left of the head, so two
-        // columns never sit closer than this
-        let floorGap = 1.55
-        guard !moments.isEmpty else { return [:] }
-        var gaps: [Double] = []
-        for (offset, moment) in moments.enumerated() {
-            let next = offset + 1 < moments.count ? moments[offset + 1] : measureTicks
-            let span = Double(max(0, next - moment)) / Double(measureTicks)
-            gaps.append(max(floorGap, span * inner))
-        }
-        let total = gaps.reduce(0, +)
-        let fit = total > 0 ? inner / total : 1
+    /// Where each rhythmic column of one bar sits, in staff spaces. The gaps
+    /// the layout asked for are fitted to the bar the system handed it, and
+    /// the first column starts after its own ink, so nothing is ever printed
+    /// on the opening barline or the clef.
+    private static func columnMap(_ columns: [RhythmColumn], x: Double,
+                                  measureWidth: Double) -> [Int: Double] {
+        guard let first = columns.first, let last = columns.last else { return [:] }
+        let lead = first.left + 0.35
+        let trail = last.right + 0.35
+        let air = columns.dropLast().map(\.gap).reduce(0, +)
+        let scale = air > 0.001
+            ? max(0.55, (measureWidth - lead - trail) / air) : 1
         var map: [Int: Double] = [:]
-        var cursor = x + 1.1
-        for (offset, moment) in moments.enumerated() {
-            map[moment] = cursor
-            cursor += gaps[offset] * fit
+        var cursor = x + lead
+        for (offset, column) in columns.enumerated() {
+            map[column.moment] = cursor
+            guard offset < columns.count - 1 else { break }
+            cursor += column.gap * scale
         }
         return map
     }
@@ -694,6 +827,43 @@ public enum SheetEngraver {
                     px = columns[moment] ?? x + 1.1
                 }
                 placed.append(SheetDraft.Placed(x: px, trackIndex: -1, symbol: symbol))
+            case .restVoiced(let restStart, let kind, let voice):
+                let wholeMeasure = staff.measures[measure].count == 1
+                let moment = max(0, restStart - start)
+                let px = wholeMeasure ? x + measureWidth / 2 : (columns[moment] ?? x + 1.1)
+                // A rest takes the middle of the staff, the way an engraver
+                // sets one: only when the other voice's chord is in the way
+                // does it step out, above for the upper voice and below for
+                // the lower one. A rest is never printed through a stem, and
+                // it never floats to the edge of the staff for no reason.
+                let canonical: Int = kind == .whole ? 6 : 4
+                var target = canonical
+                var blocked = true
+                while blocked {
+                    blocked = false
+                    for index in staff.measures[measure] {
+                        guard case .chord(let chord) = staff.symbols[index],
+                              chord.startTicks == restStart else { continue }
+                        for note in chord.notes where abs(note.staffPosition - target) <= 1 {
+                            blocked = true
+                        }
+                    }
+                    if blocked {
+                        target += voice == 0 ? 2 : -2
+                        if target > 12 || target < -4 { blocked = false }
+                    }
+                }
+                // the chord keeps the column; the rest moves clear of its stem
+                let sharesColumn = staff.measures[measure].contains { index in
+                    if case .chord(let chord) = staff.symbols[index] {
+                        return chord.startTicks == restStart
+                    }
+                    return false
+                }
+                let across = (sharesColumn && !wholeMeasure) ? (voice == 0 ? -1.55 : 1.55) : 0
+                placed.append(SheetDraft.Placed(x: px, trackIndex: -1, symbol: symbol,
+                                                yOffset: Double(target - canonical) / 2,
+                                                xOffset: across))
             default:
                 break
             }

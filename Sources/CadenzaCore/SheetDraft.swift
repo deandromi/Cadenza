@@ -184,6 +184,10 @@ public enum SheetDraft {
     public enum Symbol: Sendable, Equatable, Hashable {
         case chord(Chord)
         case rest(startTicks: Int, kind: RestKind)
+        /// A rest that belongs to one of two voices on a staff: the upper
+        /// voice's rests sit above the middle line, the lower voice's below,
+        /// so the two never print on top of each other.
+        case restVoiced(startTicks: Int, kind: RestKind, voice: Int)
         case bar(startTicks: Int)
         /// The barline that closes the piece.
         case finalBar(startTicks: Int)
@@ -203,6 +207,7 @@ public enum SheetDraft {
             switch self {
             case .chord(let c): return c.startTicks
             case .rest(let t, _): return t
+            case .restVoiced(let t, _, _): return t
             case .bar(let t), .finalBar(let t): return t
             case .clefChange(_, let t): return t
             case .blank(let t): return t
@@ -214,7 +219,7 @@ public enum SheetDraft {
         /// Column items are the things that align between barlines.
         public var isColumn: Bool {
             switch self {
-            case .chord, .rest, .blank, .clefChange, .pedalDown, .pedalUp: return true
+            case .chord, .rest, .restVoiced, .blank, .clefChange, .pedalDown, .pedalUp: return true
             default: return false
             }
         }
@@ -228,7 +233,7 @@ public enum SheetDraft {
                 w += 0.6 * Double(c.notes.map(\.dots).max() ?? 0)
                 if c.stems.contains(where: { $0.flags > 0 }) { w += 0.4 }
                 return w
-            case .rest: return 1.8
+            case .rest, .restVoiced: return 1.8
             case .bar, .finalBar: return 0.8
             case .clefChange: return 2.6
             case .blank: return 0
@@ -245,6 +250,14 @@ public enum SheetDraft {
         public let x: Double
         public let trackIndex: Int
         public let symbol: Symbol
+        /// How far off its natural lane the symbol sits, in staff spaces:
+        /// a rest in a two-voice bar steps aside from the other voice's
+        /// chord instead of printing through it.
+        public var yOffset: Double = 0
+        /// How far to the right of its column the symbol sits, in staff
+        /// spaces: a rest that shares its moment with the other voice's chord
+        /// moves out of the chord's stem.
+        public var xOffset: Double = 0
     }
 
     /// A beam group: the member chords (indices into one track's symbol

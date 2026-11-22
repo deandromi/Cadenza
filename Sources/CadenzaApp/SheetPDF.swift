@@ -129,7 +129,8 @@ enum SheetPDF {
         }
 
         // the metronome mark sits at the left margin, where a player looks
-        let quarter = String(UnicodeScalar(0x1D15F)!)
+        // U+ECA5 is the pre-composed metronome mark for a quarter note
+        let quarter = String(UnicodeScalar(0xECA5)!)
         let musicAttributes: [NSAttributedString.Key: Any] = [
             .font: MusicFont.font(size: 13), .foregroundColor: ink,
         ]

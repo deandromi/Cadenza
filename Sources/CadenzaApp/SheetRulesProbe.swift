@@ -118,6 +118,13 @@ extension SmokeMain {
                           measures.last.map { $0.start + measureTicks } ?? measure.start + measureTicks)
                     : measure.start + measureTicks
                 shown.removeAll()
+                // A bar with two voices carries two timelines; each fills its
+                // own silences, so the single-timeline tiling check below only
+                // applies to a monophonic bar.
+                let polyphonic = measure.items.contains { item in
+                    if case .restVoiced = item.symbol { return true }
+                    return false
+                }
                 // the column timeline of this bar, in order
                 var columns: [(start: Int, end: Int, label: String)] = []
                 for (index, symbol) in measure.items {
@@ -156,7 +163,7 @@ extension SmokeMain {
                         } else {
                             let wantUp = Double(positions.reduce(0, +)) / Double(max(1, positions.count)) < 4
                             for stem in chord.stems {
-                                if stem.up != wantUp {
+                                if !polyphonic, stem.up != wantUp {
                                     flag(.stemDirection, "t\(track) m\(number + 1) t\(chord.startTicks) up=\(stem.up)")
                                 }
                                 // a note that lasts a beat or longer never
@@ -189,7 +196,7 @@ extension SmokeMain {
                             }
                         }
                         _ = index
-                    case .rest(let tick, let kind):
+                    case .rest(let tick, let kind), .restVoiced(let tick, let kind, _):
                         let length = restTicks(kind)
                         columns.append((tick, tick + length, "rest \(kind)"))
                     default:
@@ -202,6 +209,8 @@ extension SmokeMain {
 
                 // the bar must be filled end to end, in order, without overlap
                 var cursor = measure.start
+                if polyphonic { continue }
+                _ = ()
                 var previous = "barline"
                 for column in columns.sorted(by: { $0.start < $1.start }) {
                     if column.start > cursor {

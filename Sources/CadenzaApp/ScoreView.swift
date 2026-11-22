@@ -117,12 +117,18 @@ final class ScoreView: NSView {
                            to: NSPoint(x: rightX, y: bassTop + CGFloat(line) * gap), width: 0.8)
             }
 
+            // A system opens with one barline running through both staves,
+            // with the brace outside it: the left edge of a printed system is
+            // a single unbroken stroke, not two short ones.
+            ink.setStroke()
+            strokeLine(from: NSPoint(x: leftX, y: top), to: NSPoint(x: leftX, y: bassBottom),
+                       width: 1.1)
             // the brace joining the two staves
             if let braceInfo = MusicFont.info(Glyph.brace) {
                 let span = bassBottom - top + 0.4 * gap
                 let size = span / (braceInfo.y1 - braceInfo.y0)
                 drawGlyph(Glyph.brace,
-                          baselineAt: NSPoint(x: leftX - 0.2 * gap, y: top + braceInfo.y1 * size),
+                          baselineAt: NSPoint(x: leftX - 1.15 * gap, y: top + braceInfo.y1 * size),
                           font: MusicFont.ctFont(size: size), color: ink)
             }
 
@@ -287,6 +293,12 @@ final class ScoreView: NSView {
             return
         case .rest(_, let kind):
             drawRest(kind, at: x, yOn: yOn, gap: gap, ink: ink)
+        case .restVoiced(_, let kind, _):
+            // the engraver placed this rest clear of the other voice's chord,
+            // above or below it and to the right of its stem
+            let shift = -CGFloat(placed.yOffset) * gap
+            drawRest(kind, at: x + CGFloat(placed.xOffset) * gap,
+                     yOn: { yOn($0) + shift }, gap: gap, ink: ink)
         case .chord(let chord):
             drawChord(chord, at: x, yOn: yOn, gap: gap, ink: ink)
         case .timeSignature:
@@ -414,13 +426,17 @@ final class ScoreView: NSView {
             let headWidth = (headInfo?.width ?? 1.18) * fontSize
             inkHead(headGlyph, centerX: cx, centerY: cy, gap: gap, ink: ink)
             if note.dots > 0 {
-                // a dot beside a line note sits in the space above it
+                // A dot is a small disc, not a glyph scaled to the head: it
+                // sits half a space off the head and a space above a line.
                 let onLine = note.staffPosition % 2 == 0
                 let dotY = onLine ? cy - gap / 2 : cy
+                ink.setFill()
                 for dot in 0..<note.dots {
-                    inkGlyph(Glyph.augmentationDot,
-                             centerX: cx + headWidth / 2 + 0.42 * gap + CGFloat(dot) * 0.66 * gap,
-                             centerY: dotY, gap: gap, ink: ink)
+                    let centre = NSPoint(x: cx + headWidth / 2 + 0.34 * gap + CGFloat(dot) * 0.62 * gap,
+                                         y: dotY)
+                    let radius = 0.145 * gap
+                    NSBezierPath(ovalIn: CGRect(x: centre.x - radius, y: centre.y - radius,
+                                                width: radius * 2, height: radius * 2)).fill()
                 }
             }
         }
