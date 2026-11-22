@@ -3,46 +3,49 @@ import Foundation
 /// The engraver: turns the played note stream into sheet geometry that reads
 /// like notation instead of a scatter of heads.
 ///
-/// It works on a fixed sixteenth-note grid, the way notation software does:
+/// It follows the way notation software imports a performance:
 ///
-/// 1. Every onset snaps to the nearest sixteenth, and human chord spread
-///    disappears because notes landing on the same grid point become one
-///    chord. This is the step the old pipeline lacked: it rounded onsets to
-///    the next played note, so a rolled chord became four columns of noise.
-/// 2. Durations snap to the grid too and never cross a barline; a note that
-///    would run past the bar is cut at the bar, which is what a tied note
-///    would do on paper.
-/// 3. Notes go to the staff their pitch belongs to, split at middle C, with
-///    the treble staff in treble clef and the bass staff in bass clef for
-///    the whole piece. No clef wanders mid-page.
-/// 4. Each staff is filled with rests, so every beat of every measure is
-///    accounted for and the bars line up.
-/// 5. Key signature, accidentals (shown once per measure per staff), note
-///    heads, dots, flags and stems come from the quantized durations.
-/// 6. Eighths and sixteenths beam inside their beat, never across a bar and
-///    never through a rest.
-/// 7. Measures pack into systems on a page width, and each measure spaces
-///    its columns by time, so both hands share one rhythmic scale.
+/// 1. Every onset is quantized onto a take's own grid — an eighth, or a
+///    sixteenth when the take really plays sixteenths — in the source's own
+///    ticks when the source is a file (`SheetDraft.TimeMap`), because a MIDI
+///    file's ticks are its notation and its tempo map is not.
+/// 2. Notes struck together become one chord. A rolled chord, whose notes
+///    arrive a few tens of milliseconds apart, folds back into one chord as
+///    well, because a roll is one gesture and not four sixteenths.
+/// 3. Barlines follow the take: a fixed measure grid from the file's origin, or
+///    (for a live performance) the nearest played attack to each expected
+///    downbeat, since the tempo drifts.
+/// 4. Notes go to the staff their register belongs to, split at middle C, and
+///    each staff splits into up to two voices by overlap (see `StaffWriter`).
+/// 5. Each voice's values come from the room a note owns in that voice, are
+///    split where they would hide a beat, and are tied where they cross a
+///    barline. Every silence is filled with rests that add up exactly.
+/// 6. Eighths and sixteenths beam inside their beat, never through a rest and
+///    never across a bar.
+/// 7. Key signature, accidentals (once per measure per staff), note heads,
+///    dots, flags and stems come from the written values.
+/// 8. Measures pack into systems on a page width, and each measure spaces its
+///    columns by time, so both hands share one rhythmic scale.
 public enum SheetEngraver {
 
-    /// A note on the sixteenth grid.
-    private struct Event {
+    /// A played note on the engraver's tick grid.
+    struct Note {
         var start: Int
-        var duration: Int
+        /// Ticks the key was down, on the same grid.
+        var length: Int
         var pitch: Int
-        /// The finger holds the key past the barline: the sheet ties the
-        /// note over instead of closing it with a rest.
-        var tied: Bool = false
     }
 
-    /// One rhythmic column of a measure: a chord or a rest.
-    private enum Column {
-        case chord(SheetDraft.Chord)
-        case rest(kind: SheetDraft.RestKind, start: Int)
+    /// The notes struck at one tick of one staff.
+    struct Column {
+        var start: Int
+        var pitches: [Int]
+        /// The longest hold in the chord.
+        var held: Int
     }
 
-    /// One staff's symbol list, with where each measure's columns sit in it.
-    private struct Staff {
+    /// One staff's symbol list, with the symbol indices of each measure.
+    struct Staff {
         var symbols: [SheetDraft.Symbol] = []
         /// Symbol indices of each measure's columns, barline excluded.
         var measures: [[Int]] = []
@@ -51,70 +54,84 @@ public enum SheetEngraver {
     public static func engrave(notes: [NoteEvent], options: SheetDraft.Options,
                                pageWidth: Double,
                                pedals: [SheetDraft.PedalSpan] = [],
-                               originTicks: Int? = nil) -> SheetDraft.Result {
-        let measureTicks = options.measureTicks
-        let grid = max(1, SheetDraft.ticksPerQuarter / 4)
+                               originTicks: Int? = nil,
+                               timeMap: SheetDraft.TimeMap? = nil) -> SheetDraft.Result {
+        let meter = SheetDraft.Meter(options)
+        let measureTicks = meter.measureTicks
 
-        // 1. Cluster rolled chords.
+        /// Where a moment of the performance lands on the engraver's ticks: the
+        /// file's own clock when there is one, the drafted tempo otherwise.
+        func tick(_ seconds: Double) -> Int {
+            if let timeMap { return timeMap.engraverTick(seconds: seconds) }
+            return SheetDraft.ticks(seconds: seconds, options: options)
+        }
+
+        // 1. Onto the grid.
         //
-        // A played chord rarely lands on one tick: the notes arrive within a
-        // few tens of milliseconds of each other. Chaining any two onsets
-        // closer than a tenth of a beat folds such a roll back into the one
-        // chord it is, while a genuine sixteenth line (a whole grid step
-        // apart) stays separate.
-        var raw = notes.map { note in
-            Event(start: SheetDraft.ticks(seconds: note.onset, options: options),
-                  duration: max(1, SheetDraft.ticks(seconds: note.duration, options: options)),
-                  pitch: note.pitch)
+        // The grid is read off the take: a file's ticks are notation, so the
+        // coarsest grid that still catches its attacks is the right one. A
+        // performance's seconds drift, so it keeps the sixteenth grid and only
+        // nudges an attack that is already most of the way to the pulse.
+        let rawOnsets = notes.map { tick($0.onset) }
+        let quantizer = SheetDraft.Quantizer(onsets: rawOnsets, options: options,
+                                             metrical: timeMap != nil)
+        var raw = notes.map { note -> Note in
+            let start = quantizer.quantize(tick(note.onset))
+            let end = quantizer.quantize(tick(note.onset + note.duration))
+            return Note(start: start, length: max(quantizer.grid, end - start), pitch: note.pitch)
         }
         guard let earliest = raw.map(\.start).min() else {
             return empty(options: options, pageWidth: pageWidth)
         }
         raw.sort { ($0.start, $0.pitch) < ($1.start, $1.pitch) }
-        let window = max(30, min(grid - 20, SheetDraft.ticks(seconds: 0.09, options: options)))
 
-        var clusters: [[Event]] = []
+        // 2. Chordify: a rolled chord is one chord.
+        //
+        // Chaining any two onsets closer than the combine window folds a roll
+        // back into the chord it is, while a genuine sixteenth line — a whole
+        // grid step apart — stays separate.
+        let window = max(1, SheetDraft.ticks(ms: options.combineMillis, options: options))
+        var clusters: [[Note]] = []
         var anchors: [Int] = []
-        for event in raw {
-            if let last = anchors.last, event.start - last <= window {
-                clusters[clusters.count - 1].append(event)
+        for note in raw {
+            if let last = anchors.last, note.start - last <= window {
+                clusters[clusters.count - 1].append(note)
             } else {
-                clusters.append([event])
-                anchors.append(event.start)
+                clusters.append([note])
+                anchors.append(note.start)
             }
         }
 
-        // 2. Barlines follow the performance.
+        // 3. Barlines follow the performance.
         //
-        // A fixed three beats from the first note walks off the page: a
-        // human tempo drifts a few percent, and by the tenth bar every note
-        // lands on the offbeat. So each barline starts from the previous one
-        // plus a bar and then steps to the nearest played attack, which
-        // keeps the harmony on the beat where it was played.
+        // A fixed three beats from the first note walks off the page: a human
+        // tempo drifts a few percent, and by the tenth bar every note lands on
+        // the offbeat. So each barline starts from the previous one plus a bar
+        // and then steps to the nearest played attack, which keeps the harmony
+        // on the beat where it was played.
         //
-        // A MIDI file is not a performance: its ticks are the notation, and
-        // the file's own measure grid is the truth. So an imported file hands
-        // its bar origin in, and the barlines stay exactly a measure apart —
-        // an upbeat then prints as the rests in front of it, the way the
-        // printed page does, instead of walking every barline forward to the
-        // first attack it can find.
-        let root = originTicks.map { snap($0, to: grid) } ?? snap(earliest, to: grid)
-        let lastTick = raw.map { $0.start + $0.duration }.max() ?? measureTicks
+        // A MIDI file is not a performance: its ticks are the notation, and the
+        // file's own measure grid is the truth. So an imported file hands its
+        // bar origin in, and the barlines stay exactly a measure apart — an
+        // upbeat then prints as the rests in front of it, the way the printed
+        // page does, instead of walking every barline forward to the first
+        // attack it can find.
+        let root = originTicks.map { quantizer.quantize(sourceTick($0, timeMap: timeMap)) }
+            ?? quantizer.quantize(earliest)
+        // The music's own end decides the last bar: a bar is added only while
+        // there is something in it, so the sheet never closes on an empty bar.
+        let musicEnd = max(measureTicks, (raw.map { $0.start + $0.length }.max() ?? 0) - root)
         var barStarts = [0]
-        if let origin = originTicks {
-            let originTick = snap(origin, to: grid)
-            var position = 0
-            let end = max(0, lastTick - originTick)
-            while position < end {
-                position += measureTicks
-                barStarts.append(position)
+        if originTicks != nil {
+            while Double(barStarts.count) * Double(measureTicks) < Double(musicEnd) {
+                barStarts.append(barStarts.count * measureTicks)
             }
         } else {
-            let reach = max(grid * 2, measureTicks / 6)
-            while barStarts.last.map({ $0 + root < lastTick + measureTicks }) ?? false {
+            let reach = max(quantizer.grid * 2, measureTicks / 6)
+            while barStarts.last.map({ $0 + measureTicks < musicEnd }) ?? false {
                 let expected = barStarts[barStarts.count - 1] + measureTicks
                 let nearby = anchors
-                    .map { snap($0, to: grid) - root }
+                    .map { $0 - root }
                     .filter { abs($0 - expected) <= reach }
                 let chosen = nearby.min { abs($0 - expected) < abs($1 - expected) } ?? expected
                 // a barline never moves more than half a bar: a note half a bar
@@ -124,111 +141,49 @@ public enum SheetEngraver {
             }
         }
 
-        // 3. Notes land on the grid of their own bar.
-        // First, where the player actually struck each key: a note carried
-        // over a barline may only continue into a bar where that key was not
-        // struck again. A re-struck note is a new note, not a tie.
-        var attacks = Set<String>()
+        // 4. Columns: the notes struck at one moment, per bar and per staff.
+        var topBars: [[Column]] = Array(repeating: [], count: barStarts.count)
+        var bottomBars: [[Column]] = Array(repeating: [], count: barStarts.count)
         for cluster in clusters {
-            guard let anchor = cluster.map(\.start).min() else { continue }
-            let absolute = pulse(snap(anchor, to: grid)) - root
+            let start = cluster.map(\.start).min() ?? 0
+            let absolute = start - root
+            guard absolute >= 0 else { continue }
             var bar = 0
-            for (index, start) in barStarts.enumerated() where start <= absolute { bar = index }
-            let local = max(0, absolute - barStarts[bar])
-            for note in cluster { attacks.insert("\(bar)-\(local)-\(note.pitch)") }
-        }
-        var byMeasure: [[Event]] = Array(repeating: [], count: barStarts.count)
-        var strongest: [String: Event] = [:]
-        for cluster in clusters {
-            guard let anchor = cluster.map(\.start).min() else { continue }
-            let absolute = pulse(snap(anchor, to: grid)) - root
-            var bar = 0
-            for (index, start) in barStarts.enumerated() where start <= absolute {
+            for (index, barStart) in barStarts.enumerated() where barStart <= absolute {
                 bar = index
             }
-            let barStart = barStarts[bar]
-            let local = max(0, absolute - barStart)
+            let local = absolute - barStarts[bar]
             guard local < measureTicks else { continue }
+            let moment = barStarts[bar] + local
+            var treble: [Note] = []
+            var bass: [Note] = []
             for note in cluster {
-                // A note still sounding at the barline is written again on the
-                // next downbeat and tied to what came before: one note across
-                // two bars, the way a score writes a held key. The segment
-                // plan comes first, because whether a tie is written depends
-                // on whether the continuation is written at all: a key struck
-                // again, or a finger that lifts just past the line, ends the
-                // note at the barline instead.
-                var segments: [(bar: Int, start: Int, length: Int)] = []
-                var remaining = snap(note.duration, to: grid)
-                var barIndex = bar
-                var startLocal = local
-                while remaining > 0, barIndex < byMeasure.count {
-                    if !segments.isEmpty,
-                       attacks.contains("\(barIndex)-\(startLocal)-\(note.pitch)") { break }
-                    let room = measureTicks - startLocal
-                    let inThisBar = min(remaining, room)
-                    if inThisBar >= grid || room == measureTicks {
-                        segments.append((barIndex, startLocal, max(grid, inThisBar)))
-                    }
-                    let carry = remaining - room
-                    // A note that sustains less than a beat past the barline
-                    // is the pedal ringing, not a held key: the player struck
-                    // again on the downbeat, so the note ends at the line and
-                    // no tie is written.
-                    if carry > 0, carry < 2 * SheetDraft.ticksPerQuarter { break }
-                    remaining -= inThisBar
-                    barIndex += 1
-                    startLocal = 0
-                }
-                for (offset, segment) in segments.enumerated() {
-                    let key = "\(segment.bar)-\(segment.start)-\(note.pitch)"
-                    let length = segment.length
-                    if (strongest[key]?.duration ?? -1) < length {
-                        strongest[key] = Event(start: segment.start, duration: length,
-                                               pitch: note.pitch,
-                                               tied: offset < segments.count - 1)
-                    }
-                }
+                if note.pitch >= 60 { treble.append(note) } else { bass.append(note) }
+            }
+            if !treble.isEmpty {
+                appendColumn(&topBars[bar], at: moment, notes: treble, quantizer: quantizer)
+            }
+            if !bass.isEmpty {
+                appendColumn(&bottomBars[bar], at: moment, notes: bass, quantizer: quantizer)
             }
         }
-        // each key carries its measure, so the symbols land in order
-        for (key, event) in strongest {
-            guard let bar = Int(key.split(separator: "-").first ?? "") else { continue }
-            byMeasure[bar].append(event)
-        }
-        for index in byMeasure.indices {
-            byMeasure[index].sort { ($0.start, $0.pitch) < ($1.start, $1.pitch) }
-        }
 
-        let pitches = strongest.values.map(\.pitch)
+        // 5. key: the signature that needs the fewest accidentals.
+        let fifths = SheetDraft.guessedFifths(pitches: raw.map(\.pitch))
 
-        // 4. key: the signature that needs the fewest accidentals.
-        let fifths = SheetDraft.guessedFifths(pitches: pitches)
-
-        // 5. hands by register, split at middle C.
-        var treble: [[Event]] = Array(repeating: [], count: byMeasure.count)
-        var bass: [[Event]] = Array(repeating: [], count: byMeasure.count)
-        for (index, events) in byMeasure.enumerated() {
-            for event in events {
-                if event.pitch >= 60 {
-                    treble[index].append(event)
-                } else {
-                    bass[index].append(event)
-                }
-            }
-        }
-        // 6. each staff splits into voices, fills its rests and beams inside
-        // the beat; then the systems.
+        // 6. Each staff writes its voices; then the systems.
         var groups: [SheetDraft.BeamGroup] = []
         var nextID = 0
-        let top = staff(events: treble, clef: .treble, options: options, fifths: fifths,
-                        track: 0, groups: &groups, nextID: &nextID)
-        let bottom = staff(events: bass, clef: .bass, options: options, fifths: fifths,
-                           track: 1, groups: &groups, nextID: &nextID)
-
-        let ties = SheetEngraver.ties(in: top.symbols, track: 0)
-            + SheetEngraver.ties(in: bottom.symbols, track: 1)
-        let slurs = SheetEngraver.slurs(in: top.symbols, measureTicks: measureTicks, track: 0)
-            + SheetEngraver.slurs(in: bottom.symbols, measureTicks: measureTicks, track: 1)
+        var ties: [SheetDraft.Tie] = []
+        var slurs: [SheetDraft.Slur] = []
+        let top = StaffWriter(meter: meter, clef: .treble, fifths: fifths,
+                              track: 0, grid: quantizer.grid)
+            .write(topBars, measureStarts: barStarts, ties: &ties, groups: &groups,
+                   slurs: &slurs, nextID: &nextID)
+        let bottom = StaffWriter(meter: meter, clef: .bass, fifths: fifths,
+                                 track: 1, grid: quantizer.grid)
+            .write(bottomBars, measureStarts: barStarts, ties: &ties, groups: &groups,
+                   slurs: &slurs, nextID: &nextID)
         let rows = layout(top: top, bottom: bottom, options: options, pageWidth: pageWidth)
 
         // Pedal spans are known but not inked yet: a mark in the wrong place
@@ -248,73 +203,42 @@ public enum SheetEngraver {
                                  rowsPerPage: systemsPerPage)
     }
 
-    // MARK: ties
+    // MARK: input
 
-    /// The phrase marks a track carries: runs of notes the player joined
-    /// without lifting the key, kept inside one bar and capped at four notes,
-    /// which is how a phrase is written rather than how a finger moves.
-    static func slurs(in symbols: [SheetDraft.Symbol], measureTicks: Int,
-                      track: Int) -> [SheetDraft.Slur] {
-        let columns = symbols.compactMap { symbol -> SheetDraft.Chord? in
-            if case .chord(let chord) = symbol { return chord }
-            return nil
-        }.sorted { $0.startTicks < $1.startTicks }
-        var runs: [[SheetDraft.Chord]] = []
-        var run: [SheetDraft.Chord] = []
-        func flush() {
-            if run.count >= 2 { runs.append(run) }
-            run = []
-        }
-        for chord in columns {
-            if let last = run.last {
-                let sameBar = chord.startTicks / measureTicks == last.startTicks / measureTicks
-                let joined = chord.startTicks == last.endTicks
-                if !sameBar || !joined || run.count == 4 { flush() }
-            }
-            run.append(chord)
-        }
-        flush()
-        return runs.compactMap { group in
-            guard let first = group.first, let last = group.last,
-                  first.startTicks != last.startTicks else { return nil }
-            return SheetDraft.Slur(track: track, fromTicks: first.startTicks,
-                                   toTicks: last.startTicks)
-        }
+    /// A tick on the source's own grid, on the engraver's grid.
+    private static func sourceTick(_ tick: Int, timeMap: SheetDraft.TimeMap?) -> Int {
+        guard let timeMap else { return tick }
+        return Int((Double(tick) * Double(SheetDraft.ticksPerQuarter)
+            / Double(timeMap.ticksPerQuarter)).rounded())
     }
 
-    /// The ties a track's own symbols ask for: wherever a head says it keeps
-    /// sounding and the very next column carries the same pitch, the two are
-    /// tied. That covers a value split inside a bar and a note held over a
-    /// barline with one rule, instead of two.
-    static func ties(in symbols: [SheetDraft.Symbol], track: Int) -> [SheetDraft.Tie] {
-        let columns = symbols.compactMap { symbol -> SheetDraft.Chord? in
-            if case .chord(let chord) = symbol { return chord }
-            return nil
-        }.sorted { $0.startTicks < $1.startTicks }
-        var result: [SheetDraft.Tie] = []
-        for (index, chord) in columns.enumerated() where index + 1 < columns.count {
-            let next = columns[index + 1]
-            guard next.startTicks == chord.endTicks else { continue }
-            for note in chord.notes where note.tieToNext {
-                guard next.notes.contains(where: { $0.pitch == note.pitch }) else { continue }
-                result.append(SheetDraft.Tie(track: track, pitch: note.pitch,
-                                             fromTicks: chord.startTicks,
-                                             toTicks: next.startTicks))
-            }
+    /// Adds a column, or grows the one already at this moment: two hands can
+    /// strike the same pitch together, and one tick holds one chord.
+    private static func appendColumn(_ bars: inout [Column], at start: Int,
+                                     notes: [Note], quantizer: SheetDraft.Quantizer) {
+        guard !notes.isEmpty else { return }
+        let held = notes.map { quantizer.quantize($0.length) }.max() ?? quantizer.grid
+        var pitches = Set<Int>()
+        for note in notes { pitches.insert(note.pitch) }
+        if let index = bars.lastIndex(where: { $0.start == start }) {
+            bars[index].pitches = Array(Set(bars[index].pitches).union(pitches)).sorted()
+            bars[index].held = max(bars[index].held, held)
+        } else {
+            bars.append(Column(start: start, pitches: pitches.sorted(), held: held))
         }
-        return result
     }
 
     // MARK: page metrics
 
     /// Seven measures to a system and four systems to a page: the
-    /// proportions of an engraved edition rather than a scrolling strip.
-    /// Ten made the page a wall of bars; a waltz breathes at seven.
-    public static let measuresPerSystem = 10
+    /// proportions of an engraved edition rather than a scrolling strip. Ten
+    /// made the page a wall of bars and squeezed the columns until a rest sat
+    /// on a stem; a waltz breathes at seven.
+    public static let measuresPerSystem = 9
     public static let systemsPerPage = 4
     /// How wide a system is, in staff spaces: the paper the sheet is laid
     /// out for, and the width the renderer and the PDF agree on.
-    public static let pageWidth = 86.0
+    public static let pageWidth = 106.0
 
     /// Two staves with air between them, then the gap that separates one
     /// system from the next.
@@ -333,277 +257,6 @@ public enum SheetEngraver {
 
     /// Extra space between pages, in staff spaces, for the renderer.
     public static var pageBreakSpace: Double { pageGap }
-
-    // MARK: the grid
-
-    /// Onset magnetism. A played note lands near the pulse, not on it, and a
-    /// sheet that prints that jitter as sixteenths is a sheet nobody can read:
-    /// an onset within a sixteenth of an eighth belongs to the eighth. Only
-    /// what is genuinely between eighths stays on the sixteenth grid.
-    private static func pulse(_ ticks: Int) -> Int {
-        let quarter = SheetDraft.ticksPerQuarter
-        let tolerance = max(1, quarter / 8)
-        let nearest = Int((Double(ticks) / Double(quarter / 2)).rounded()) * (quarter / 2)
-        return abs(nearest - ticks) <= tolerance ? nearest : ticks
-    }
-
-    private static func snap(_ ticks: Int, to grid: Int) -> Int {
-        Int((Double(ticks) / Double(grid)).rounded()) * grid
-    }
-
-    /// One staff's symbol list: barline, columns, rests filling every gap,
-    /// measure after measure.
-    ///
-    /// A staff holds up to two voices, the way a piano score does: a chord
-    /// struck while the previous one is still sounding belongs to the second
-    /// voice — the same rule MuseScore's MIDI import uses to split a taken
-    /// staff. Voice one stems up and voice two stems down, each voice fills
-    /// its own silences and beams inside its own beats, and that is what turns
-    /// one chord stream into a melody sitting over an accompaniment.
-    private static func staff(events: [[Event]], clef: SheetDraft.Clef,
-                              options: SheetDraft.Options, fifths: Int, track: Int,
-                              groups: inout [SheetDraft.BeamGroup],
-                              nextID: inout Int) -> Staff {
-        let measureTicks = options.measureTicks
-        let gridSmall = max(1, SheetDraft.ticksPerQuarter / 4)
-        let beat = SheetDraft.ticksPerQuarter
-        var result = Staff()
-        let measureCount = events.count
-        for measure in 0..<measureCount {
-            let absolute = measure * measureTicks
-            result.symbols.append(.bar(startTicks: absolute))
-            var indices: [Int] = []
-            // what each voice prints in this bar, in order: a rest in the
-            // sequence closes the beam it interrupts
-            var sequences: [[(isChord: Bool, index: Int)]] = [[], []]
-
-            var grouped: [Int: [Event]] = [:]
-            for event in events[measure] {
-                grouped[event.start, default: []].append(event)
-            }
-            let moments = grouped.keys.sorted()
-            guard !moments.isEmpty else {
-                // an empty bar is one whole rest, centred, not a bar of beats
-                indices.append(result.symbols.count)
-                result.symbols.append(.rest(startTicks: absolute, kind: .whole))
-                result.measures.append(indices)
-                continue
-            }
-
-            // 1. the columns of the bar, then their voices
-            var columns: [(start: Int, notes: [Event], voice: Int)] = []
-            for moment in moments {
-                var notes = grouped[moment] ?? []
-                notes.sort { $0.pitch < $1.pitch }
-                columns.append((moment, notes, 0))
-            }
-            var voiceEnd = [0, 0]
-            for index in columns.indices {
-                let start = columns[index].start
-                let voice = (0..<2).first { voiceEnd[$0] <= start } ?? 0
-                columns[index].voice = voice
-                voiceEnd[voice] = max(voiceEnd[voice],
-                                      start + (columns[index].notes.map(\.duration).max() ?? 0))
-            }
-            let voiceCount = Set(columns.map(\.voice)).count
-
-            var shownAccidentals = Set<String>()
-            for voice in 0..<2 {
-                let mine = columns.indices.filter { columns[$0].voice == voice }
-                if mine.isEmpty {
-                    // a silent upper voice still prints its whole-bar rest,
-                    // above the lower voice's music
-                    if voice == 0, columns.contains(where: { $0.voice == 1 }) {
-                        sequences[0].append((false, result.symbols.count))
-                        indices.append(result.symbols.count)
-                        result.symbols.append(.restVoiced(startTicks: absolute, kind: .whole, voice: 0))
-                    }
-                    continue
-                }
-                var cursor = 0
-                for (position, columnIndex) in mine.enumerated() {
-                    let column = columns[columnIndex]
-                    if column.start > cursor {
-                        for rest in SheetDraft.rests(start: cursor, end: column.start) {
-                            sequences[voice].append((false, result.symbols.count))
-                            indices.append(result.symbols.count)
-                            result.symbols.append(lifted(rest, by: absolute,
-                                                         voice: voiceCount > 1 ? voice : nil))
-                        }
-                    }
-                    let next = position + 1 < mine.count ? columns[mine[position + 1]].start : measureTicks
-                    // The slot this column owns: until the same voice's next
-                    // column, never past the bar. A chord is one vertical
-                    // unit, so every head in it takes the same value. The
-                    // value fills the slot when the player held the key
-                    // through it; a note let go early prints short and rests
-                    // close the bar after it, instead of stretching a
-                    // staccato to the barline.
-                    let slot = max(gridSmall, min(measureTicks - column.start, next - column.start))
-                    let played = min(column.notes.map(\.duration).max() ?? slot, slot)
-                    let value = played * 2 >= slot
-                        ? slot
-                        : max(gridSmall, (played / gridSmall) * gridSmall)
-                    let notes = column.notes.map { note -> Event in
-                        var copy = note
-                        copy.duration = value
-                        return copy
-                    }
-                    // which of these notes is still sounding when the bar
-                    // ends: those get a tie over the barline
-                    let held = Set(notes.filter(\.tied).map(\.pitch))
-                    sequences[voice].append((true, result.symbols.count))
-                    indices.append(result.symbols.count)
-                    result.symbols.append(.chord(chord(from: notes, at: absolute + column.start,
-                                                       clef: clef, fifths: fifths, held: held,
-                                                       shown: &shownAccidentals,
-                                                       voice: voice,
-                                                       polyphonic: voiceCount > 1)))
-                    cursor = max(cursor, column.start + value)
-                }
-                if cursor < measureTicks {
-                    for rest in SheetDraft.rests(start: cursor, end: measureTicks) {
-                        sequences[voice].append((false, result.symbols.count))
-                        indices.append(result.symbols.count)
-                        result.symbols.append(lifted(rest, by: absolute,
-                                                     voice: voiceCount > 1 ? voice : nil))
-                    }
-                }
-            }
-            if indices.isEmpty {
-                indices.append(result.symbols.count)
-                result.symbols.append(.rest(startTicks: absolute, kind: .whole))
-            }
-            result.measures.append(indices)
-
-            // 2. beams, inside the beat and inside the voice
-            for voice in 0..<2 {
-                beam(sequence: sequences[voice], symbols: &result.symbols,
-                     track: track, beat: beat, groups: &groups, nextID: &nextID)
-            }
-        }
-        result.symbols.append(.finalBar(startTicks: measureCount * measureTicks))
-        return result
-    }
-
-    /// Beam the eighths and sixteenths of one voice inside one beat: a rest,
-    /// a barline, a longer note or a new beat closes the group, and four is
-    /// the longest run a beat can hold.
-    private static func beam(sequence: [(isChord: Bool, index: Int)],
-                             symbols: inout [SheetDraft.Symbol], track: Int, beat: Int,
-                             groups: inout [SheetDraft.BeamGroup], nextID: inout Int) {
-        var run: [Int] = []
-        func close() {
-            defer { run = [] }
-            guard run.count >= 2 else { return }
-            var up = true
-            var flags = 1
-            if case .chord(let first) = symbols[run[0]], let stem = first.stems.first {
-                up = stem.up
-                flags = stem.flags
-            }
-            for index in run {
-                if case .chord(let chord) = symbols[index], let stem = chord.stems.first {
-                    flags = max(flags, stem.flags)
-                }
-            }
-            for index in run {
-                guard case .chord(let chord) = symbols[index] else { continue }
-                let stems = chord.stems.map { stem in
-                    SheetDraft.Stem(noteRange: stem.noteRange, up: stem.up,
-                                    flags: max(stem.flags, flags), beamGroupId: nextID)
-                }
-                symbols[index] = .chord(SheetDraft.Chord(startTicks: chord.startTicks,
-                                                         endTicks: chord.endTicks,
-                                                         notes: chord.notes, stems: stems))
-            }
-            groups.append(SheetDraft.BeamGroup(id: nextID, track: track,
-                                               chordIndices: run, up: up, flags: flags))
-            nextID += 1
-        }
-        for entry in sequence {
-            guard entry.isChord, case .chord(let chord) = symbols[entry.index],
-                  let stem = chord.stems.first else { close(); continue }
-            let beamable = stem.flags > 0 && chord.notes.allSatisfy { $0.dots == 0 }
-            guard beamable else { close(); continue }
-            if let last = run.last, case .chord(let previous) = symbols[last],
-               previous.startTicks / beat != chord.startTicks / beat {
-                close()
-            }
-            run.append(entry.index)
-            if run.count == 4 { close() }
-        }
-        close()
-    }
-
-    /// Rests are built bar by bar; the symbol list keeps one timeline for
-    /// the whole piece, so every symbol can be placed the same way. A bar
-    /// with two voices marks its rests so each sits in its own half of the
-    /// staff.
-    private static func lifted(_ symbol: SheetDraft.Symbol, by offset: Int,
-                               voice: Int?) -> SheetDraft.Symbol {
-        guard case .rest(let start, let kind) = symbol else { return symbol }
-        if let voice {
-            return .restVoiced(startTicks: start + offset, kind: kind, voice: voice)
-        }
-        return .rest(startTicks: start + offset, kind: kind)
-    }
-
-    /// One chord from the notes sharing a grid moment.
-    private static func chord(from notes: [Event], at start: Int,
-                              clef: SheetDraft.Clef, fifths: Int,
-                              held: Set<Int> = [],
-                              shown: inout Set<String>,
-                              voice: Int = 0,
-                              polyphonic: Bool = false) -> SheetDraft.Chord {
-        var glyphs: [SheetDraft.NoteGlyph] = []
-        for note in notes {
-            let value = SheetDraft.noteValue(note.duration)
-            let position = clef.position(ofPitch: note.pitch)
-            var accidental = SheetDraft.accidental(pitchClass: ((note.pitch % 12) + 12) % 12,
-                                                   fifths: fifths)
-            // a measure remembers: the same accidental on the same line shows
-            // once, and a line the key already spells carries none
-            if accidental != .none {
-                let key = "\(position)-\(accidental)"
-                if shown.contains(key) {
-                    accidental = .none
-                } else {
-                    shown.insert(key)
-                }
-            }
-            glyphs.append(SheetDraft.NoteGlyph(
-                pitch: note.pitch,
-                staffPosition: position,
-                head: value.head,
-                dots: value.dots,
-                accidental: accidental,
-                ledgers: SheetDraft.ledgers(forPosition: position),
-                tieToNext: held.contains(note.pitch)))
-        }
-        var stems: [SheetDraft.Stem] = []
-        let values = notes.map { SheetDraft.noteValue($0.duration) }
-        if values.allSatisfy({ $0.head == .whole }) {
-            stems = []
-        } else {
-            // One stem per chord: the shortest printed value sets the flags.
-            // In a bar with two voices the voice decides the direction, the
-            // way polyphony is written; with one voice the classic rule does.
-            var shortest = values[0]
-            for value in values where value.flags > shortest.flags { shortest = value }
-            let positions = glyphs.map(\.staffPosition)
-            let up = polyphonic
-                ? voice == 0
-                : positions.reduce(0, +) / max(1, positions.count) < 4
-            stems = [SheetDraft.Stem(noteRange: 0..<notes.count, up: up,
-                                     flags: shortest.flags, beamGroupId: nil)]
-        }
-        // the events carry bar-local starts, this chord carries an absolute
-        // one: the end is the start plus the longest played length
-        let longest = notes.map(\.duration).max() ?? 0
-        return SheetDraft.Chord(startTicks: start, endTicks: start + longest,
-                               notes: glyphs, stems: stems)
-    }
 
     // MARK: systems
 

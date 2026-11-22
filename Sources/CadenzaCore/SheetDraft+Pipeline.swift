@@ -9,9 +9,10 @@ extension SheetDraft {
     /// spans arrive in ticks ( pedal down to release); they engrave as
     /// Ped./release marks under the bass staff.
     public static func draft(notes: [NoteEvent] /* live stream */, options: Options, pageWidth: Double = 88,
-                             pedals: [PedalSpan] = [], originTicks: Int? = nil) -> Result {
+                             pedals: [PedalSpan] = [], originTicks: Int? = nil,
+                             timeMap: TimeMap? = nil) -> Result {
         SheetEngraver.engrave(notes: notes, options: options, pageWidth: pageWidth,
-                              pedals: pedals, originTicks: originTicks)
+                              pedals: pedals, originTicks: originTicks, timeMap: timeMap)
     }
 
     /// The options a performance itself argues for: tempo from the pulse of

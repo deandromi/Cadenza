@@ -653,33 +653,110 @@ layoutFixture: do {
 // MARK: SheetDraft (the live-stream engraving process)
 
 do {
-    // Chordify: onsets within the 40 ms window collapse onto the chain head.
+    // The combine window itself: a rolled chord is one chord, and the window
+    // the engraver folds rolls with is the option's own milliseconds.
     let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
-    let notes = [
-        SheetDraft.RunningNote(start: 0, duration: 240, pitch: 60),
-        SheetDraft.RunningNote(start: 30, duration: 240, pitch: 64),
-        SheetDraft.RunningNote(start: 200, duration: 240, pitch: 67),
-    ]
-    let chordified = SheetDraft.chordify(notes, options: options)
-    expect(chordified[0].start == chordified[1].start, "onsets within the combine interval collapse")
-    expect(chordified[2].start > chordified[1].start, "an onset past the interval keeps its own time")
     expect(SheetDraft.ticks(ms: 40, options: options) == 38, "40 ms is 38 ticks at 120 bpm")
 }
 
 do {
-    // Duration rounding: notes stretch to the next onset on a quarter grid.
-    var notes = [
-        SheetDraft.RunningNote(start: 0, duration: 120, pitch: 60),
-        SheetDraft.RunningNote(start: 480, duration: 120, pitch: 62),
+    // What the rhythm stage promises, on a performance of 3/4 waltzes: a bass
+    // note on every downbeat, chords on the weak beats, and a melody held over
+    // the moving inner part. Every voice must tile every measure exactly —
+    // that is the invariant the whole engraver leans on — and what is drawn
+    // must be the value the engraver decided.
+    let options = SheetDraft.Options(bpm: 120, numerator: 3, denominator: 4)
+    var notes: [NoteEvent] = []
+    for bar in 0..<4 {
+        let start = Double(bar) * 1.5          // 3/4 at 120 bpm
+        notes.append(NoteEvent(pitch: 43, velocity: 90, onset: start, duration: 0.4))
+        notes.append(NoteEvent(pitch: 55, velocity: 70, onset: start + 0.5, duration: 0.4))
+        notes.append(NoteEvent(pitch: 59, velocity: 70, onset: start + 1.0, duration: 0.4))
+        notes.append(NoteEvent(pitch: 79, velocity: 90, onset: start, duration: 1.4))
+        notes.append(NoteEvent(pitch: 76, velocity: 70, onset: start + 1.0, duration: 0.4))
+    }
+    let waltz = SheetDraft.draft(notes: notes, options: options)
+    let issues = SheetDraft.rhythmAudit(waltz)
+    expect(issues.isEmpty, "every voice tiles its measure exactly: \(issues.prefix(3))")
+}
+
+do {
+    // A value that would hide a beat is written as tied pieces: a note from
+    // the first beat of 3/4 to the middle of the third is a half tied to an
+    // eighth, never a dotted half that swallows the beat in between.
+    let options = SheetDraft.Options(bpm: 120, numerator: 3, denominator: 4)
+    let notes = [
+        NoteEvent(pitch: 72, velocity: 80, onset: 0.0, duration: 1.25),
+        NoteEvent(pitch: 74, velocity: 80, onset: 1.25, duration: 0.25),
     ]
-    notes = SheetDraft.roundDurations(notes)
-    expect(notes[0].duration == 480, "a note to the next quarter fills a quarter")
-    var pair = [
-        SheetDraft.RunningNote(start: 0, duration: 240, pitch: 60),
-        SheetDraft.RunningNote(start: 240, duration: 240, pitch: 64),
+    let split = SheetDraft.draft(notes: notes, options: options)
+    let rooms = split.topTrack.compactMap { symbol -> (Int, Int)? in
+        guard case .chord(let chord) = symbol, chord.notes.contains(where: { $0.pitch == 72 }) else { return nil }
+        return (chord.startTicks, chord.endTicks - chord.startTicks)
+    }
+    expect(rooms.count == 2 && rooms[0] == (0, 960) && rooms[1] == (960, 240)
+           && split.ties.count == 1,
+           "a held value is split where it would hide a beat, and tied: \(rooms)")
+}
+
+do {
+    // A note's value is the room it owns in its own voice, not the length the
+    // player happened to hold. A key released a hair early still fills its
+    // quarter; a key let go halfway through prints short and rests close the
+    // bar behind it.
+    let options = SheetDraft.Options(bpm: 120, numerator: 3, denominator: 4)
+    let held = [
+        NoteEvent(pitch: 72, velocity: 80, onset: 0.0, duration: 0.47),
+        NoteEvent(pitch: 74, velocity: 80, onset: 0.5, duration: 0.47),
+        NoteEvent(pitch: 76, velocity: 80, onset: 1.0, duration: 0.47),
     ]
-    pair = SheetDraft.roundDurations(pair)
-    expect(pair[0].duration == 240, "an adjacent equal pair stays intact for beaming")
+    let full = SheetDraft.draft(notes: held, options: options)
+    let quarters = full.topTrack.filter { symbol in
+        if case .chord(let chord) = symbol { return chord.endTicks - chord.startTicks == 480 }
+        return false
+    }
+    let detached = [
+        NoteEvent(pitch: 72, velocity: 80, onset: 0.0, duration: 0.15),
+        NoteEvent(pitch: 74, velocity: 80, onset: 0.5, duration: 0.5),
+    ]
+    let short = SheetDraft.draft(notes: detached, options: options)
+    let shortValues = short.topTrack.compactMap { symbol -> Int? in
+        guard case .chord(let chord) = symbol else { return nil }
+        return chord.endTicks - chord.startTicks
+    }
+    let restsAfter = short.topTrack.filter { symbol in
+        if case .rest(_, let kind) = symbol { return kind == .eighth }
+        return false
+    }
+    expect(quarters.count == 3 && shortValues.first == 120 && !restsAfter.isEmpty,
+           "a value is the room a note owns: a hair-early lift fills its quarter, "
+           + "a note let go early prints short with a rest closing the room (\(shortValues))")
+}
+
+do {
+    // A file's tempo map, not its nominal tempo, is the notation clock: two
+    // octaves of tempo apart, the same two attacks are a quarter apart in the
+    // file's ticks and an eighth apart once the seconds are read at a single
+    // tempo. The sheet must engrave the file's own reading.
+    let map = SheetDraft.TimeMap(ticksPerQuarter: 480,
+                                 tempoChanges: [(tick: 0, bpm: 120), (tick: 1920, bpm: 60)])
+    let first = map.seconds(at: 1920)
+    let second = map.seconds(at: 2400)
+    let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
+    let notes = [
+        NoteEvent(pitch: 72, velocity: 80, onset: first, duration: second - first),
+        NoteEvent(pitch: 74, velocity: 80, onset: second, duration: 0.4),
+    ]
+    let filed = SheetDraft.draft(notes: notes, options: options, originTicks: 0, timeMap: map)
+    let plain = SheetDraft.draft(notes: notes, options: options)
+    func room(_ result: SheetDraft.Result) -> Int? {
+        result.topTrack.compactMap { symbol -> Int? in
+            guard case .chord(let chord) = symbol, chord.notes.contains(where: { $0.pitch == 72 }) else { return nil }
+            return chord.endTicks - chord.startTicks
+        }.first
+    }
+    expect(room(filed) == 480 && room(plain) == 960,
+           "the file's own tempo map sets the room between attacks (\(room(filed) ?? -1) vs \(room(plain) ?? -1))")
 }
 
 do {
@@ -796,7 +873,9 @@ do {
     var events: [NoteEvent] = []
     for i in 0..<4 {
         let onset = 0.25 + Double(i) * 0.25
-        events.append(NoteEvent(pitch: 72, velocity: 80, onset: onset, duration: 0.15))
+        // held for its eighth: the value now comes from the room a note owns,
+        // so a clipped attack would honestly print as a sixteenth
+        events.append(NoteEvent(pitch: 72, velocity: 80, onset: onset, duration: 0.25))
     }
     let result = SheetDraft.draft(notes: events, options: options)
     expect(result.beamGroups.contains { $0.chordIndices.count == 2 },

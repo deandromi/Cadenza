@@ -61,10 +61,13 @@ public enum SheetDraft {
         public var numerator: Int
         /// Time signature bottom: the note value that gets the beat.
         public var denominator: Int
-        /// Onsets within this many milliseconds chordify together.
+        /// Onsets within this many milliseconds chordify together. A rolled
+        /// chord spreads its notes over up to ~90 ms; a sixteenth line at a
+        /// walking tempo spreads them further apart than that, so this is the
+        /// window that folds a roll back into the chord it is.
         public var combineMillis: Double
 
-        public init(bpm: Double = 120, numerator: Int = 4, denominator: Int = 4, combineMillis: Double = 40) {
+        public init(bpm: Double = 120, numerator: Int = 4, denominator: Int = 4, combineMillis: Double = 90) {
             precondition(numerator > 0)
             precondition([1, 2, 4, 8, 16, 32].contains(denominator), "denominator must be a note value")
             self.bpm = bpm
@@ -161,12 +164,16 @@ public enum SheetDraft {
         public let endTicks: Int
         public let notes: [NoteGlyph]
         public let stems: [Stem]
+        /// The voice the chord belongs to: two voices on one staff each keep
+        /// their own timeline, and the rhythm audit needs to know which.
+        public let voice: Int
 
-        init(startTicks: Int, endTicks: Int, notes: [NoteGlyph], stems: [Stem]) {
+        init(startTicks: Int, endTicks: Int, notes: [NoteGlyph], stems: [Stem], voice: Int = 0) {
             self.startTicks = startTicks
             self.endTicks = endTicks
             self.notes = notes
             self.stems = stems
+            self.voice = voice
         }
 
         /// A copy with one stem retagged (beam groups and direction swaps).
@@ -176,7 +183,7 @@ public enum SheetDraft {
             stems[stemIndex] = Stem(noteRange: stems[stemIndex].noteRange,
                                     up: up, flags: flags, beamGroupId: groupId)
             return Chord(startTicks: startTicks, endTicks: endTicks,
-                         notes: notes, stems: stems)
+                         notes: notes, stems: stems, voice: voice)
         }
     }
 

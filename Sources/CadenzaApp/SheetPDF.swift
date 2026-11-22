@@ -14,10 +14,12 @@ enum SheetPDF {
     static func write(notes: [NoteEvent], options: SheetDraft.Options? = nil,
                       originTicks: Int? = nil, title: String? = nil,
                       composer: String? = nil, pedals: [SheetDraft.PedalSpan] = [],
+                      timeMap: SheetDraft.TimeMap? = nil,
                       to url: URL) throws {
         let result = SheetDraft.draft(
             notes: notes, options: options ?? SheetDraft.inferredOptions(notes: notes),
-            pageWidth: SheetEngraver.pageWidth, pedals: pedals, originTicks: originTicks)
+            pageWidth: SheetEngraver.pageWidth, pedals: pedals, originTicks: originTicks,
+            timeMap: timeMap)
         try write(result: result, title: title, composer: composer, to: url)
     }
 
