@@ -99,6 +99,14 @@ public enum SheetDraft {
         public func position(ofPitch pitch: Int) -> Int {
             ScoreLayout.diatonicStep(pitch) - ScoreLayout.diatonicStep(bottomLinePitch)
         }
+
+        /// Staff position of a *spelled* note: the step its letter sits on,
+        /// which is not the step its pitch class would take in a sharp key.
+        /// A flat key writes A flat on the A line, where a sharp spelling
+        /// would put a G sharp on the G line, a second lower.
+        public func position(ofStep step: Int) -> Int {
+            step - ScoreLayout.diatonicStep(bottomLinePitch)
+        }
     }
 
     public enum Accidental: Sendable, Equatable, Hashable {
@@ -409,6 +417,43 @@ public enum SheetDraft {
     }
 
     /// The accidental a played pitch class needs in a key signature.
+    /// How a key writes a pitch: the letter it sits on, and the accidental it
+    /// carries. Positions are steps above C0, so callers can compare them.
+    ///
+    /// The spelling follows the key, the way a player reads it: a flat key
+    /// writes A flat where a sharp key writes G sharp, and the two land on
+    /// different lines. The accidental is only printed when the key signature
+    /// does not already say it.
+    public static func spelling(ofPitch pitch: Int, fifths: Int) -> (step: Int, accidental: Accidental) {
+        let naturals = [0, 2, 4, 5, 7, 9, 11]
+        let octave = pitch / 12 - 1
+        let pc = ((pitch % 12) + 12) % 12
+        var letter = 0
+        for index in 0..<7 where naturals[index] <= pc { letter = index }
+        if naturals[letter] != pc {
+            // a black key: flat keys spell it as the letter above, and B flat
+            // is written as a B even in sharp keys, the way scores always do
+            if fifths < 0 || pc == 10 { letter = (letter + 1) % 7 }
+        }
+        let delta = pc - naturals[letter]
+        var key: [Int: Int] = [:]
+        if fifths > 0 {
+            for (index, sharpLetter) in [3, 0, 4, 1, 5, 2, 6].prefix(min(7, fifths)).enumerated() {
+                _ = index
+                key[sharpLetter] = 1
+            }
+        } else if fifths < 0 {
+            for flatLetter in [6, 2, 5, 1, 4, 0, 3].prefix(min(7, -fifths)) {
+                key[flatLetter] = -1
+            }
+        }
+        let keyDelta = key[letter] ?? 0
+        let accidental: Accidental = delta == keyDelta
+            ? .none
+            : (delta == 0 ? .natural : (delta > 0 ? .sharp : .flat))
+        return (octave * 7 + letter, accidental)
+    }
+
     public static func accidental(pitchClass: Int, fifths: Int) -> Accidental {
         let pc = ((pitchClass % 12) + 12) % 12
         if majorScalePitchClasses(fifths).contains(pc) { return .none }

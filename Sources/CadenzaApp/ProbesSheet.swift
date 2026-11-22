@@ -387,7 +387,8 @@ extension SmokeMain {
                 switch placed.symbol {
                 case .chord(let chord):
                     let notes = chord.notes.map { "\($0.pitch)@\($0.staffPosition)/\($0.head)/dot\($0.dots)/acc\($0.accidental)" }
-                    return "chord t\(chord.startTicks)-\(chord.endTicks) [\(notes.joined(separator: " "))]"
+                    let stems = chord.stems.map { "\($0.up ? "up" : "down")\($0.flags)/\($0.noteRange)" }
+                    return "chord t\(chord.startTicks)-\(chord.endTicks) [\(notes.joined(separator: " "))] stems[\(stems.joined(separator: " "))]"
                 case .rest(let t, let kind): return "rest t\(t) \(kind)"
                 case .restVoiced(let t, let kind, let voice): return "rest t\(t) \(kind) v\(voice)"
                 case .bar(let t): return "bar t\(t)"

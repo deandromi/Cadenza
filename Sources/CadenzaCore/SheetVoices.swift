@@ -293,9 +293,9 @@ extension SheetEngraver {
             let value = SheetDraft.noteValue(length)
             var glyphs: [SheetDraft.NoteGlyph] = []
             for pitch in pitches.sorted() {
-                let position = clef.position(ofPitch: pitch)
-                var accidental = SheetDraft.accidental(pitchClass: ((pitch % 12) + 12) % 12,
-                                                      fifths: fifths)
+                let spelled = SheetDraft.spelling(ofPitch: pitch, fifths: fifths)
+                let position = clef.position(ofStep: spelled.step)
+                var accidental = spelled.accidental
                 // a measure remembers: the same accidental on the same line
                 // shows once, and a line the key already spells carries none
                 if accidental != .none {

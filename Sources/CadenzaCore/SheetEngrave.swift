@@ -234,7 +234,7 @@ public enum SheetEngraver {
     /// proportions of an engraved edition rather than a scrolling strip. Ten
     /// made the page a wall of bars and squeezed the columns until a rest sat
     /// on a stem; a waltz breathes at seven.
-    public static let measuresPerSystem = 9
+    public static let measuresPerSystem = 12
     public static let systemsPerPage = 4
     /// How wide a system is, in staff spaces: the paper the sheet is laid
     /// out for, and the width the renderer and the PDF agree on.
@@ -408,7 +408,7 @@ public enum SheetEngraver {
             // squeezed rather than allowed to overflow.
             let naturalTotal = naturals.reduce(0, +)
             let stretch = naturalTotal > 0
-                ? min(max(usable / naturalTotal, 0.92), 2.3) : 1.0
+                ? min(max(usable / naturalTotal, 0.98), 1.3) : 1.0
             let widths = naturals.map { $0 * stretch }
 
             var topPlaced: [SheetDraft.Placed] = []

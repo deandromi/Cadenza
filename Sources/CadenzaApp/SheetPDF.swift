@@ -20,11 +20,25 @@ enum SheetPDF {
             notes: notes, options: options ?? SheetDraft.inferredOptions(notes: notes),
             pageWidth: SheetEngraver.pageWidth, pedals: pedals, originTicks: originTicks,
             timeMap: timeMap)
-        try write(result: result, title: title, composer: composer, to: url)
+        // A file name is the only title page a performance has: build the
+        // block from it rather than printing the file name as a title.
+        var block = SheetTitle.inferred(
+            fileTitle: nil,
+            fileName: url.deletingPathExtension().lastPathComponent,
+            meter: (result.options.numerator, result.options.denominator),
+            bpm: result.options.bpm)
+        if let composer, !composer.isEmpty { block.composer = composer }
+        try write(result: result, block: block, to: url)
     }
 
     static func write(result: SheetDraft.Result, title: String? = nil,
                       composer: String? = nil, to url: URL) throws {
+        var block = SheetTitle.inferred(fileTitle: title, fileName: title ?? "")
+        if let composer, !composer.isEmpty { block.composer = composer }
+        try write(result: result, block: block, to: url)
+    }
+
+    static func write(result: SheetDraft.Result, block: SheetTitle?, to url: URL) throws {
         let gap = CGFloat(ScoreLayout.lineGap)
         let rowHeight = CGFloat(result.rowHeight) * gap
         // A printed score is A4 at an engraved scale: a staff space of about
@@ -39,7 +53,7 @@ enum SheetPDF {
         // An edition opens with the title, the composer and the tempo; the
         // systems start below them. The space is kept on every page so the
         // page breaks stay identical, which is how a printed part reads.
-        let header: CGFloat = title == nil ? 0 : 78
+        let header: CGFloat = block == nil ? 0 : 104
         let perPage = max(1, Int(((pageHeight - 2 * margin - header) / (rowHeight * scale)).rounded(.down)))
         let modelMargin = margin / scale
         let modelWidth = drawnWidth + 2 * modelMargin
@@ -86,9 +100,15 @@ enum SheetPDF {
             // title block and folio, drawn in page points
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
-            if page == 0, let title {
-                drawHeader(title: title, composer: composer, bpm: result.options.bpm,
-                           pageWidth: pageWidth, pageHeight: pageHeight, margin: margin)
+            if page == 0, let block {
+                drawHeader(block, pageWidth: pageWidth,
+                           pageHeight: pageHeight, margin: margin)
+                // above the first system, at the left of the music; the
+                // glyph's ink rises about 20 pt above its baseline, so the
+                // baseline hangs below the system's top edge by that much less
+                // the gap an edition leaves over the staff
+                drawTempo(result.options.bpm, x: margin + 2,
+                          baselineY: pageHeight - margin - header - 13)
             }
             if pageCount > 1 {
                 drawFolio(page + 1, pageWidth: pageWidth, margin: margin)
@@ -105,45 +125,77 @@ enum SheetPDF {
 
     // MARK: page furniture
 
-    /// The title block of the first page: name, subtitle, composer and the
-    /// metronome mark an edition puts above the first system.
-    private static func drawHeader(title: String, composer: String?, bpm: Double,
+    /// The title block of the first page, set the way an edition sets it: the
+    /// title centred in the italic serif, the movement under it, the composer
+    /// at the left margin and the credit with the dates at the right. The
+    /// names come from `SheetTitle`, which reads the file's own name and never
+    /// invents a credit it cannot find.
+    private static func drawHeader(_ block: SheetTitle,
                                    pageWidth: CGFloat, pageHeight: CGFloat, margin: CGFloat) {
         let ink = NSColor.black
-        let serif = PaperTheme.displaySerif(23, weight: .semibold)
-            ?? NSFont.systemFont(ofSize: 23, weight: .semibold)
-        let titleAttributes: [NSAttributedString.Key: Any] = [.font: serif, .foregroundColor: ink]
-        let size = (title as NSString).size(withAttributes: titleAttributes)
+        let roman = PaperTheme.displaySerif(24, weight: .regular)
+        let italic = NSFontManager.shared.convert(roman, toHaveTrait: .italicFontMask)
+        let titleAttributes: [NSAttributedString.Key: Any] = [.font: italic, .foregroundColor: ink]
+        let size = (block.title as NSString).size(withAttributes: titleAttributes)
         let titleY = pageHeight - margin - size.height
-        (title as NSString).draw(at: NSPoint(x: (pageWidth - size.width) / 2, y: titleY),
-                                 withAttributes: titleAttributes)
+        (block.title as NSString).draw(at: NSPoint(x: (pageWidth - size.width) / 2, y: titleY),
+                                       withAttributes: titleAttributes)
 
-        var lineY = titleY - 16
-        if let composer, !composer.isEmpty {
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 10, weight: .regular),
-                .foregroundColor: NSColor.black.withAlphaComponent(0.72),
-            ]
-            let composerSize = (composer as NSString).size(withAttributes: attributes)
-            (composer as NSString).draw(at: NSPoint(x: (pageWidth - composerSize.width) / 2, y: lineY),
-                                        withAttributes: attributes)
-            lineY -= 14
+        let subtitleY = titleY - 20
+        let partAttributes: [NSAttributedString.Key: Any] = [
+            .font: PaperTheme.displaySerif(12.5, weight: .regular),
+            .foregroundColor: ink,
+        ]
+        if let subtitle = block.subtitle {
+            let partSize = (subtitle as NSString).size(withAttributes: partAttributes)
+            (subtitle as NSString).draw(at: NSPoint(x: (pageWidth - partSize.width) / 2, y: subtitleY),
+                                        withAttributes: partAttributes)
         }
 
-        // the metronome mark sits at the left margin, where a player looks
+        // the composer at the left margin, the credit and its dates at the
+        // right: the two ends of the line an edition puts under the title
+        let creditAttributes: [NSAttributedString.Key: Any] = [
+            .font: PaperTheme.displaySerif(10, weight: .regular),
+            .foregroundColor: ink,
+        ]
+        let datesAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9, weight: .regular),
+            .foregroundColor: ink.withAlphaComponent(0.75),
+        ]
+        let creditY = subtitleY - 18
+        if let composer = block.composer {
+            (composer as NSString).draw(at: NSPoint(x: margin, y: creditY),
+                                        withAttributes: creditAttributes)
+        }
+        if let credit = block.credit {
+            let creditSize = (credit as NSString).size(withAttributes: creditAttributes)
+            (credit as NSString).draw(at: NSPoint(x: pageWidth - margin - creditSize.width,
+                                                  y: creditY),
+                                      withAttributes: creditAttributes)
+        }
+        if let dates = block.dates {
+            let datesSize = (dates as NSString).size(withAttributes: datesAttributes)
+            (dates as NSString).draw(at: NSPoint(x: pageWidth - margin - datesSize.width,
+                                                 y: creditY - 13),
+                                     withAttributes: datesAttributes)
+        }
+    }
+
+    /// The metronome mark an edition sets at the left of the music, above the
+    /// first system: the one piece of the performance's arithmetic that a score
+    /// states outright.
+    private static func drawTempo(_ bpm: Double, x: CGFloat, baselineY: CGFloat) {
+        let ink = NSColor.black
         // U+ECA5 is the pre-composed metronome mark for a quarter note
         let quarter = String(UnicodeScalar(0xECA5)!)
-        let musicAttributes: [NSAttributedString.Key: Any] = [
-            .font: MusicFont.font(size: 13), .foregroundColor: ink,
-        ]
-        let markAttributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 10, weight: .regular), .foregroundColor: ink,
-        ]
-        // One string, two fonts: the note glyph and its number share a
-        // baseline, the way a metronome mark is set.
-        let mark = NSMutableAttributedString(string: quarter, attributes: musicAttributes)
-        mark.append(NSAttributedString(string: " = \(Int(bpm.rounded()))", attributes: markAttributes))
-        mark.draw(at: NSPoint(x: margin, y: lineY))
+        let mark = NSMutableAttributedString(
+            string: quarter,
+            attributes: [.font: MusicFont.font(size: 12), .foregroundColor: ink])
+        mark.append(NSAttributedString(
+            string: " = \(Int(bpm.rounded()))",
+            attributes: [.font: NSFont.systemFont(ofSize: 9.5, weight: .regular),
+                         .foregroundColor: ink]))
+        mark.draw(at: NSPoint(x: x, y: baselineY))
     }
 
     private static func drawFolio(_ number: Int, pageWidth: CGFloat, margin: CGFloat) {

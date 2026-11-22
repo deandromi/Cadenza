@@ -187,6 +187,7 @@ final class ScoreView: NSView {
             drawSlurs(row: row, track: 0, yOn: yOnTreble, gap: gap, ink: ink)
             drawSlurs(row: row, track: 1, yOn: yOnBass, gap: gap, ink: ink)
 
+
         }
     }
 
@@ -250,46 +251,27 @@ final class ScoreView: NSView {
                 break
             }
         }
-        let headHalf = 0.62 * gap
+        let headHalf = 0.58 * gap
         for link in ties {
             guard let fromX = xs[link.fromTicks], let toX = xs[link.toTicks],
                   let chord = chords[link.fromTicks],
                   let note = chord.notes.first(where: { $0.pitch == link.pitch }) else { continue }
-            // A tie clears the head it leaves and the head it reaches: drawn
-            // at head level it reads as a slur between two different notes,
-            // which is exactly what it is not.
+            // A tie is one curve from head to head, never two halves: splitting
+            // it at a barline is how an edition joins notes across a *system*
+            // break, and inside a line it reads as a bracket.
             let y = yOn(note.staffPosition)
-            // Inside a chord the outer notes bow outward, so two ties a third
-            // apart never land on the same line of the staff.
-            let positions = chord.notes.map(\.staffPosition)
-            let middle = Double((positions.min() ?? 0) + (positions.max() ?? 0)) / 2
-            let away: CGFloat = positions.count == 1
-                ? (y > yOn(4) ? 1 : -1)
-                : (Double(note.staffPosition) > middle ? -1 : 1)
-            let baseline = y + away * 0.62 * gap
-            let bow: CGFloat = away * 0.36 * gap
-            let startX = fromX + headHalf + 0.1 * gap
-            let endX = toX - headHalf - 0.1 * gap
+            // Opposite the stem, the way a tie is set: a chord whose stems
+            // rise carries its ties above the notes, and one that falls below.
+            let stemsUp = chord.stems.first?.up ?? (note.staffPosition < 4)
+            let away: CGFloat = stemsUp ? -1 : 1
+            let baseline = y + away * 0.56 * gap
+            let bow: CGFloat = away * 0.34 * gap
+            let startX = fromX + headHalf + 0.06 * gap
+            let endX = toX - headHalf - 0.06 * gap
             guard endX > startX else { continue }
-            // Two halves, one either side of the barline, the way a score sets
-            // a tie across a system break: the curve belongs to the measure it
-            // leaves and to the one it enters, so it never sails over the
-            // chords in between.
-            let line = result.options.measureTicks
-            let barTick = (link.toTicks / max(1, line)) * line
-            if let barX = barXs[barTick], barX > startX, barX < endX {
-                let leftEnd = min(barX - 0.15 * gap, endX)
-                tie(from: NSPoint(x: startX, y: baseline), to: NSPoint(x: leftEnd, y: baseline),
-                    bow: bow, gap: gap, ink: ink)
-                let rightStart = max(barX + 0.15 * gap, startX)
-                if endX - rightStart > 0.6 * gap {
-                    tie(from: NSPoint(x: rightStart, y: baseline), to: NSPoint(x: endX, y: baseline),
-                        bow: bow, gap: gap, ink: ink)
-                }
-            } else {
-                tie(from: NSPoint(x: startX, y: baseline), to: NSPoint(x: endX, y: baseline),
-                    bow: bow, gap: gap, ink: ink)
-            }
+            tie(from: NSPoint(x: startX, y: baseline),
+                to: NSPoint(x: endX, y: baseline),
+                bow: bow, gap: gap, ink: ink)
         }
     }
 
