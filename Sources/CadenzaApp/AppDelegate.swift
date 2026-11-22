@@ -77,6 +77,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         )
         window.title = "Cadenza"
         window.minSize = NSSize(width: 900, height: 620)
+        // the paper is the window: no title bar skin over it and no
+        // separator line, just the traffic lights floating on the room. The
+        // window's own background is the paper's top wash, so the strip above
+        // the content reads as the same sheet.
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.backgroundColor = PaperTheme.parchment
         // the delegate owns this window; AppKit must not release it on close
         window.isReleasedWhenClosed = false
         window.contentView = makeContent(size: size)
@@ -280,7 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         screen?.presentOverlay(content, size: NSSize(width: 440, height: 300))
     }
 
-    /// The session archive: every kept session, in the one window, on frozen
+    /// The session archive: every kept session, in the one window, on
     /// glass. Its door belongs to the panel, its rows to the store.
     private func openSessions() {
         guard let screen else { return }

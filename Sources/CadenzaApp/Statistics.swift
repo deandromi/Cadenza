@@ -104,12 +104,11 @@ final class StatsController: NSObject {
         content(sessions: sessions, size: size)
     }
 
+    /// The card is the lens: the section draws text and rules on the
+    /// material instead of painting paper over it.
     private func content(sessions: [SessionRecord], size: NSSize) -> NSView {
         let root = NSView(frame: NSRect(origin: .zero, size: size))
         root.autoresizingMask = [.width, .height]
-        let paper = PaperView()
-        paper.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(paper)
 
         let rows = NSStackView()
         rows.orientation = .vertical
@@ -166,10 +165,6 @@ final class StatsController: NSObject {
         }
 
         NSLayoutConstraint.activate([
-            paper.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            paper.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            paper.topAnchor.constraint(equalTo: root.topAnchor),
-            paper.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             rows.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             rows.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             rows.topAnchor.constraint(equalTo: root.topAnchor),

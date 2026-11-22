@@ -128,7 +128,7 @@ final class SheetMusicController: NSObject {
         meterPopup = nil
         emptyLabel = nil
         presented = true
-        let root = makeContent(size: size)
+        let root = makeContent(size: size, paper: false)
         redraft()
         return root
     }
@@ -227,13 +227,21 @@ final class SheetMusicController: NSObject {
 
     // MARK: content
 
-    private func makeContent(size: NSSize) -> NSView {
+    private func makeContent(size: NSSize, paper opaque: Bool = true) -> NSView {
         let root = NSView(frame: NSRect(origin: .zero, size: size))
         root.autoresizingMask = [.width, .height]
 
-        let paper = PaperView()
-        paper.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(paper)
+        if opaque {
+            let paper = PaperView()
+            paper.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(paper)
+            NSLayoutConstraint.activate([
+                paper.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                paper.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                paper.topAnchor.constraint(equalTo: root.topAnchor),
+                paper.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            ])
+        }
 
         let bar = makeChoicesBar()
         root.addSubview(bar)
@@ -244,11 +252,6 @@ final class SheetMusicController: NSObject {
         contentHost = host
 
         NSLayoutConstraint.activate([
-            paper.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            paper.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            paper.topAnchor.constraint(equalTo: root.topAnchor),
-            paper.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-
             bar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
             bar.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
             bar.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
@@ -262,14 +265,11 @@ final class SheetMusicController: NSObject {
         return root
     }
 
-    /// One glass lens carrying the framing choices.
+    /// The framing choices, carried on the card's own glass and closed with a
+    /// hairline: a second lens here would be glass on glass.
     private func makeChoicesBar() -> NSView {
-        let container = NSGlassEffectContainerView(frame: .zero)
+        let container = NSView(frame: .zero)
         container.translatesAutoresizingMaskIntoConstraints = false
-
-        let lens = makeGlassBackdrop(cornerRadius: 20, interactive: true)
-        lens.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(lens)
 
         let row = NSStackView()
         row.orientation = .horizontal
@@ -279,15 +279,17 @@ final class SheetMusicController: NSObject {
         row.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(row)
 
+        let rule = HairlineView()
+        container.addSubview(rule)
+
         NSLayoutConstraint.activate([
-            lens.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            lens.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            lens.topAnchor.constraint(equalTo: container.topAnchor),
-            lens.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             row.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             row.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             row.topAnchor.constraint(equalTo: container.topAnchor),
             row.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            rule.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            rule.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            rule.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
 
         let tempo = makePopup(items: stride(from: 40.0, through: 208.0, by: 4.0).map { "\(Int($0)) bpm" })
@@ -305,9 +307,9 @@ final class SheetMusicController: NSObject {
         meterPopup = meter
 
         let close = NSButton(title: "Close", target: self, action: #selector(closeTapped))
-        close.isBordered = false
-        close.font = .systemFont(ofSize: 13, weight: .medium)
-        close.contentTintColor = PaperTheme.secondaryInk
+        close.bezelStyle = .glass
+        close.borderShape = .capsule
+        close.controlSize = .regular
 
         for item in [tempo, meter] {
             let caption = item == tempo ? "Tempo" : "Meter"

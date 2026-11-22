@@ -41,15 +41,13 @@ final class ControlPanelLens: NSView {
     private var loopRow: NSStackView?
     private var metronomePopover: NSPopover?
     private var latestSessions: [SessionRecord] = []
-    /// A tap on the panel's paper asks the shell for the session archive;
+    /// A tap on the panel's glass asks the shell for the session archive;
     /// buttons keep their own clicks as named shortcuts.
     var onRequestExpand: (() -> Void)?
-    private let backdrop: NSGlassEffectView
+    private let backdrop = NSGlassEffectView()
 
     init(shell: PracticeShell) {
         self.shell = shell
-        backdrop = makeGlassBackdrop(cornerRadius: 18, interactive: true)
-
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
@@ -100,8 +98,13 @@ final class ControlPanelLens: NSView {
         scrubSlider.action = #selector(scrubChanged)
         scrubSlider.translatesAutoresizingMaskIntoConstraints = false
         scrubSlider.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        // the lens carries the rows: the content sits inside the material,
+        // in the view AppKit guarantees is within the glass
+        backdrop.style = .regular
+        backdrop.cornerRadius = LensRadius.panel
+        setGlassInteractive(backdrop, true)
+        backdrop.contentView = rows
         addSubview(backdrop)
-        addSubview(rows)
         rows.addArrangedSubview(Self.captionedRow("Session", timeLabel))
         rows.addArrangedSubview(playbackButtons)
         rows.addArrangedSubview(metronomeButton)
@@ -117,10 +120,6 @@ final class ControlPanelLens: NSView {
             backdrop.trailingAnchor.constraint(equalTo: trailingAnchor),
             backdrop.topAnchor.constraint(equalTo: topAnchor),
             backdrop.bottomAnchor.constraint(equalTo: bottomAnchor),
-            rows.leadingAnchor.constraint(equalTo: leadingAnchor),
-            rows.trailingAnchor.constraint(equalTo: trailingAnchor),
-            rows.topAnchor.constraint(equalTo: topAnchor),
-            rows.bottomAnchor.constraint(equalTo: bottomAnchor),
             levelLine.widthAnchor.constraint(equalToConstant: 192),
             divider.widthAnchor.constraint(equalToConstant: 192),
         ])
@@ -181,10 +180,16 @@ final class ControlPanelLens: NSView {
     /// the stamp tint carries that running state.
     func syncTransport() {
         let listening = shell.isListening
+        let playing = shell.playingSession != nil
+        // the lens carries the session's state: it warms toward the stamp
+        // while a take runs or a session plays, and is plain glass at rest.
+        // Tint is state here, never decoration.
+        backdrop.tintColor = (listening || playing)
+            ? PaperTheme.stamp.withAlphaComponent(0.16)
+            : nil
         listenButton.title = listening ? "Stop" : "New session"
         listenButton.contentTintColor = listening ? PaperTheme.stamp : PaperTheme.ink
         exportButton.isEnabled = shell.exportEnabled
-        let playing = shell.playingSession != nil
         let paused = shell.playbackPaused
         playPauseButton.title = playing ? (paused ? "Resume" : "Pause") : "Play"
         playPauseButton.isEnabled = listening ? playAlongRunning : (playing || !latestSessions.isEmpty)

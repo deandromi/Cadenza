@@ -173,17 +173,27 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         self.window = window
     }
 
-    /// The settings section built for the app's overlay card.
+    /// The settings section built for the app's overlay card: the card is
+    /// already a lens, so the section paints no paper of its own and the
+    /// material stays visible under the text.
     func overlayContent(size: NSSize = NSSize(width: 460, height: 640)) -> NSView {
-        makeContent(size: size)
+        makeContent(size: size, paper: false)
     }
 
-    private func makeContent(size: NSSize) -> NSView {
+    private func makeContent(size: NSSize, paper opaque: Bool = true) -> NSView {
         let root = NSView(frame: NSRect(origin: .zero, size: size))
         root.autoresizingMask = [.width, .height]
-        let paper = PaperView()
-        paper.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(paper)
+        if opaque {
+            let paper = PaperView()
+            paper.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(paper)
+            NSLayoutConstraint.activate([
+                paper.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                paper.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                paper.topAnchor.constraint(equalTo: root.topAnchor),
+                paper.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            ])
+        }
 
         let rows = NSStackView()
         rows.orientation = .vertical
@@ -204,29 +214,15 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         directoryLabel.translatesAutoresizingMaskIntoConstraints = false
         directoryLabel.lineBreakMode = .byTruncatingMiddle
         directoryLabel.maximumNumberOfLines = 1
+        // the system glass button, not a hand-built pill: a second lens
+        // stacked on the card's lens is glass on glass
         let chooseButton = NSButton(title: "Choose…", target: self, action: #selector(chooseDirectory))
-        chooseButton.isBordered = false
-        chooseButton.font = .systemFont(ofSize: 13, weight: .medium)
-        chooseButton.contentTintColor = PaperTheme.ink
-        let choosePill = padForLens(chooseButton, horizontal: 16, vertical: 9)
-        choosePill.translatesAutoresizingMaskIntoConstraints = false
-        let chooseBackdrop = makeGlassBackdrop(cornerRadius: 16, interactive: true)
-        chooseBackdrop.translatesAutoresizingMaskIntoConstraints = false
-        choosePill.addSubview(chooseBackdrop)
-        choosePill.addSubview(chooseButton)
-        NSLayoutConstraint.activate([
-            chooseBackdrop.leadingAnchor.constraint(equalTo: choosePill.leadingAnchor),
-            chooseBackdrop.trailingAnchor.constraint(equalTo: choosePill.trailingAnchor),
-            chooseBackdrop.topAnchor.constraint(equalTo: choosePill.topAnchor),
-            chooseBackdrop.bottomAnchor.constraint(equalTo: choosePill.bottomAnchor),
-            chooseButton.leadingAnchor.constraint(equalTo: choosePill.leadingAnchor),
-            chooseButton.trailingAnchor.constraint(equalTo: choosePill.trailingAnchor),
-            chooseButton.topAnchor.constraint(equalTo: choosePill.topAnchor),
-            chooseButton.bottomAnchor.constraint(equalTo: choosePill.bottomAnchor),
-        ])
+        chooseButton.bezelStyle = .glass
+        chooseButton.borderShape = .capsule
+        chooseButton.controlSize = .regular
         directoryRow.addArrangedSubview(caption("Session directory"))
         directoryRow.addArrangedSubview(directoryLabel)
-        directoryRow.addArrangedSubview(choosePill)
+        directoryRow.addArrangedSubview(chooseButton)
 
         keepAudioCheckbox.isBordered = false
         keepAudioCheckbox.font = .systemFont(ofSize: 13, weight: .regular)
@@ -315,6 +311,8 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         let refreshMIDI = NSButton(title: "Republish", target: self, action: #selector(refreshMIDITapped))
         refreshMIDI.isBordered = false
         refreshMIDI.font = .systemFont(ofSize: 12, weight: .medium)
+        // republishing is a fix-up, not a primary action: the stamp tint
+        // marks it as the thing to press when the port is missing
         refreshMIDI.contentTintColor = PaperTheme.stamp
         rows.addArrangedSubview(settingRow(caption("MIDI port"), midiLabel, accessory: refreshMIDI))
         rows.addArrangedSubview(makeInkLabel(
@@ -332,10 +330,6 @@ final class SettingsController: NSObject, NSApplicationDelegate {
         rows.addArrangedSubview(versionLabel)
 
         NSLayoutConstraint.activate([
-            paper.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            paper.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            paper.topAnchor.constraint(equalTo: root.topAnchor),
-            paper.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             rows.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             rows.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             rows.topAnchor.constraint(equalTo: root.topAnchor),

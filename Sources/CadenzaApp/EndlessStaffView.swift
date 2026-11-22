@@ -341,10 +341,16 @@ final class StaffLensView: NSView {
 
     init(onOpen: @escaping () -> Void) {
         self.onOpen = onOpen
-        backdrop = makeGlassBackdrop(cornerRadius: 22, interactive: true)
+        backdrop = NSGlassEffectView()
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
+        // the lens is backdrop material only: the measure is a guarantee of
+        // its own drawing path, so it stays a sibling above the glass rather
+        // than becoming the lens's contentView
+        backdrop.style = .regular
+        backdrop.cornerRadius = LensRadius.staff
+        setGlassInteractive(backdrop, true)
         backdrop.translatesAutoresizingMaskIntoConstraints = false
         addSubview(backdrop)
         addSubview(strip)

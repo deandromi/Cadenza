@@ -8,7 +8,7 @@ import CoreText
 
 extension SmokeMain {
 /// The screenshot probes: they render the real view tree offscreen so layout
-/// and the frozen glass can be inspected without recording the live app.
+/// and the overlay can be inspected without recording the live app.
     static func rootPath(_ relative: String) -> String {
         var dir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         for _ in 0..<6 {
@@ -267,7 +267,7 @@ extension SmokeMain {
     }
 
     /// Renders the in-window sections — the archive and the settings card —
-    /// into PNGs through the real overlay host, so layout and the frozen
+    /// into PNGs through the real overlay host, so layout and the overlay
     /// glass can be inspected without a screen recording of the live app.
     static func runOverlayShot() {
         MainActor.assumeIsolated {

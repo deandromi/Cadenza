@@ -8,8 +8,10 @@ enum ExportChoice {
     case both
 }
 
-/// The export choice popover: one glass lens asking what a session hands
-/// over — its MIDI file, its audio recording, or both.
+/// The export choice popover: the system popover material asks what a
+/// session hands over — its MIDI file, its audio recording, or both. It
+/// paints nothing of its own: a lens inside a popover would be glass on
+/// glass, and the popover already has the material.
 @MainActor
 final class ExportChoicesPopover: NSPopover {
     private let onChoice: (ExportChoice) -> Void
@@ -22,14 +24,11 @@ final class ExportChoicesPopover: NSPopover {
         behavior = .transient
         let controller = NSViewController()
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 190, height: hasAudio ? 118 : 82))
-        let backdrop = makeGlassBackdrop(cornerRadius: 14, interactive: false)
-        backdrop.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(backdrop)
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 2
-        stack.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
         stack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(stack)
         for (title, choice) in [("MIDI file", ExportChoice.midi)]
@@ -43,10 +42,6 @@ final class ExportChoicesPopover: NSPopover {
             stack.addArrangedSubview(button)
         }
         NSLayoutConstraint.activate([
-            backdrop.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            backdrop.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            backdrop.topAnchor.constraint(equalTo: root.topAnchor),
-            backdrop.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             stack.topAnchor.constraint(equalTo: root.topAnchor),
@@ -96,8 +91,8 @@ func paperInkRects(
 }
 
 
-/// The take's description as a glass card: one sentence a person can read at
-/// a glance, then the captioned lines behind it. Read-only, so it carries no
+/// The take's description as a popover: one sentence a person can read at a
+/// glance, then the captioned lines behind it. Read-only, so it carries no
 /// controls at all — the row's menu is where actions live.
 @MainActor
 final class TakeDescriptionPopover: NSPopover {
@@ -107,9 +102,6 @@ final class TakeDescriptionPopover: NSPopover {
         let width: CGFloat = 320
         let controller = NSViewController()
         let root = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 260))
-        let backdrop = makeGlassBackdrop(cornerRadius: 16, interactive: false)
-        backdrop.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(backdrop)
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -151,10 +143,6 @@ final class TakeDescriptionPopover: NSPopover {
         }
 
         NSLayoutConstraint.activate([
-            backdrop.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            backdrop.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            backdrop.topAnchor.constraint(equalTo: root.topAnchor),
-            backdrop.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             stack.topAnchor.constraint(equalTo: root.topAnchor),

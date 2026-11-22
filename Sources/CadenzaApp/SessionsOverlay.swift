@@ -51,9 +51,10 @@ final class SessionsOverlayView: NSView, SessionRowActions {
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
 
-        newSessionButton.isBordered = false
-        newSessionButton.font = .systemFont(ofSize: 12, weight: .medium)
-        newSessionButton.contentTintColor = PaperTheme.stamp
+        // the archive's one door out of itself: the system glass button,
+        // not a hand-tinted label
+        newSessionButton.bezelStyle = .glass
+        newSessionButton.borderShape = .capsule
         newSessionButton.target = self
         newSessionButton.action = #selector(newSessionTapped)
 
@@ -163,8 +164,9 @@ final class SessionsOverlayView: NSView, SessionRowActions {
 
     func syncTransport() {
         let listening = shell.isListening
+        // while a take runs the door becomes a stop switch: the title says
+        // so, and the glass keeps the system's own label color
         newSessionButton.title = listening ? "Stop session" : "New session"
-        newSessionButton.contentTintColor = PaperTheme.stamp
         for row in rows { row.refresh(playingID: playingID) }
     }
 

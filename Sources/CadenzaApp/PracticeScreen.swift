@@ -14,13 +14,18 @@ final class PracticeScreenView: NSView {
     private let staffLens: StaffLensView
     private let panel: ControlPanelLens
     /// Every section — the archive, the sheet, statistics, settings — opens
-    /// here, on frozen glass inside this one window, never in a window of its
+    /// here, on glass inside this one window, never in a window of its
     /// own and never by moving the practice screen out from under the user.
     private let overlay = OverlayHost()
-    /// One glass container hosts every floating control, so Apple's material
-    /// can blend and react across lenses the way it is meant to: the panel
-    /// and the menu are one glass surface family, not two islands.
+    /// One glass container hosts the docked chrome, so Apple's material can
+    /// blend and react across lenses the way it is meant to: the panel and
+    /// the menu are one glass surface family, not two islands. They live in
+    /// the container's `contentView`, the only place AppKit merges them and
+    /// lifts them above the container itself. The measure keeps a lens of its
+    /// own, at the depth its CoreText engraving was composed at.
     private let glassContainer = NSGlassEffectContainerView()
+    /// the container's content: the lenses' shared coordinate space
+    private let lensHost = NSView()
     /// asked by the panel and the menu for the session archive; the shell
     /// answers, since it owns the sessions
     private let onSessions: (() -> Void)?
@@ -74,9 +79,12 @@ final class PracticeScreenView: NSView {
 
         glassContainer.translatesAutoresizingMaskIntoConstraints = false
         addSubview(glassContainer)
-
-        addSubview(keybed)
+        lensHost.translatesAutoresizingMaskIntoConstraints = false
+        glassContainer.contentView = lensHost
+        lensHost.addSubview(panel)
+        lensHost.addSubview(menuLens)
         addSubview(staffLens)
+        addSubview(keybed)
 
         wordmark.translatesAutoresizingMaskIntoConstraints = false
         addSubview(wordmark)
@@ -86,8 +94,6 @@ final class PracticeScreenView: NSView {
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(statusLabel)
 
-        glassContainer.addSubview(panel)
-        glassContainer.addSubview(menuLens)
         panel.onRequestExpand = { [weak self] in self?.onSessions?() }
 
         NSLayoutConstraint.activate([
@@ -116,9 +122,9 @@ final class PracticeScreenView: NSView {
             statusLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 14),
             statusLabel.bottomAnchor.constraint(equalTo: wordmark.bottomAnchor, constant: -3),
 
-            // the two floating lenses carry explicit sizes at required
-            // priority: intrinsic consultation proved unreliable here, so
-            // geometry is pinned, never guessed
+            // the floating lenses carry explicit sizes at required priority:
+            // intrinsic consultation proved unreliable here, so geometry is
+            // pinned, never guessed
             glassContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
             glassContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
             glassContainer.topAnchor.constraint(equalTo: topAnchor),
@@ -126,13 +132,13 @@ final class PracticeScreenView: NSView {
 
             menuLens.widthAnchor.constraint(equalToConstant: 75),
             menuLens.heightAnchor.constraint(equalToConstant: 40),
-            menuLens.trailingAnchor.constraint(equalTo: glassContainer.trailingAnchor, constant: -28),
-            menuLens.topAnchor.constraint(equalTo: glassContainer.topAnchor, constant: 20),
+            menuLens.trailingAnchor.constraint(equalTo: lensHost.trailingAnchor, constant: -28),
+            menuLens.topAnchor.constraint(equalTo: lensHost.topAnchor, constant: 20),
 
             // the panel is only as tall as its rows: the lens wraps the
             // content instead of stretching blank air around it
-            panel.centerYAnchor.constraint(equalTo: glassContainer.centerYAnchor),
-            panel.trailingAnchor.constraint(equalTo: glassContainer.trailingAnchor, constant: -30),
+            panel.centerYAnchor.constraint(equalTo: lensHost.centerYAnchor),
+            panel.trailingAnchor.constraint(equalTo: lensHost.trailingAnchor, constant: -30),
             panel.widthAnchor.constraint(equalToConstant: 240),
         ])
 
@@ -174,9 +180,9 @@ final class PracticeScreenView: NSView {
         panel.setSessions(sessions, playing: playing)
     }
 
-    // MARK: sections on frozen glass
+    // MARK: sections on glass
 
-    /// Shows a section in the card: the room freezes behind it, the card
+    /// Shows a section in the card: the room stays where it is, the card
     /// arrives with the app's one spring, a click outside or Escape closes it.
     func presentOverlay(_ content: NSView, size: NSSize, onDismiss: (() -> Void)? = nil) {
         overlay.present(content, size: size, onDismiss: onDismiss)

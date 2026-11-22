@@ -172,17 +172,58 @@ final class LevelLineView: NSView {
     }
 }
 
-/// A glass lens as pure backdrop material, no content hosting: the caller
-/// pins it behind ordinary AppKit views sized to the same frame, so content
-/// renders through a guaranteed regular subview chain.
+/// The radii the chrome shares: one lens family, one set of corners. They are
+/// generous on purpose — Liquid Glass reads as a lens only once the corner
+/// curvature matches its scale.
+enum LensRadius {
+    /// the docked panel's card
+    static let panel: CGFloat = 22
+    /// the endless measure's lens
+    static let staff: CGFloat = 24
+    /// the section card in the middle of the window
+    static let card: CGFloat = 28
+    /// the pills that hold one or two controls
+    static let pill: CGFloat = 20
+}
+
+/// Turns on the interactive glass behaviour where the platform has it. The
+/// effect makes a lens scale, bounce and shimmer like system glass, so it
+/// belongs on lenses that carry controls and nowhere else.
 @MainActor
-func makeGlassBackdrop(cornerRadius: CGFloat, interactive: Bool) -> NSGlassEffectView {
-    let lens = NSGlassEffectView()
-    lens.style = .regular
-    lens.cornerRadius = cornerRadius
+func setGlassInteractive(_ lens: NSGlassEffectView, _ interactive: Bool) {
     if #available(macOS 27.0, *) {
         lens.effectIsInteractive = interactive
     }
+}
+
+/// A glass lens with its content *inside* it: the content rides in
+/// `contentView`, the one view AppKit guarantees is placed within the
+/// material, so labels and controls read as part of the lens instead of as a
+/// card laid over it. `inset` is the lens's own padding around that content.
+@MainActor
+func makeGlassLens(
+    _ content: NSView,
+    cornerRadius: CGFloat,
+    inset: NSEdgeInsets = NSEdgeInsets(),
+    style: NSGlassEffectView.Style = .regular,
+    interactive: Bool = true
+) -> NSGlassEffectView {
+    let lens = NSGlassEffectView()
+    lens.style = style
+    lens.cornerRadius = cornerRadius
+    setGlassInteractive(lens, interactive)
+
+    let host = NSView()
+    host.translatesAutoresizingMaskIntoConstraints = false
+    content.translatesAutoresizingMaskIntoConstraints = false
+    host.addSubview(content)
+    NSLayoutConstraint.activate([
+        content.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: inset.left),
+        content.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -inset.right),
+        content.topAnchor.constraint(equalTo: host.topAnchor, constant: inset.top),
+        content.bottomAnchor.constraint(equalTo: host.bottomAnchor, constant: -inset.bottom),
+    ])
+    lens.contentView = host
     return lens
 }
 

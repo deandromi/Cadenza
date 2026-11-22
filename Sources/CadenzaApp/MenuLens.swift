@@ -32,27 +32,20 @@ final class MenuLens: NSView {
         // views never mutate before super.init on this OS build: doing so
         // orphans them from the live layout engine
         let newPill = padForLens(menuButton, horizontal: 18, vertical: 12)
-        let newBackdrop = makeGlassBackdrop(cornerRadius: 20, interactive: true)
+        let newBackdrop = makeGlassLens(newPill, cornerRadius: LensRadius.pill, interactive: true)
         // on this OS build, pinning a view never auto-disables its
         // autoresizing mask: do it by hand or the view stays at zero
         newPill.translatesAutoresizingMaskIntoConstraints = false
         newBackdrop.translatesAutoresizingMaskIntoConstraints = false
         addSubview(newBackdrop)
-        addSubview(newPill)
         pill = newPill
         backdrop = newBackdrop
-        if let pill, let backdrop {
-            NSLayoutConstraint.activate([
-                backdrop.leadingAnchor.constraint(equalTo: leadingAnchor),
-                backdrop.trailingAnchor.constraint(equalTo: trailingAnchor),
-                backdrop.topAnchor.constraint(equalTo: topAnchor),
-                backdrop.bottomAnchor.constraint(equalTo: bottomAnchor),
-                pill.leadingAnchor.constraint(equalTo: leadingAnchor),
-                pill.trailingAnchor.constraint(equalTo: trailingAnchor),
-                pill.topAnchor.constraint(equalTo: topAnchor),
-                pill.bottomAnchor.constraint(equalTo: bottomAnchor),
-            ])
-        }
+        NSLayoutConstraint.activate([
+            newBackdrop.leadingAnchor.constraint(equalTo: leadingAnchor),
+            newBackdrop.trailingAnchor.constraint(equalTo: trailingAnchor),
+            newBackdrop.topAnchor.constraint(equalTo: topAnchor),
+            newBackdrop.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
     }
 
     required init?(coder: NSCoder) {

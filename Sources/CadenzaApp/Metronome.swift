@@ -100,9 +100,10 @@ final class Metronome {
     }
 }
 
-/// The click's own glass card on the practice screen: start or stop it and
-/// set its tempo without opening Settings. The slider writes through on every
-/// step, so a running click follows the hand.
+/// The click's own popover on the practice screen: the system material, so it
+/// needs no lens of its own. Start or stop it and set its tempo without
+/// opening Settings. The slider writes through on every step, so a running
+/// click follows the hand.
 @MainActor
 final class MetronomePopover: NSPopover {
     private let valueLabel = makeInkLabel("", font: .systemFont(ofSize: 12, weight: .medium),
@@ -121,9 +122,6 @@ final class MetronomePopover: NSPopover {
         let width: CGFloat = 240
         let controller = NSViewController()
         let root = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 118))
-        let backdrop = makeGlassBackdrop(cornerRadius: 16, interactive: true)
-        backdrop.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(backdrop)
 
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -142,9 +140,8 @@ final class MetronomePopover: NSPopover {
         topRow.translatesAutoresizingMaskIntoConstraints = false
 
         toggleButton.title = isRunning ? "Stop" : "Start"
-        toggleButton.isBordered = false
-        toggleButton.font = .systemFont(ofSize: 13, weight: .medium)
-        toggleButton.contentTintColor = isRunning ? PaperTheme.stamp : PaperTheme.ink
+        toggleButton.bezelStyle = .glass
+        toggleButton.borderShape = .capsule
         toggleButton.target = self
         toggleButton.action = #selector(toggleTapped)
 
@@ -160,10 +157,6 @@ final class MetronomePopover: NSPopover {
         stack.addArrangedSubview(slider)
         stack.addArrangedSubview(toggleButton)
         NSLayoutConstraint.activate([
-            backdrop.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            backdrop.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            backdrop.topAnchor.constraint(equalTo: root.topAnchor),
-            backdrop.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             stack.topAnchor.constraint(equalTo: root.topAnchor),
