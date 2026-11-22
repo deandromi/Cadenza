@@ -425,11 +425,14 @@ public enum SheetEngraver {
                 naturals.append(width)
             }
             // The system closes flush right: the paper left over is shared
-            // out between the bars. A single bar too dense for the page is
-            // squeezed rather than allowed to overflow.
+            // out between the bars. Every engraved edition does this — a line
+            // ends at the margin, never in the middle of the page — so the
+            // ceiling is high enough that a line of quiet bars still reaches
+            // it. A single bar too dense for the page is squeezed rather than
+            // allowed to overflow.
             let naturalTotal = naturals.reduce(0, +)
             let stretch = naturalTotal > 0
-                ? min(max(usable / naturalTotal, 0.98), 1.3) : 1.0
+                ? min(max(usable / naturalTotal, 0.98), 3.0) : 1.0
             let widths = naturals.map { $0 * stretch }
 
             var topPlaced: [SheetDraft.Placed] = []

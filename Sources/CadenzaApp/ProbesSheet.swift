@@ -299,7 +299,7 @@ extension SmokeMain {
                 notes: file.heldNotes, options: inferred,
                 pageWidth: SheetEngraver.pageWidth)
             let issues = SheetDraft.rhythmAudit(draft)
-            print("session sheet: \(draft.rows.count) systems, \(draft.ties.count) ties, "
+            print("session sheet: fifths \(draft.fifths), \(draft.rows.count) systems, \(draft.ties.count) ties, "
                 + "\(draft.slurs.count) slurs, \(issues.count) rhythm issues")
             var chords = 0
             var rests: [SheetDraft.RestKind: Int] = [:]
