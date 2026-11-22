@@ -421,6 +421,45 @@ singleStrikes: do {
     expect(SingleStrikes.merge(chord).count == 3, "a chord is untouched")
 }
 
+// MARK: RestruckKeys
+
+restruckKeys: do {
+    // A pedal-held note outliving its own re-strike ends where the key is
+    // struck again: the second attack is proof the first key came up.
+    let outlives = [
+        NoteEvent(pitch: 60, velocity: 70, onset: 0.0, duration: 5.0),
+        NoteEvent(pitch: 60, velocity: 80, onset: 1.0, duration: 0.5)
+    ]
+    let clipped = RestruckKeys.clip(outlives)
+    expect(abs(clipped[0].duration - 1.0) < 0.001,
+           "a note ends where its own key is struck again, got \(clipped[0].duration)")
+    expect(clipped[1].duration == 0.5, "the re-strike keeps its own length")
+    expect(clipped.count == 2, "clipping never drops a strike")
+
+    // A note that ends before the next strike is left exactly as it was.
+    let clean = [
+        NoteEvent(pitch: 60, velocity: 70, onset: 0.0, duration: 0.4),
+        NoteEvent(pitch: 60, velocity: 70, onset: 1.0, duration: 0.4)
+    ]
+    expect(RestruckKeys.clip(clean) == clean, "a note released before its next strike is untouched")
+
+    // Another pitch sounding through is not a re-strike.
+    let otherPitch = [
+        NoteEvent(pitch: 60, velocity: 70, onset: 0.0, duration: 2.0),
+        NoteEvent(pitch: 64, velocity: 70, onset: 0.5, duration: 0.5)
+    ]
+    expect(RestruckKeys.clip(otherPitch) == otherPitch,
+           "a different pitch struck underneath does not end a held note")
+
+    // Two strikes a few milliseconds apart leave a stub, not a zero-length note.
+    let instant = [
+        NoteEvent(pitch: 60, velocity: 70, onset: 0.0, duration: 1.0),
+        NoteEvent(pitch: 60, velocity: 70, onset: 0.004, duration: 0.5)
+    ]
+    expect(RestruckKeys.clip(instant)[0].duration >= RestruckKeys.floor,
+           "a strike superseded at once keeps the minimum length")
+}
+
 // MARK: LowRegisterDetector
 
 lowRegisterDetector: do {

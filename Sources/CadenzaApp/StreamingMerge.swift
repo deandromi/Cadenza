@@ -70,7 +70,8 @@ struct StreamingMerge {
     /// few-millisecond note is neither playable nor writable, but it would
     /// still count as a note on the sheet, in the MIDI file and in the score.
     var notes: [NoteEvent] {
-        SingleStrikes.merge(history.filter { $0.duration >= WindowGeometry.minimumNoteDuration })
+        RestruckKeys.clip(
+            SingleStrikes.merge(history.filter { $0.duration >= WindowGeometry.minimumNoteDuration }))
     }
 
     /// The notes still sounding, for stop-time release.

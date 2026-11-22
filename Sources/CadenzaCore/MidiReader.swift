@@ -256,8 +256,12 @@ public enum MidiReader {
                 }
                 .sorted { ($0.onset, $0.pitch) < ($1.onset, $1.pitch) }
         }
-        let notes = events(sustained)
-        let held = events(raw)
+        // A file may carry a note that outlives its own re-strike — an export
+        // that extended every note to the pedal, as Cadenza's own sessions
+        // did. The key was played again, so it came up; the longer note ends
+        // where the next strike begins.
+        let notes = RestruckKeys.clip(events(sustained))
+        let held = RestruckKeys.clip(events(raw))
 
         return MidiFile(
             notes: notes,
