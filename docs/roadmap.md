@@ -227,6 +227,28 @@ draws what the layout produces.
 - Engraving fills empty measures with whole rests, and chord symbols share
   the measures' phase space (a pickup no longer orphans them).
 
+### Pedal is not note length (found 2026-11-22, not fixed yet)
+
+The sheet's longest tie chains are not a tie bug: they are the pedal. The
+engine extends every note to the moment the sustain pedal lifts, which is
+right for the *sound* (the string keeps ringing) and wrong for the *sheet*
+(a chord struck once and pedalled for five seconds is one strike with a
+pedal mark, not five bars of tied notes). The session MIDI carries no CC64,
+so the key release is gone by the time the engraver sees the notes and it
+cannot tell the two apart.
+
+Measured on the first recording: one five-note chord at 17.3 s with a 5.4 s
+duration produced 25 tie marks across five bars. The chord itself is right —
+a spectrum of the same moment shows G4, D4/D5, D♯4/D♯5, C4 and A♯3 as real
+partials — so this is notation, not detection.
+
+The fix that keeps both readings honest: carry the key release beside the
+sounding length (`NoteEvent.keyDuration`, filled from the decode offset
+before the audio refiner extends it), write the sustain spans as CC64 in the
+session MIDI, engrave `keyDuration`, and ink `Ped.` / `✱` from the pedal
+spans the model already knows (`SheetDraft.Symbol.pedalDown/pedalUp` exist
+and are drawn by nobody yet).
+
 ### MIDI vs published PDF (research, two MuseScore files)
 
 Both files came with their MIDI meta and the published PDF; the PDFs were
