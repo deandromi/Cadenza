@@ -18,6 +18,10 @@ if let index = CommandLine.arguments.firstIndex(of: "--midiscore"), CommandLine.
     exit(0)
 }
 
+if let index = CommandLine.arguments.firstIndex(of: "--session-sheet"), CommandLine.arguments.count > index + 2 {
+    SmokeMain.runSessionSheet(path: CommandLine.arguments[index + 1], out: CommandLine.arguments[index + 2])
+    exit(0)
+}
 if let index = CommandLine.arguments.firstIndex(of: "--pdf"), CommandLine.arguments.count > index + 2 {
     SmokeMain.runPDF(path: CommandLine.arguments[index + 1], out: CommandLine.arguments[index + 2])
     exit(0)

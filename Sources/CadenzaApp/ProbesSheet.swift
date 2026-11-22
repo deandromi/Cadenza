@@ -280,6 +280,51 @@ extension SmokeMain {
         }
     }
 
+    /// Engraves a recorded take the way a session end writes it: the notes as
+    /// the engine heard them, no file clock and no bar origin. Sessions are
+    /// performances, not imported editions, and this is what the player sees
+    /// on the paper. --session-sheet <mid> <out.pdf>
+    static func runSessionSheet(path: String, out: String) {
+        MainActor.assumeIsolated {
+            NSApplication.shared.appearance = NSAppearance(named: .aqua)
+            MusicFont.register()
+            guard let file = try? MidiReader.read(url: URL(fileURLWithPath: path)) else {
+                print("session sheet: cannot read \(path)")
+                exit(1)
+            }
+            let inferred = SheetDraft.inferredOptions(notes: file.heldNotes)
+            print("session sheet: \(file.heldNotes.count) notes, inferred "
+                + "\(inferred.bpm) bpm \(inferred.numerator)/\(inferred.denominator)")
+            let draft = SheetDraft.draft(
+                notes: file.heldNotes, options: inferred,
+                pageWidth: SheetEngraver.pageWidth)
+            let issues = SheetDraft.rhythmAudit(draft)
+            print("session sheet: \(draft.rows.count) systems, \(draft.ties.count) ties, "
+                + "\(draft.slurs.count) slurs, \(issues.count) rhythm issues")
+            var chords = 0
+            var rests: [SheetDraft.RestKind: Int] = [:]
+            for staff in draft.topTrack + draft.bottomTrack {
+                switch staff {
+                case .chord: chords += 1
+                case .rest(_, let kind), .restVoiced(_, let kind, _):
+                    rests[kind, default: 0] += 1
+                default: break
+                }
+            }
+            let restSummary = rests.sorted { $0.value > $1.value }
+                .map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+            print("session sheet: \(chords) chords, \(rests.values.reduce(0, +)) rests (\(restSummary))")
+            for issue in issues.prefix(6) { print("  \(issue)") }
+            do {
+                try SheetPDF.write(notes: file.heldNotes, to: URL(fileURLWithPath: out))
+                print("session sheet: wrote \(out)")
+            } catch {
+                print("session sheet: \(error.localizedDescription)")
+                exit(1)
+            }
+        }
+    }
+
     /// Engraves a MIDI file's session PDF the way a session end writes it,
     /// so the automatic export is verifiable offline: --pdf <mid> <out.pdf>
     static func runPDF(path: String, out: String) {
@@ -381,7 +426,8 @@ extension SmokeMain {
             let firstTwelve = (0..<12).map { "\($0):\(perMeasure[$0] ?? 0)" }.joined(separator: " ")
             print("report: notes per measure (first 12) \(firstTwelve), measures \(perMeasure.keys.max().map { $0 + 1 } ?? 0)")
             print("report: fifths \(result.fifths), rows \(result.rows.count), width \(result.width), "
-                + "rowHeight \(result.rowHeight), total \(result.totalHeight), beams \(result.beamGroups.count)")
+                + "rowHeight \(result.rowHeight), total \(result.totalHeight), "
+                + "beams \(result.beamGroups.count), slurs \(result.slurs.count), ties \(result.ties.count)")
 
             func describe(_ placed: SheetDraft.Placed) -> String {
                 switch placed.symbol {

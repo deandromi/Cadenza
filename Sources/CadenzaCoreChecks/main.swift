@@ -790,6 +790,24 @@ do {
 }
 
 do {
+    // Hands: a chord is one grip, so it prints on one staff.
+    let triad = SheetDraft.divideGrip([60, 64, 67])
+    expect(triad.top.count == 3 && triad.bottom.isEmpty,
+           "a C major triad around middle C is one grip on the upper staff")
+    let lowTriad = SheetDraft.divideGrip([48, 52, 55])
+    expect(lowTriad.bottom.count == 3 && lowTriad.top.isEmpty,
+           "a low triad stays whole on the lower staff")
+    // A bass note under a melody note is two hands, and divides at the gap.
+    let spread = SheetDraft.divideGrip([40, 76])
+    expect(spread.bottom == [0] && spread.top == [1],
+           "a bass note under a melody note divides between the hands")
+    // A close chord is never torn: four notes within an octave stay together.
+    let close = SheetDraft.divideGrip([59, 62, 65, 67])
+    expect(close.top.count == 4 || close.bottom.count == 4,
+           "a close four-note grip prints on one staff")
+}
+
+do {
     // The duration ladder.
     expect(SheetDraft.noteValue(1920).head == .whole, "a whole note wears a whole head")
     expect(SheetDraft.noteValue(960).head == .half && SheetDraft.noteValue(960).dots == 0, "three quarters draw as a half")

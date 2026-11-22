@@ -81,8 +81,16 @@ extension SheetDraft {
         /// it may also take up the whole beat, or cover up to two whole beats
         /// (a half note on beat two of 3/4 is written, a dotted quarter from
         /// the same beat is not: it would swallow beat three).
+        ///
+        /// A note too short to hide a beat — an eighth or anything smaller —
+        /// may also stand anywhere the player put it. That is what syncopation
+        /// looks like on paper: a pair of eighths written a sixteenth off the
+        /// beat is two eighths, not a sixteenth tied to a dotted sixteenth.
+        /// Refusing them is how a transcription grows a tie on every note and
+        /// reads as a page of scratches.
         func fits(_ value: Int, at start: Int) -> Bool {
             if start % value == 0 { return true }
+            if 2 * value <= beatTicks { return true }
             guard start % beatTicks == 0 else { return false }
             if value <= beatTicks { return true }
             return value % beatTicks == 0 && value <= 2 * beatTicks
@@ -92,6 +100,16 @@ extension SheetDraft {
         /// allow it, tied pieces when a beat is in the way. The span is cut at
         /// the barline, so the caller can tie the pieces on either side.
         public func split(start: Int, length: Int, dotted: Bool = true) -> [(start: Int, length: Int)] {
+            pieces(start: start, length: length, dotted: dotted) { value, at in
+                self.fits(value, at: at)
+            }
+        }
+
+        /// The same split for silence. A rest is the one thing that may never
+        /// stand off its own position: a quarter rest a sixteenth late reads
+        /// as a hole before it, which is the beat it was meant to fill.
+        private func pieces(start: Int, length: Int, dotted: Bool,
+                            fits stand: (Int, Int) -> Bool) -> [(start: Int, length: Int)] {
             var result: [(start: Int, length: Int)] = []
             guard length > 0 else { return result }
             let bar = measureTicks
@@ -101,8 +119,7 @@ extension SheetDraft {
             let ladder = values(dotted: dotted)
             let smallest = ladder.last ?? 1
             while left > 0 {
-                let chosen = value(at: cursor, length: left, dotted: dotted)
-                    ?? min(smallest, left)
+                let chosen = ladder.first { $0 <= left && stand($0, cursor) } ?? min(smallest, left)
                 result.append((start: cursor, length: chosen))
                 cursor += chosen
                 left -= chosen
@@ -110,10 +127,21 @@ extension SheetDraft {
             return result
         }
 
+        /// The stricter rule, for rests: aligned to its own length, or on a
+        /// beat taking up whole beats.
+        private func fitsOnBeat(_ value: Int, at start: Int) -> Bool {
+            if start % value == 0 { return true }
+            guard start % beatTicks == 0 else { return false }
+            if value <= beatTicks { return true }
+            return value % beatTicks == 0 && value <= 2 * beatTicks
+        }
+
         /// The rests that fill a gap, beat by beat. A rest never carries a dot
         /// and never crosses a barline: the caller fills inside one bar.
         public func rests(start: Int, end: Int) -> [(start: Int, length: Int)] {
-            split(start: start, length: end - start, dotted: false)
+            pieces(start: start, length: end - start, dotted: false) { value, at in
+                self.fitsOnBeat(value, at: at)
+            }
         }
 
         /// The rest symbol for a length this meter handed out.

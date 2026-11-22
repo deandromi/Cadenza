@@ -277,7 +277,10 @@ final class ScoreView: NSView {
 
     private func tie(from start: NSPoint, to end: NSPoint, bow: CGFloat,
                      gap: CGFloat, ink: NSColor) {
-        guard end.x - start.x > 0.6 * gap else { return }
+        // A curve shorter than a space reads as a cup inside the head it
+        // leaves, not as a tie: a tie that short is the layout's fault, and
+        // nothing is better than something illegible.
+        guard end.x - start.x > 1.25 * gap else { return }
         let path = NSBezierPath()
         path.move(to: start)
         let lift = abs(end.x - start.x) > 2.2 * gap ? bow : bow * 0.75

@@ -59,16 +59,20 @@ extension SheetEngraver {
             // A column joins the first voice that has fallen silent; when
             // both voices are still sounding it joins the one that frees up
             // soonest, which keeps the melody line together.
-            let legato = SheetDraft.ticksPerQuarter / 8
+            // The overlap that earns a second voice is a held note under a
+            // moving line, not a finger that lifts a hair late: anything
+            // shorter than a quarter is the same voice, and its note is
+            // clipped to the room it owns. Without this floor a take with the
+            // pedal down splits every bar in two and prints a rest through
+            // every chord.
+            let legato = SheetDraft.ticksPerQuarter
             var voiceEnd = [0, 0]
             var perVoice: [[Column]] = [[], []]
             for bar in bars {
                 for column in bar.sorted(by: { $0.start < $1.start }) {
                     var voice = 0
-                    if voiceEnd[0] > column.start + legato {
-                        voice = voiceEnd[1] <= column.start + legato
-                            ? 1
-                            : (voiceEnd[0] <= voiceEnd[1] ? 0 : 1)
+                    if voiceEnd[0] - column.start >= legato {
+                        voice = voiceEnd[1] - column.start < legato ? 1 : 0
                     }
                     voiceEnd[voice] = max(voiceEnd[voice], column.start + column.held)
                     perVoice[voice].append(column)
@@ -94,8 +98,17 @@ extension SheetEngraver {
                     let nextBar = bar + 1 < measureStarts.count
                         ? measureStarts[bar + 1] : barStart + measureTicks
                     let room = max(grid, min(gap, nextBar - column.start))
-                    let span = length(of: column, gap: gap, room: room)
-                    if column.held > gap + grid / 4 { joined.insert(column.start) }
+                    // On the grid or not at all: a value a few ticks off the
+                    // take's own step is a sliver no engraver writes, and a
+                    // sliver costs a tied pair to say what one note could.
+                    let span = snapped(length(of: column, gap: gap, room: room),
+                                       to: grid, within: room)
+                    // A finger that leaves the key a hair late is not a
+                    // phrase: the join has to outlast the next attack by an
+                    // eighth before the arc means "played together".
+                    if column.held > gap + SheetDraft.ticksPerQuarter / 2 {
+                        joined.insert(column.start)
+                    }
                     var start = column.start
                     var remaining = span
                     while remaining > 0 {
@@ -156,32 +169,36 @@ extension SheetEngraver {
                     continue
                 }
                 let polyphonic = written[bar][0].isEmpty == false && written[bar][1].isEmpty == false
+                // A bar holding one line is one voice on the page, whatever
+                // voice the take happened to give it: the print shows a single
+                // line with its own rests, not a single line with a hole where
+                // the other voice would have been.
+                let lone = !polyphonic
                 var beams: [[BeamEntry]] = [[], []]
                 for voice in 0..<2 {
                     var cursor = barStart
                     let pieces = written[bar][voice].sorted { $0.start < $1.start }
-                    if pieces.isEmpty {
-                        if voice == 0 {
-                            // the upper voice is silent while the lower one
-                            // plays: it still prints its own whole-bar rest
-                            indices.append(staff.symbols.count)
-                            staff.symbols.append(.restVoiced(startTicks: barStart, kind: .whole, voice: 0))
-                        }
-                        continue
-                    }
+                    // A voice that has nothing to say in this bar prints
+                    // nothing: one line of music is read as one line, not as a
+                    // line with a bar-long hole printed above it. The bar's own
+                    // rest is written once, by the `live` branch above, and
+                    // only when both voices are silent.
+                    guard !pieces.isEmpty else { continue }
                     for piece in pieces {
                         if piece.start > cursor {
                             for rest in meter.rests(start: cursor - barStart, end: piece.start - barStart) {
                                 guard let kind = meter.restKind(rest.length) else { continue }
                                 indices.append(staff.symbols.count)
                                 staff.symbols.append(restSymbol(kind, at: barStart + rest.start,
-                                                                voice: voice, polyphonic: polyphonic))
+                                                                voice: lone ? 0 : voice,
+                                                                polyphonic: polyphonic))
                             }
                         }
                         indices.append(staff.symbols.count)
                         if let pitches = piece.pitches {
                             let chord = self.chord(pitches: pitches, at: piece.start, length: piece.length,
-                                                   voice: voice, polyphonic: polyphonic, tied: piece.tied,
+                                                   voice: lone ? 0 : voice,
+                                                   polyphonic: polyphonic, tied: piece.tied,
                                                    shown: &shown)
                             staff.symbols.append(.chord(chord))
                             if let stem = chord.stems.first {
@@ -224,7 +241,7 @@ extension SheetEngraver {
                 var run: [Int] = []
                 func flush() {
                     defer { run = [] }
-                    guard run.count >= 2, let first = run.first, let last = run.last,
+                    guard run.count >= 3, let first = run.first, let last = run.last,
                           first / measureTicks == last / measureTicks else { return }
                     slurs.append(SheetDraft.Slur(track: track, fromTicks: first, toTicks: last))
                 }
@@ -244,6 +261,20 @@ extension SheetEngraver {
         }
 
         // MARK: values
+
+        /// A length rounded to the take's step. A value a hair short of the
+        /// room it owns takes the whole room instead — that is a key held to
+        /// the barline, not a rest — and a length longer than the room is left
+        /// alone, because it is the note that carries its tie into the next
+        /// bar.
+        private func snapped(_ length: Int, to grid: Int, within room: Int) -> Int {
+            guard grid > 1, length <= room else { return length }
+            if room - length < grid / 2 { return room }
+            let down = length / grid * grid
+            let up = down + grid
+            if up <= room, up - length < length - down { return up }
+            return max(grid, down)
+        }
 
         /// The written length of a column: the room it owns in its own voice,
         /// cut at the barline, and what the player held when that is shorter.

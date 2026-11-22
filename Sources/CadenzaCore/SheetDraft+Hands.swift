@@ -120,4 +120,40 @@ extension SheetDraft {
         guard !clefs.isEmpty else { return .treble }
         return clefs[max(0, min(start / measureTicks, clefs.count - 1))]
     }
+
+    /// One struck chord, divided between the staves.
+    ///
+    /// A chord is one grip. Slicing it note by note at middle C prints half of
+    /// an ordinary C major triad on each staff and hangs the rest on ledger
+    /// lines, which is what makes a transcription look invented. So the unit
+    /// here is the whole grip: it goes to the staff its own centre asks for,
+    /// and only a grip that clearly spans two hands — a bass note under a
+    /// melody note, a tenth or more apart with a real gap between them — is
+    /// divided, and then at the gap the hands left.
+    ///
+    /// The indices come back, not the pitches: a chord may strike one pitch
+    /// twice and each note still goes its own way.
+    public static func divideGrip(_ pitches: [Int]) -> (top: [Int], bottom: [Int]) {
+        guard !pitches.isEmpty else { return ([], []) }
+        let order = pitches.indices.sorted { pitches[$0] < pitches[$1] }
+        let sorted = order.map { pitches[$0] }
+        if sorted.count > 1, let low = sorted.first, let high = sorted.last,
+           high - low >= 19, let gap = widestGap(in: sorted), gap.span >= 7 {
+            return (Array(order[gap.at...]), Array(order[..<gap.at]))
+        }
+        // The middle line is the line: a grip whose centre sits at or above
+        // middle C is the right hand's, the way a pianist reads it.
+        let mean = Double(sorted.reduce(0, +)) / Double(sorted.count)
+        return mean >= 60 ? (Array(pitches.indices), []) : ([], Array(pitches.indices))
+    }
+
+    /// The widest jump between neighbouring pitches, and where it sits.
+    private static func widestGap(in sorted: [Int]) -> (at: Int, span: Int)? {
+        var best: (at: Int, span: Int)?
+        for index in 1..<sorted.count {
+            let span = sorted[index] - sorted[index - 1]
+            if span > (best?.span ?? 0) { best = (index, span) }
+        }
+        return best
+    }
 }

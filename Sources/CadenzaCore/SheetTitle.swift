@@ -52,7 +52,8 @@ public struct SheetTitle: Sendable, Equatable {
     /// title and set in the credits where it belongs.
     public static func inferred(fileTitle: String?, fileName: String,
                                 meter: (beats: Int, unit: Int)? = nil,
-                                bpm: Double? = nil) -> SheetTitle {
+                                bpm: Double? = nil,
+                                meterIsDeclared: Bool = true) -> SheetTitle {
         let name = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
         let tokens = words(name)
         let declared = fileTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -87,7 +88,11 @@ public struct SheetTitle: Sendable, Equatable {
             title = phrase(titleTokens)
         }
         var subtitle: String? = subtitleTokens.isEmpty ? nil : phrase(subtitleTokens)
-        if subtitle == nil, let meter, let bpm {
+        // The dance is named only when the file itself declares the meter. A
+        // take's meter is the app's own guess, and printing "Valse" over a
+        // practice run because the guess landed on three beats is the sheet
+        // inventing something the player never played.
+        if subtitle == nil, meterIsDeclared, let meter, let bpm {
             subtitle = character(beats: meter.beats, unit: meter.unit, bpm: bpm)
         }
         // An edition does not print the same name twice: when the credit is

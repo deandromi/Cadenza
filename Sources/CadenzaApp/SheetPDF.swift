@@ -26,7 +26,8 @@ enum SheetPDF {
             fileTitle: nil,
             fileName: url.deletingPathExtension().lastPathComponent,
             meter: (result.options.numerator, result.options.denominator),
-            bpm: result.options.bpm)
+            bpm: result.options.bpm,
+            meterIsDeclared: false)
         if let composer, !composer.isEmpty { block.composer = composer }
         try write(result: result, block: block, to: url)
     }

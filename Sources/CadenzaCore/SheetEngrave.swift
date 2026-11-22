@@ -144,6 +144,8 @@ public enum SheetEngraver {
         // 4. Columns: the notes struck at one moment, per bar and per staff.
         var topBars: [[Column]] = Array(repeating: [], count: barStarts.count)
         var bottomBars: [[Column]] = Array(repeating: [], count: barStarts.count)
+        // Who played what: decided per grip, not per note, so a chord is never
+        // torn across the grand staff.
         for cluster in clusters {
             let start = cluster.map(\.start).min() ?? 0
             let absolute = start - root
@@ -154,11 +156,28 @@ public enum SheetEngraver {
             }
             let local = absolute - barStarts[bar]
             guard local < measureTicks else { continue }
-            let moment = barStarts[bar] + local
+            // The barlines drift with the playing so that the harmony stays on
+            // the beat, but the *written* bar is always one measure long: a
+            // take whose bars grew by a sixteenth would leave every voice a
+            // sixteenth short and print an empty tail in bar after bar. So the
+            // column is re-homed into the bar's own fixed room.
+            let moment = bar * measureTicks + local
+            let divided = SheetDraft.divideGrip(cluster.map(\.pitch))
+            // No note hangs more than three ledger lines off its staff. A note
+            // read four lines down is unreadable and the other staff is right
+            // there, which is why a printed score shifts a low right-hand note
+            // onto the bass staff instead of stacking lines under the treble.
+            // The limits are the third ledger below the treble staff (F3) and
+            // the third above the bass staff (G4).
             var treble: [Note] = []
             var bass: [Note] = []
-            for note in cluster {
-                if note.pitch >= 60 { treble.append(note) } else { bass.append(note) }
+            for index in divided.top {
+                let note = cluster[index]
+                if note.pitch < 53 { bass.append(note) } else { treble.append(note) }
+            }
+            for index in divided.bottom {
+                let note = cluster[index]
+                if note.pitch > 67 { treble.append(note) } else { bass.append(note) }
             }
             if !treble.isEmpty {
                 appendColumn(&topBars[bar], at: moment, notes: treble, quantizer: quantizer)
@@ -176,13 +195,15 @@ public enum SheetEngraver {
         var nextID = 0
         var ties: [SheetDraft.Tie] = []
         var slurs: [SheetDraft.Slur] = []
+        // the written bars are exactly one measure apart, whatever the playing did
+        let writtenBars = (0..<barStarts.count).map { $0 * measureTicks }
         let top = StaffWriter(meter: meter, clef: .treble, fifths: fifths,
                               track: 0, grid: quantizer.grid)
-            .write(topBars, measureStarts: barStarts, ties: &ties, groups: &groups,
+            .write(topBars, measureStarts: writtenBars, ties: &ties, groups: &groups,
                    slurs: &slurs, nextID: &nextID)
         let bottom = StaffWriter(meter: meter, clef: .bass, fifths: fifths,
                                  track: 1, grid: quantizer.grid)
-            .write(bottomBars, measureStarts: barStarts, ties: &ties, groups: &groups,
+            .write(bottomBars, measureStarts: writtenBars, ties: &ties, groups: &groups,
                    slurs: &slurs, nextID: &nextID)
         let rows = layout(top: top, bottom: bottom, options: options, pageWidth: pageWidth)
 
@@ -552,6 +573,16 @@ public enum SheetEngraver {
                     }
                     return false
                 }
+                // A rest the other voice is playing through is not printed:
+                // the note is the beat, and a rest drawn beside it only
+                // repeats what the note already says. The symbol stays in the
+                // rhythm, so the bar still tiles; the page omits the mark.
+                let covered = staff.measures[measure].contains { index in
+                    guard case .chord(let chord) = staff.symbols[index],
+                          chord.voice != voice else { return false }
+                    return chord.startTicks < restStart && chord.endTicks > restStart
+                }
+                if covered, !wholeMeasure { return }
                 let across = (sharesColumn && !wholeMeasure) ? (voice == 0 ? -1.55 : 1.55) : 0
                 placed.append(SheetDraft.Placed(x: px, trackIndex: -1, symbol: symbol,
                                                 yOffset: Double(target - canonical) / 2,
