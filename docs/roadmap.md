@@ -30,9 +30,9 @@ conversion close to real time with near-perfect note capture.
   precision/recall/F1 per piece on every model change. Latency below one
   second needs that different model tier and would repeat the same
   verification path the current backbone went through.
-- **Pedal notation on the sheet**: sustain and silencer pedals engraved as
-  real pedal lines (Ped./release marks) on the staff, not just folded into
-  note durations.
+- **Pedal notation on the sheet**: the sustain pedal is engraved (done in
+  `0d41746` — `Ped.` and the release star from CC64, under the bass staff);
+  the soft pedal is still only heard, not written.
 
 ## Where it stands
 
@@ -186,6 +186,75 @@ store; the take's description, voice splitting, re-orchestration,
 accompaniment and musical search are CadenzaCore work, testable from
 recorded note events with no audio stack.
 
+## Beyond the sheet: the room, the sound and the archive
+
+Approved directions that never touch notation. They sit beside the sheet
+block rather than behind it, because none of them needs the engraver to be
+finished first.
+
+### Always there
+
+- **Cadenza in the menu bar** — the app listens from the menu bar with no
+  window open, and one shortcut keeps the last minute from wherever the
+  player is. The idea is caught before it is forgotten; the session screen
+  stays the place where takes are made, not where they are rescued.
+- **An idea inbox** — a quick capture becomes an *idea*, not a session: a
+  card with audio and MIDI that can be brought back through the piano
+  sampler. Bundling is manual: the player groups ideas by hand and the app
+  never guesses at a collection. Sessions are performances, ideas are
+  sketches, and the two lists stay apart.
+
+### Play together
+
+- **Comping partner** — while the player plays, Cadenza generates and plays
+  a bass and chord part that follows the harmony, in the player's own tempo.
+  Voice leading and chord theory, no model: the same CadenzaCore harmony
+  layer the theory suggestions need.
+- **MIDI clock and Ableton Link out** — the player's tempo becomes the
+  session tempo of a DAW or looper next to it. Cadenza stops being only the
+  app you play into and becomes the clock the room plays to. Needs a stable
+  tempo estimate from note events while the music is still arriving.
+
+### Your sound
+
+- **Playback in the same room** — the piano emulator renders with the
+  measured decay of the room the take was played in, so a recording sounds
+  where it was made instead of in a neutral box. Measured once per room: a
+  clap or a test tone gives the decay time and the early reflections.
+- **Take radio** (opens once the piano emulator is better) — an endless
+  stream from the player's own archive, chosen by mood and energy, played
+  through the sampler. It waits until the sampler is good enough that an old
+  take sounds like music rather than a mock-up.
+
+### What the take says about the player
+
+- **Chord vocabulary** — over months: which chord colours the player
+  actually uses and which are never touched, with the neighbours one step
+  away from each. From note events only, no scoring, no lessons.
+- **Take diff** — two performances of the same piece read as a difference:
+  timing curve, dynamics, pedalling. The question "was that better?" gets
+  an answer instead of a feeling.
+
+### Sparks
+
+- **Vonk (spark)** — the player sits down with no plan; Cadenza proposes a
+  key, a tempo and a mood and plays two bars as a fuse. Theory, no model, no
+  notation.
+- **Morning warm-up** — five minutes of scales and chord grips in the keys
+  the player uses least, with the app as a second voice rather than a
+  teacher. It never grades; it only plays the other part.
+
+### Waiting on the sheet
+
+Approved, but not started until the engraver is finished, because they read
+the notation it writes:
+
+- **Touch in the notation** — dynamics, hairpins, accents and articulation
+  from velocity and decay: the sheet remembers how it was played, not only
+  which keys went down.
+- **Score follower with page turns** — the app knows which bar is sounding
+  while the player plays from the app's own sheet, and turns the page.
+
 ## Sheet music generation
 
 The next large block. The flow the product wants:
@@ -227,7 +296,7 @@ draws what the layout produces.
 - Engraving fills empty measures with whole rests, and chord symbols share
   the measures' phase space (a pickup no longer orphans them).
 
-### Pedal is not note length (found 2026-11-22, not fixed yet)
+### Pedal is not note length (found and fixed 2026-11-22)
 
 The sheet's longest tie chains are not a tie bug: they are the pedal. The
 engine extends every note to the moment the sustain pedal lifts, which is
@@ -246,8 +315,14 @@ The fix that keeps both readings honest: carry the key release beside the
 sounding length (`NoteEvent.keyDuration`, filled from the decode offset
 before the audio refiner extends it), write the sustain spans as CC64 in the
 session MIDI, engrave `keyDuration`, and ink `Ped.` / `✱` from the pedal
-spans the model already knows (`SheetDraft.Symbol.pedalDown/pedalUp` exist
-and are drawn by nobody yet).
+spans the model already knows.
+
+Shipped in `0d41746`: `NoteEvent.keyDuration` and `keyOffset`, the writer's
+note-off on the key and CC64 for the tail, `PedalSpans.merged` in CadenzaCore
+(a release and a re-press milliseconds apart are one held pedal, which turned
+277 spans on the Satie file into the pedals a player actually made), and the
+marks drawn under everything the bass staff prints instead of through it.
+`--midi` proves the round trip: keys 0.5 s, pedal 1.5–5.0 s, sound 4.0 s.
 
 ### MIDI vs published PDF (research, two MuseScore files)
 
