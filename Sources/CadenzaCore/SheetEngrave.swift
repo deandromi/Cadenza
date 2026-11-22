@@ -131,7 +131,7 @@ public enum SheetEngraver {
         var attacks = Set<String>()
         for cluster in clusters {
             guard let anchor = cluster.map(\.start).min() else { continue }
-            let absolute = snap(anchor, to: grid) - root
+            let absolute = pulse(snap(anchor, to: grid)) - root
             var bar = 0
             for (index, start) in barStarts.enumerated() where start <= absolute { bar = index }
             let local = max(0, absolute - barStarts[bar])
@@ -141,7 +141,7 @@ public enum SheetEngraver {
         var strongest: [String: Event] = [:]
         for cluster in clusters {
             guard let anchor = cluster.map(\.start).min() else { continue }
-            let absolute = snap(anchor, to: grid) - root
+            let absolute = pulse(snap(anchor, to: grid)) - root
             var bar = 0
             for (index, start) in barStarts.enumerated() where start <= absolute {
                 bar = index
@@ -225,8 +225,8 @@ public enum SheetEngraver {
         let bottom = staff(events: bass, clef: .bass, options: options, fifths: fifths,
                            track: 1, groups: &groups, nextID: &nextID)
 
-        let ties = SheetEngraver.ties(in: top.symbols, measureTicks: measureTicks, track: 0)
-            + SheetEngraver.ties(in: bottom.symbols, measureTicks: measureTicks, track: 1)
+        let ties = SheetEngraver.ties(in: top.symbols, track: 0)
+            + SheetEngraver.ties(in: bottom.symbols, track: 1)
         let rows = layout(top: top, bottom: bottom, options: options, pageWidth: pageWidth)
 
         // Pedal spans are known but not inked yet: a mark in the wrong place
@@ -248,30 +248,24 @@ public enum SheetEngraver {
 
     // MARK: ties
 
-    /// The pitched continuations a score has to tie. A note marked as running
-    /// past its barline is tied to the first column of the next measure that
-    /// strikes the same pitch; if nothing does, there is no tie and the note
-    /// simply ends where it ended.
-    static func ties(in symbols: [SheetDraft.Symbol], measureTicks: Int, track: Int) -> [SheetDraft.Tie] {
-        guard measureTicks > 0 else { return [] }
-        // the columns of each measure, in order
-        var measures: [Int: [(start: Int, chord: SheetDraft.Chord)]] = [:]
-        for symbol in symbols {
-            guard case .chord(let chord) = symbol else { continue }
-            let measure = chord.startTicks / measureTicks
-            measures[measure, default: []].append((chord.startTicks, chord))
-        }
-        for key in measures.keys {
-            measures[key]?.sort { $0.start < $1.start }
-        }
+    /// The ties a track's own symbols ask for: wherever a head says it keeps
+    /// sounding and the very next column carries the same pitch, the two are
+    /// tied. That covers a value split inside a bar and a note held over a
+    /// barline with one rule, instead of two.
+    static func ties(in symbols: [SheetDraft.Symbol], track: Int) -> [SheetDraft.Tie] {
+        let columns = symbols.compactMap { symbol -> SheetDraft.Chord? in
+            if case .chord(let chord) = symbol { return chord }
+            return nil
+        }.sorted { $0.startTicks < $1.startTicks }
         var result: [SheetDraft.Tie] = []
-        for (measure, columns) in measures.sorted(by: { $0.key < $1.key }) {
-            guard let last = columns.last,
-                  let next = measures[measure + 1]?.first else { continue }
-            for note in last.chord.notes where note.tieToNext {
-                guard next.chord.notes.contains(where: { $0.pitch == note.pitch }) else { continue }
+        for (index, chord) in columns.enumerated() where index + 1 < columns.count {
+            let next = columns[index + 1]
+            guard next.startTicks == chord.endTicks else { continue }
+            for note in chord.notes where note.tieToNext {
+                guard next.notes.contains(where: { $0.pitch == note.pitch }) else { continue }
                 result.append(SheetDraft.Tie(track: track, pitch: note.pitch,
-                                             fromTicks: last.start, toTicks: next.start))
+                                             fromTicks: chord.startTicks,
+                                             toTicks: next.startTicks))
             }
         }
         return result
@@ -307,6 +301,17 @@ public enum SheetEngraver {
     public static var pageBreakSpace: Double { pageGap }
 
     // MARK: the grid
+
+    /// Onset magnetism. A played note lands near the pulse, not on it, and a
+    /// sheet that prints that jitter as sixteenths is a sheet nobody can read:
+    /// an onset within a sixteenth of an eighth belongs to the eighth. Only
+    /// what is genuinely between eighths stays on the sixteenth grid.
+    private static func pulse(_ ticks: Int) -> Int {
+        let quarter = SheetDraft.ticksPerQuarter
+        let tolerance = max(1, quarter / 8)
+        let nearest = Int((Double(ticks) / Double(quarter / 2)).rounded()) * (quarter / 2)
+        return abs(nearest - ticks) <= tolerance ? nearest : ticks
+    }
 
     private static func snap(_ ticks: Int, to grid: Int) -> Int {
         Int((Double(ticks) / Double(grid)).rounded()) * grid
@@ -627,12 +632,12 @@ public enum SheetEngraver {
         /// two columns ever sit closer than a head plus a hair.
         func rhythmGap(_ ticks: Int) -> Double {
             let quarter = Double(SheetDraft.ticksPerQuarter)
-            if ticks >= Int(4 * quarter) { return 4.0 }
-            if ticks >= Int(2 * quarter) { return 3.2 }
-            if ticks >= Int(quarter) { return 2.45 }
-            if ticks >= Int(quarter / 2) { return 1.85 }
-            if ticks >= Int(quarter / 4) { return 1.55 }
-            return 1.35
+            if ticks >= Int(4 * quarter) { return 3.4 }
+            if ticks >= Int(2 * quarter) { return 2.8 }
+            if ticks >= Int(quarter) { return 2.15 }
+            if ticks >= Int(quarter / 2) { return 1.6 }
+            if ticks >= Int(quarter / 4) { return 1.35 }
+            return 1.2
         }
 
         /// The moment and symbol of a bar's columns, both hands together.
@@ -674,7 +679,7 @@ public enum SheetEngraver {
                 let next = moments[offset + 1]
                 let nextInk = atMoment[next] ?? (0, 0)
                 let rhythm = rhythmGap(max(1, next - moment))
-                let clearance = ink.right + nextInk.left + 0.3
+                let clearance = ink.right + nextInk.left + 0.25
                 return RhythmColumn(moment: moment, gap: max(rhythm, clearance),
                                     left: ink.left, right: ink.right)
             }

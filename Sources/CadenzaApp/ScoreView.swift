@@ -405,8 +405,8 @@ final class ScoreView: NSView {
                 ink.withAlphaComponent(0.9).setStroke()
                 for position in note.ledgers {
                     let y = yOn(position)
-                    strokeLine(from: NSPoint(x: x - 1.45 * gap, y: y),
-                               to: NSPoint(x: x + 1.45 * gap, y: y), width: 0.8)
+                    strokeLine(from: NSPoint(x: cx - 1.02 * gap, y: y),
+                               to: NSPoint(x: cx + 1.02 * gap, y: y), width: 0.85)
                 }
             }
             if note.accidental != .none {

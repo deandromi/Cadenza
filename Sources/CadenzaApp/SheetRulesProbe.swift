@@ -278,11 +278,16 @@ extension SmokeMain {
         // first of the next, and never twice for one pitch.
         for tie in result.ties {
             let symbols = tie.track == 0 ? result.topTrack : result.bottomTrack
+            // A tick can hold one chord per voice, so the partner is the chord
+            // that actually carries the tied pitch.
             func chord(at tick: Int) -> SheetDraft.Chord? {
+                var fallback: SheetDraft.Chord?
                 for symbol in symbols {
-                    if case .chord(let chord) = symbol, chord.startTicks == tick { return chord }
+                    guard case .chord(let chord) = symbol, chord.startTicks == tick else { continue }
+                    if chord.notes.contains(where: { $0.pitch == tie.pitch }) { return chord }
+                    fallback = fallback ?? chord
                 }
-                return nil
+                return fallback
             }
             guard let from = chord(at: tie.fromTicks) else {
                 flag(.tiePartner, "tie t\(tie.fromTicks) has no note")
@@ -298,7 +303,8 @@ extension SmokeMain {
             if !to.notes.contains(where: { $0.pitch == tie.pitch }) {
                 flag(.tiePitch, "tie t\(tie.toTicks) pitch \(tie.pitch)")
             }
-            if tie.fromTicks / measureTicks + 1 != tie.toTicks / measureTicks {
+            let acrossBars = tie.fromTicks / measureTicks != tie.toTicks / measureTicks
+            if acrossBars, tie.fromTicks / measureTicks + 1 != tie.toTicks / measureTicks {
                 flag(.tiePartner, "tie t\(tie.fromTicks)..t\(tie.toTicks) skips a bar")
             }
         }
