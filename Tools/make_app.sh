@@ -83,22 +83,35 @@ echo "Signing build/Cadenza.app (ad-hoc)"
 codesign --force -s - "${app_dir}"
 
 # Install into /Applications so Launchpad, the Dock and `open -a Cadenza`
-# always land on the fresh build instead of a stale copy.
-if [ -d /Applications/Cadenza.app ]; then
-  echo "Replacing /Applications/Cadenza.app with the fresh build"
-  rm -rf /Applications/Cadenza.app
+# always land on the fresh build instead of a stale copy. CI passes
+# CADENZA_SKIP_INSTALL=1: it only wants the bundle the DMG is built from.
+if [ "${CADENZA_SKIP_INSTALL:-0}" = "1" ]; then
+  echo "Leaving /Applications alone (CADENZA_SKIP_INSTALL=1)"
+else
+  if [ -d /Applications/Cadenza.app ]; then
+    echo "Replacing /Applications/Cadenza.app with the fresh build"
+    rm -rf /Applications/Cadenza.app
+  fi
+  cp -R "${app_dir}" /Applications/Cadenza.app
+  codesign --force -s - /Applications/Cadenza.app
 fi
-cp -R "${app_dir}" /Applications/Cadenza.app
-codesign --force -s - /Applications/Cadenza.app
 
 # One Cadenza on the machine, the installed one: leaving the assembled copy
 # behind put a second Cadenza.app in Spotlight and Launchpad. The DMG build
 # needs the bundle for its staging folder and sets CADENZA_KEEP_BUILD=1.
 if [ "${CADENZA_KEEP_BUILD:-0}" != "1" ]; then
   rm -rf "${app_dir}"
-  echo "Removed the assembled copy; /Applications/Cadenza.app is the only Cadenza"
+  if [ "${CADENZA_SKIP_INSTALL:-0}" = "1" ]; then
+    echo "Removed the assembled copy; nothing was installed"
+  else
+    echo "Removed the assembled copy; /Applications/Cadenza.app is the only Cadenza"
+  fi
 else
   echo "Kept ${app_dir} for the DMG build"
 fi
 
-echo "You can run: open -a Cadenza"
+if [ "${CADENZA_SKIP_INSTALL:-0}" = "1" ]; then
+  echo "Built ${app_dir}"
+else
+  echo "You can run: open -a Cadenza"
+fi

@@ -34,10 +34,15 @@ echo "Mounted at ${vol}"
 trap 'hdiutil detach "${vol}" >/dev/null 2>&1 || true; rm -rf "${staging}" /tmp/cadenza-dmg-vol' EXIT
 
 # Finder's automation is flaky about flushing .DS_Store, so retry the layout
-# until the file actually lands on the volume (up to 3 attempts).
+# until the file actually lands on the volume (up to 3 attempts). CI passes
+# CADENZA_SKIP_LAYOUT=1: a scheduled runner has no Finder session, and the
+# icons then use the default arrangement.
 layout_ok=0
-for attempt in 1 2 3; do
-	if osascript - "${vol}" <<'APPLESCRIPT'
+if [[ "${CADENZA_SKIP_LAYOUT:-0}" == "1" ]]; then
+	echo "Skipping the Finder icon layout (CADENZA_SKIP_LAYOUT=1)"
+else
+	for attempt in 1 2 3; do
+		if osascript - "${vol}" <<'APPLESCRIPT'
 on run argv
     set vol to POSIX path of (item 1 of argv)
     tell application "Finder"
@@ -68,17 +73,18 @@ on run argv
     end tell
 end run
 APPLESCRIPT
-	then
-		if [[ -f "${vol}/.DS_Store" ]]; then
-			layout_ok=1
-			break
+		then
+			if [[ -f "${vol}/.DS_Store" ]]; then
+				layout_ok=1
+				break
+			fi
 		fi
+		echo "layout attempt ${attempt} produced no .DS_Store, retrying"
+		sleep 2
+	done
+	if [[ "${layout_ok}" != 1 ]]; then
+		echo "warning: Finder layout skipped; icons will use the default arrangement"
 	fi
-	echo "layout attempt ${attempt} produced no .DS_Store, retrying"
-	sleep 2
-done
-if [[ "${layout_ok}" != 1 ]]; then
-	echo "warning: Finder layout skipped; icons will use the default arrangement"
 fi
 
 hdiutil detach "${vol}" >/dev/null

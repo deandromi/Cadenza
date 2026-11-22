@@ -1,0 +1,98 @@
+# One release, rebuilt from the newest commit on main every day. The "preview"
+# tag and its single DMG are replaced in place, so the download link stays the
+# same and always holds today's build. Nothing is written about what changed.
+name: Daily preview
+
+on:
+  schedule:
+    # 05:17 UTC, before the European morning. GitHub delays scheduled runs at
+    # the top of the hour; the odd minute keeps us out of that queue.
+    - cron: "17 5 * * *"
+  # Runs by hand from the Actions tab or `gh workflow run daily-preview`.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Two runs must never write the same release at once; queue them instead.
+concurrency:
+  group: daily-preview
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    # The app calls NSGlassEffectView.effectIsInteractive, which only exists in
+    # the macOS 27 SDK, so the macOS 26 images cannot build it. xcode-27 is the
+    # arm64 preview image on macOS 27 with Xcode 27; move to a generally
+    # available macOS 27 label if GitHub publishes one.
+    runs-on: xcode-27
+    timeout-minutes: 40
+
+    env:
+      TAG: preview
+      ASSET: Cadenza-preview.dmg
+
+    steps:
+      - name: Check out the newest main
+        uses: actions/checkout@v7
+
+      - name: Report the toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swift --version
+          sw_vers
+
+      - name: Build every target
+        # The DMG build below only builds the app product. Building the package
+        # here keeps CadenzaCore and CadenzaCoreChecks compiling too, before
+        # anything is published.
+        run: |
+          set -euo pipefail
+          swift build
+
+      - name: Build the DMG
+        env:
+          # A runner wants neither an installed copy in /Applications nor a
+          # Finder session to lay out the disk image's icons.
+          CADENZA_SKIP_INSTALL: "1"
+          CADENZA_SKIP_LAYOUT: "1"
+        run: |
+          set -euo pipefail
+          bash Tools/make_dmg.sh
+          # make_dmg.sh names the image after the bundle version. The release
+          # asset keeps one stable name so every run replaces the old file.
+          version="$(sed -n 's/^version="\(.*\)"/\1/p' Tools/make_app.sh)"
+          mv "build/Cadenza-${version}.dmg" "build/${ASSET}"
+          test -s "build/${ASSET}"
+          ls -lh "build/${ASSET}"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="Automatic build from main at ${GITHUB_SHA::7} on $(date -u '+%Y-%m-%d'). No changelog."
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Replacing the DMG on the existing ${TAG} release"
+            gh release upload "$TAG" "build/${ASSET}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            echo "Creating the ${TAG} release"
+            gh release create "$TAG" "build/${ASSET}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Daily preview" \
+              --notes "$notes" \
+              --prerelease \
+              --latest=false
+          fi
+
+          # Keep the tag on the commit this DMG was built from, so the source
+          # archives on the release match the binary.
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" > /dev/null 2>&1; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
+              -F sha="$GITHUB_SHA" -F force=true > /dev/null
+          fi
+
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "$notes" --prerelease
