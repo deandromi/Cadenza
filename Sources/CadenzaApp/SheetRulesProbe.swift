@@ -22,7 +22,7 @@ extension SmokeMain {
                                          denominator: meter?.beatUnit ?? 4)
         let result = SheetDraft.draft(notes: file.heldNotes, options: options,
                                       pageWidth: SheetEngraver.pageWidth,
-                                      originTicks: 0)
+                                      originTicks: 0, timeMap: file.sheetTimeMap)
         let measureTicks = max(1, options.measureTicks)
         let quarter = SheetDraft.ticksPerQuarter
 
@@ -45,6 +45,7 @@ extension SmokeMain {
             case ledger = "wrong ledger lines"
             case staffMisaligned = "the two staves disagree on a column"
             case offPaper = "symbol outside its row"
+            case tiling = "a voice does not tile its measure"
         }
 
         var report: [Rule: (count: Int, examples: [String])] = [:]
@@ -123,6 +124,7 @@ extension SmokeMain {
                 // applies to a monophonic bar.
                 let polyphonic = measure.items.contains { item in
                     if case .restVoiced = item.symbol { return true }
+                    if case .chord(let chord) = item.symbol { return chord.voice != 0 }
                     return false
                 }
                 // the column timeline of this bar, in order
@@ -338,6 +340,13 @@ extension SmokeMain {
                     flag(.staffMisaligned, "row \(number + 1) t\(tick) top \(x) bottom \(other)")
                 }
             }
+        }
+
+        // The engraver's own invariant, checked by the engine itself: every
+        // voice tiles every bar, what is drawn is the room that was decided,
+        // and every tie joins two pieces that meet.
+        for issue in SheetDraft.rhythmAudit(result) {
+            flag(.tiling, issue.description)
         }
 
         var total = 0

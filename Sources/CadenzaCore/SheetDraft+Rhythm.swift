@@ -1,9 +1,9 @@
 import Foundation
 
-/// Quantization: seconds to ticks at the drafted tempo, chords collapsed onto
-/// one onset, durations rounded onto the readable grid.
+/// Quantization: seconds to ticks at the drafted tempo, and the grid a take's
+/// attacks are written on.
 extension SheetDraft {
-    // MARK: quantization
+    // MARK: seconds to ticks
 
     /// Ticks for a time in seconds at the given tempo.
     public static func ticks(seconds: Double, options: Options) -> Int {
@@ -15,59 +15,53 @@ extension SheetDraft {
         Int((Double(ticksPerQuarter) * options.bpm * ms / 60_000).rounded())
     }
 
-    /// Chordify: onsets within the combine interval collapse onto the
-    /// chain's earliest start. Chains extend greedily, like the classic
-    /// fold, so a strummed chord still reads as one chord.
-    public static func chordify(_ notes: [RunningNote], options: Options) -> [RunningNote] {
-        var result = notes.sorted { ($0.start, $0.pitch) < ($1.start, $1.pitch) }
-        let interval = ticks(ms: options.combineMillis, options: options)
-        guard interval > 0, !result.isEmpty else { return result }
-        var i = 0
-        while i < result.count {
-            let anchor = result[i].start
-            while i + 1 < result.count, result[i + 1].start - anchor <= interval {
-                result[i + 1].start = anchor
-                i += 1
-            }
-            i += 1
-        }
-        return result
-    }
+    // MARK: the grid
 
-    /// Round durations: each note stretches to just before the next onset,
-    /// capped by the largest quarter-grid divisor that fits; the last chord
-    /// keeps its sounded duration, and run pairs (adjacent equal onsets)
-    /// stay intact so beams can form.
-    public static func roundDurations(_ notes: [RunningNote]) -> [RunningNote] {
-        var result = notes
-        let quarter = ticksPerQuarter
-        var previousNote: RunningNote?
-        for i in 0..<result.count {
-            guard i + 1 < result.count else { break }
-            let note = result[i]
-            var nextStart = result[i + 1].start
-            var j = i + 1
-            while j < result.count, result[j].start == note.start {
-                nextStart = j + 1 < result.count ? result[j + 1].start : result[j].start
-                j += 1
+    /// The grid a performance's attacks are written on.
+    ///
+    /// MuseScore's MIDI import quantizes onsets to an eighth by default and to
+    /// a sixteenth at the finest, because a grid finer than a sixteenth writes
+    /// the player's hand as music. The same limit applies here, and which of
+    /// the two grids a take gets is decided from the take itself: a file's
+    /// ticks are its notation, so if fewer than one attack in fifty sits off
+    /// the eighth grid, the sixteenths are jitter and the eighth grid is the
+    /// notation. A performance's seconds drift with the tempo, so a take
+    /// without a tempo map keeps the sixteenth grid and only nudges an attack
+    /// onto the eighth when it is already most of the way there.
+    public struct Quantizer: Sendable, Equatable {
+        /// The grid step in ticks: 240 (an eighth) or 120 (a sixteenth).
+        public let grid: Int
+        /// True when the grid was chosen from a file's own ticks.
+        public let metrical: Bool
+
+        public init(onsets: [Int], options: Options, metrical: Bool) {
+            let quarter = ticksPerQuarter
+            let eighth = quarter / 2
+            let sixteenth = quarter / 4
+            var grid = sixteenth
+            if metrical, !onsets.isEmpty {
+                let tolerance = eighth / 8
+                let onEighth = onsets.filter { tick in
+                    let residual = tick % eighth
+                    return min(residual, eighth - residual) <= tolerance
+                }.count
+                if Double(onEighth) >= 0.98 * Double(onsets.count) {
+                    grid = eighth
+                }
             }
-            let maximum = nextStart > note.start ? nextStart - note.start : 0
-            var dur = 0
-            if quarter <= maximum { dur = quarter }
-            else if quarter / 2 <= maximum { dur = quarter / 2 }
-            else if quarter / 3 <= maximum { dur = quarter / 3 }
-            else if quarter / 4 <= maximum { dur = quarter / 4 }
-            if dur < note.duration { dur = note.duration }
-            if let previous = previousNote,
-               previous.start + previous.duration == note.start,
-               previous.duration == note.duration {
-                dur = note.duration
-            }
-            result[i].duration = dur
-            if result[i + 1].start != note.start {
-                previousNote = result[i]
-            }
+            self.grid = grid
+            self.metrical = metrical
         }
-        return result
+
+        /// An onset on the grid.
+        public func quantize(_ tick: Int) -> Int {
+            let snapped = ((tick + grid / 2) / grid) * grid
+            guard !metrical else { return snapped }
+            // a performance: an attack already inside an eighth's tolerance of
+            // the pulse belongs to the pulse, the way the hand heard it
+            let pulse = ticksPerQuarter / 2
+            let nearest = ((snapped + pulse / 2) / pulse) * pulse
+            return abs(nearest - snapped) <= ticksPerQuarter / 8 ? nearest : snapped
+        }
     }
 }

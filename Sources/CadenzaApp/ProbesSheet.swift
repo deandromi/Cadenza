@@ -271,7 +271,8 @@ extension SmokeMain {
                 }
                 : []
             let result = SheetDraft.draft(notes: file.heldNotes, options: options, pageWidth: SheetEngraver.pageWidth,
-                                          pedals: pedalSpans, originTicks: 0)
+                                          pedals: pedalSpans, originTicks: 0,
+                                          timeMap: file.sheetTimeMap)
             print("sheet draft: \(result.rows.count) rows, fifths \(result.fifths), "
                 + "\(result.beamGroups.count) beams, options \(result.options.numerator)/\(result.options.denominator)")
 
@@ -310,6 +311,7 @@ extension SmokeMain {
             do {
                 try SheetPDF.write(notes: file.heldNotes, options: options, originTicks: 0,
                                    title: title, pedals: pedals,
+                                   timeMap: file.sheetTimeMap,
                                    to: URL(fileURLWithPath: out))
                 print("pdf: wrote \(out)")
             } catch {
@@ -339,28 +341,42 @@ extension SmokeMain {
                                      endTick: SheetDraft.ticks(seconds: span.end, options: options))
             }
             let result = SheetDraft.draft(notes: file.heldNotes, options: options, pageWidth: SheetEngraver.pageWidth,
-                                          pedals: pedals, originTicks: 0)
+                                          pedals: pedals, originTicks: 0,
+                                          timeMap: file.sheetTimeMap)
             let guessed = SheetDraft.inferredOptions(notes: file.notes)
             print("report: inferred tempo \(Int(guessed.bpm)) meter \(guessed.numerator)/\(guessed.denominator)")
             print("report: notes \(file.notes.count), range \(file.notes.map(\.pitch).min() ?? 0)-\(file.notes.map(\.pitch).max() ?? 0), "
                 + "tempo \(Int(metaBpm)), meter \(options.numerator)/\(options.denominator), pedals \(pedals.count)")
+            // The grid the sheet quantizes on is the file's own clock, so the
+            // residual is measured there: the nominal tempo is printed beside
+            // it, since reading the seconds at one tempo is what used to smear
+            // the notation across the bars.
             let grid = max(1, SheetDraft.ticksPerQuarter / 4)
-            let ticks = file.notes.map { SheetDraft.ticks(seconds: $0.onset, options: options) }
+            let clock = file.sheetTimeMap
+            let ticks = file.notes.map { clock.engraverTick(seconds: $0.onset) }
+            let nominal = file.notes.map { SheetDraft.ticks(seconds: $0.onset, options: options) }
             let sample = file.notes.sorted { $0.onset < $1.onset }.prefix(14)
-                .map { String(format: "%.3f/\(SheetDraft.ticks(seconds: $0.onset, options: options))/v\($0.pitch)", $0.onset) }
+                .map { String(format: "%.3f/\(clock.engraverTick(seconds: $0.onset))/v\($0.pitch)", $0.onset) }
                 .joined(separator: " ")
             print("report: first onsets \(sample)")
-            let rawZero = ticks.min() ?? 0
-            let zero = Int((Double(rawZero) / Double(grid)).rounded()) * grid
-            let errors = ticks.map { t -> Int in
-                let v = t - zero
-                let snapped = Int((Double(v) / Double(grid)).rounded()) * grid
-                return abs(v - snapped)
+            func residuals(_ values: [Int]) -> (avg: Int, max: Int, off: Int) {
+                let rawZero = values.min() ?? 0
+                let zero = Int((Double(rawZero) / Double(grid)).rounded()) * grid
+                let errors = values.map { t -> Int in
+                    let v = t - zero
+                    let snapped = Int((Double(v) / Double(grid)).rounded()) * grid
+                    return abs(v - snapped)
+                }
+                return (errors.reduce(0, +) / max(1, errors.count), errors.max() ?? 0,
+                        errors.filter { $0 > 40 }.count)
             }
-            let offGrid = errors.filter { $0 > 40 }.count
-            print("report: grid error avg \(errors.reduce(0,+)/max(1,errors.count)) max \(errors.max() ?? 0), off-grid(>40) \(offGrid)/\(errors.count)")
+            let own = residuals(ticks)
+            let smeared = residuals(nominal)
+            print("report: grid error on the file's clock avg \(own.avg) max \(own.max), off-grid(>40) \(own.off)/\(ticks.count)")
+            print("report: grid error read at one tempo avg \(smeared.avg) max \(smeared.max), off-grid(>40) \(smeared.off)/\(nominal.count)")
             var perMeasure: [Int: Int] = [:]
             let measureTicks = options.measureTicks
+            let zero = ticks.min() ?? 0
             for t in ticks { perMeasure[(t - zero) / measureTicks, default: 0] += 1 }
             let firstTwelve = (0..<12).map { "\($0):\(perMeasure[$0] ?? 0)" }.joined(separator: " ")
             print("report: notes per measure (first 12) \(firstTwelve), measures \(perMeasure.keys.max().map { $0 + 1 } ?? 0)")
@@ -461,7 +477,7 @@ extension SmokeMain {
                                          denominator: meter?.beatUnit ?? 4)
         let result = SheetDraft.draft(notes: file.heldNotes, options: options,
                                       pageWidth: SheetEngraver.pageWidth,
-                                      originTicks: 0)
+                                      originTicks: 0, timeMap: file.sheetTimeMap)
         let measureTicks = max(1, options.measureTicks)
         var overlaps = 0
         var pastBar = 0
