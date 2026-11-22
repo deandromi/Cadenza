@@ -85,6 +85,25 @@ struct WindowResult: Sendable {
         /// the offset head confirming it (the note likely continues past the
         /// trailing edge).
         let hasOffset: Bool
+        /// The offset the model decoded, before the audio refiner stretched
+        /// the interval to the pedal's release. Equal to `offsetSeconds`
+        /// whenever the refiner left the note alone, so a caller that knows
+        /// nothing about keys keeps working unchanged.
+        let keyOffsetSeconds: Double
+
+        init(pitch: Int, velocity: Int, startFrame: Int, endFrame: Int,
+             onsetSeconds: Double, offsetSeconds: Double,
+             hasOnset: Bool, hasOffset: Bool, keyOffsetSeconds: Double? = nil) {
+            self.pitch = pitch
+            self.velocity = velocity
+            self.startFrame = startFrame
+            self.endFrame = endFrame
+            self.onsetSeconds = onsetSeconds
+            self.offsetSeconds = offsetSeconds
+            self.hasOnset = hasOnset
+            self.hasOffset = hasOffset
+            self.keyOffsetSeconds = min(keyOffsetSeconds ?? offsetSeconds, offsetSeconds)
+        }
     }
 
     let windowIndex: Int

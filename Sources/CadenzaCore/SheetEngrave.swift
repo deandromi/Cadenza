@@ -77,7 +77,11 @@ public enum SheetEngraver {
                                              metrical: timeMap != nil)
         var raw = notes.map { note -> Note in
             let start = quantizer.quantize(tick(note.onset))
-            let end = quantizer.quantize(tick(note.onset + note.duration))
+            // The sheet writes the keys, not the pedal: a chord struck once and
+            // kept ringing for five seconds is one chord with a pedal line,
+            // and reading its sounding length instead prints it as a chain of
+            // ties across five bars.
+            let end = quantizer.quantize(tick(note.keyOffset))
             return Note(start: start, length: max(quantizer.grid, end - start), pitch: note.pitch)
         }
         guard let earliest = raw.map(\.start).min() else {
@@ -205,11 +209,22 @@ public enum SheetEngraver {
                                  track: 1, grid: quantizer.grid)
             .write(bottomBars, measureStarts: writtenBars, ties: &ties, groups: &groups,
                    slurs: &slurs, nextID: &nextID)
-        let rows = layout(top: top, bottom: bottom, options: options, pageWidth: pageWidth)
-
-        // Pedal spans are known but not inked yet: a mark in the wrong place
-        // is worse than no mark, and this edition shows none.
-        _ = pedals
+        // The pedal, in the engraver's own ticks: a span opens where the pedal
+        // goes down and closes on the release star. Only spans that fall
+        // inside the music are drawn, so a pedal held before the first bar
+        // cannot print a mark off the paper.
+        let totalTicks = barStarts.count * measureTicks
+        var pedalMarks: [(tick: Int, down: Bool)] = []
+        for span in pedals {
+            let down = span.startTick - root
+            let up = span.endTick - root
+            guard up > down else { continue }
+            if down >= 0, down < totalTicks { pedalMarks.append((down, true)) }
+            if up > 0, up <= totalTicks { pedalMarks.append((up, false)) }
+        }
+        pedalMarks.sort { $0.tick < $1.tick }
+        let rows = layout(top: top, bottom: bottom, options: options, pageWidth: pageWidth,
+                          pedals: pedalMarks)
 
         // A system never spills past the paper: if one bar is dense enough to
         // need more room than the page has, the sheet widens a little rather
@@ -295,7 +310,8 @@ public enum SheetEngraver {
     }
 
     private static func layout(top: Staff, bottom: Staff, options: SheetDraft.Options,
-                               pageWidth: Double) -> [SheetDraft.Row] {
+                               pageWidth: Double,
+                               pedals: [(tick: Int, down: Bool)]) -> [SheetDraft.Row] {
         let measureTicks = options.measureTicks
         let count = max(top.measures.count, bottom.measures.count)
         let framing = 9.5
@@ -464,6 +480,20 @@ public enum SheetEngraver {
                       measureWidth: musicWidth, measureTicks: measureTicks,
                       columns: columns, into: &bottomPlaced)
                 x += widths[offset]
+            }
+            // The pedal is drawn where it was pressed, inside the bar that
+            // holds the moment: a mark can never leave its own measure, or
+            // the line under it would run backwards.
+            for mark in pedals {
+                let bar = mark.tick / measureTicks
+                guard chosen.contains(bar), let offset = chosen.firstIndex(of: bar) else { continue }
+                let barStartX = framing + widths[..<offset].reduce(0, +)
+                let progress = min(1, max(0, Double(mark.tick - bar * measureTicks) / Double(measureTicks)))
+                let px = barStartX + progress * widths[offset]
+                bottomPlaced.append(SheetDraft.Placed(x: px, trackIndex: -1,
+                                                      symbol: mark.down
+                                                          ? .pedalDown(startTicks: mark.tick)
+                                                          : .pedalUp(startTicks: mark.tick)))
             }
             // the system closes with a barline, a thin double one at the end
             let closing: SheetDraft.Symbol = measure + chosen.count >= count

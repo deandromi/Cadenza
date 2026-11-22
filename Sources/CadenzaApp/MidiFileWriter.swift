@@ -23,29 +23,49 @@ public enum MidiFileWriter {
         // so one second of audio maps to 960 ticks.
         track.append(contentsOf: [0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20])
 
-        var events: [(tick: Int, isOn: Bool, pitch: Int, velocity: Int)] = []
+        // The note's own length is the key's: a score and another app's
+        // playback both read it that way. Whatever the pedal added is written
+        // where a pedal belongs — as CC64 — so a chord struck once and held by
+        // the pedal sounds exactly as long as before while reading as one
+        // chord instead of a chain of ties.
+        enum Message {
+            case noteOn(pitch: Int, velocity: Int)
+            case noteOff(pitch: Int)
+            case pedal(down: Bool)
+        }
+        var wire: [(tick: Int, rank: Int, pitch: Int, message: Message)] = []
         for note in notes {
-            let onsetTick = tick(ofSeconds: note.onset)
-            let durationTicks = max(1, tick(ofSeconds: note.duration))
-            events.append((onsetTick, true, note.pitch, note.velocity))
-            events.append((onsetTick + durationTicks, false, note.pitch, 64))
+            let onset = tick(ofSeconds: note.onset)
+            wire.append((onset, 2, note.pitch, .noteOn(pitch: note.pitch, velocity: note.velocity)))
+            wire.append((onset + max(1, tick(ofSeconds: note.keyDuration)), 0, note.pitch,
+                         .noteOff(pitch: note.pitch)))
+        }
+        for span in Self.pedalSpans(of: notes) {
+            wire.append((span.start, 1, 0, .pedal(down: true)))
+            wire.append((span.end, 1, 0, .pedal(down: false)))
         }
         // Note-offs precede note-ons at the same tick so a reiterated pitch
-        // releases before it is struck again.
-        events.sort { lhs, rhs in
+        // releases before it is struck again, and the pedal moves between them.
+        wire.sort { lhs, rhs in
             if lhs.tick != rhs.tick { return lhs.tick < rhs.tick }
-            if lhs.isOn != rhs.isOn { return !lhs.isOn }
+            if lhs.rank != rhs.rank { return lhs.rank < rhs.rank }
             return lhs.pitch < rhs.pitch
         }
 
         var previousTick = 0
-        for event in events {
-            let delta = min(max(event.tick - previousTick, 0), maxDelta)
+        for item in wire {
+            let delta = min(max(item.tick - previousTick, 0), maxDelta)
             track.append(contentsOf: variableLengthQuantity(delta))
-            previousTick = event.tick
-            let status: UInt8 = event.isOn ? 0x90 : 0x80
-            let velocity = UInt8(min(max(event.velocity, 1), 127))
-            track.append(contentsOf: [status, UInt8(event.pitch & 0x7F), velocity])
+            previousTick = item.tick
+            switch item.message {
+            case .noteOff(let pitch):
+                track.append(contentsOf: [0x80, UInt8(pitch & 0x7F), 64])
+            case .noteOn(let pitch, let velocity):
+                track.append(contentsOf: [0x90, UInt8(pitch & 0x7F),
+                                          UInt8(min(max(velocity, 1), 127))])
+            case .pedal(let down):
+                track.append(contentsOf: [0xB0, 64, down ? 127 : 0])
+            }
         }
 
         // End of track meta event.
@@ -57,6 +77,28 @@ public enum MidiFileWriter {
         bytes.append(contentsOf: chunk(id: "MThd", payload: headerPayload()))
         bytes.append(contentsOf: chunk(id: "MTrk", payload: track))
         try Data(bytes).write(to: url)
+    }
+
+    /// The pedal's own spans, in ticks: every note that outlived its key says
+    /// how long the string kept ringing, and spans that touch or overlap are
+    /// one press, because a pedal cannot lift and return within a tick.
+    private static func pedalSpans(of notes: [NoteEvent]) -> [(start: Int, end: Int)] {
+        var spans: [(start: Int, end: Int)] = []
+        for note in notes where note.isPedalled {
+            let down = tick(ofSeconds: note.onset + note.keyDuration)
+            let up = tick(ofSeconds: note.offset)
+            if up > down { spans.append((down, up)) }
+        }
+        spans.sort { $0.start < $1.start }
+        var merged: [(start: Int, end: Int)] = []
+        for span in spans {
+            if let last = merged.last, span.start <= last.end {
+                merged[merged.count - 1].end = max(last.end, span.end)
+            } else {
+                merged.append(span)
+            }
+        }
+        return merged
     }
 
     /// Rounds seconds to integer ticks under the file's 960 ticks per second.

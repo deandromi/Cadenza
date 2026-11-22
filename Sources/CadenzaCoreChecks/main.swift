@@ -1009,10 +1009,10 @@ pedalChecks: do {
 }
 
 pedalSheet: do {
-    // The engraved edition carries no pedal marks: a pedalled performance
-    // has a span under almost every chord, and a mark in the wrong place
-    // reads worse than none. What the engraver must still guarantee is that
-    // the pedal never disturbs the notes it sounds under.
+    // A pedal span is drawn as the pedal: "Ped." where it goes down, the
+    // release star where it lifts, a line between. What it may never do is
+    // move a note, change a value or alter a bar, so the notes stay exactly
+    // what they were without it.
     let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
     let notes = [
         NoteEvent(pitch: 60, velocity: 80, onset: 0.0, duration: 1.8),
@@ -1025,16 +1025,32 @@ pedalSheet: do {
     let pedalled = SheetDraft.draft(notes: notes, options: options, pedals: [
         SheetDraft.PedalSpan(startTick: 950, endTick: 1500),
     ])
-    let pedalMarks = pedalled.bottomTrack.filter {
-        if case .pedalDown = $0 { return true }
-        if case .pedalUp = $0 { return true }
-        return false
+    // A release and a press a few milliseconds apart are one held pedal: the
+    // score prints one "Ped.", not two.
+    let stuttered = PedalSpans.merged([(start: 1.0, end: 2.0), (start: 2.02, end: 3.0),
+                                       (start: 6.0, end: 7.0)])
+    expect(stuttered.count == 2, "a stuttered pedal reads as one pedal")
+    expect(stuttered.first.map { abs($0.end - 3.0) < 1e-9 } == true,
+           "the merged pedal lasts until the player really lifted")
+    expect(stuttered.last.map { abs($0.start - 6.0) < 1e-9 } == true,
+           "a pedal pressed later stays its own pedal")
+
+    // The marks live in the layout, because that is where their x is decided:
+    // a pedal sits between two columns, not on one.
+    var downs = 0
+    var ups = 0
+    for placed in pedalled.rows.flatMap(\.bottom) {
+        if case .pedalDown = placed.symbol { downs += 1 }
+        if case .pedalUp = placed.symbol { ups += 1 }
     }
-    expect(pedalMarks.isEmpty, "pedal spans stay out of the ink")
+    expect(downs == 1 && ups == 1, "one span prints one pedal mark and one release, got \(downs)/\(ups)")
     expect(pedalled.topTrack == plain.topTrack, "the pedal leaves the treble untouched")
-    expect(pedalled.bottomTrack == plain.bottomTrack, "the pedal leaves the bass untouched")
-    expect(pedalled.rows == plain.rows, "the pedal leaves the layout untouched")
-}
+    let bassNotes = { (result: SheetDraft.Result) in
+        result.bottomTrack.filter { if case .chord = $0 { return true } else { return false } }
+    }
+    expect(bassNotes(pedalled) == bassNotes(plain), "the pedal leaves the bass notes untouched")
+    expect(pedalled.ties == plain.ties, "the pedal neither adds nor removes a tie")
+    expect(pedalled.beamGroups == plain.beamGroups, "the pedal leaves the beaming alone")}
 
 sheetLayout: do {
     // Four bars of waltz: a bass note on the downbeat, chords on the two

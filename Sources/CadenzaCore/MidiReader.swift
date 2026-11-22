@@ -269,7 +269,7 @@ public enum MidiReader {
             tempoChanges: tempos,
             timeSignatures: timeSignatures.sorted { $0.tick < $1.tick },
             keySignatures: keySignatures.sorted { $0.tick < $1.tick },
-            sustainPedals: sustainPedals.sorted { $0.start < $1.start },
+            sustainPedals: PedalSpans.merged(sustainPedals),
             title: fileTitle,
             heldNotes: held
         )

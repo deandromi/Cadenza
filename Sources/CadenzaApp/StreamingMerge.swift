@@ -122,6 +122,11 @@ struct StreamingMerge {
             )
             let end = max(event.offsetSeconds, note.onset + 1e-8)
             note.duration = end - note.onset
+            // The key came up earlier than the string stopped: the refiner
+            // stretches the *sound* to the pedal's release, and this keeps the
+            // release the model itself decoded, which is what a sheet writes.
+            note.keyDuration = max(WindowGeometry.minimumNoteDuration,
+                                   min(note.duration, event.keyOffsetSeconds - note.onset))
 
             // noise-floor phantoms never become events
             let isStrikeCandidate = event.hasOnset && note.duration >= WindowGeometry.minimumNoteDuration
@@ -236,6 +241,7 @@ struct StreamingMerge {
                 let releaseEnd = min(live.offset, candidate.onset - 0.002)
                 var released = live
                 released.duration = max(clipped(releaseEnd, to: live) - live.onset, 1e-8)
+                released.keyDuration = min(released.keyDuration, released.duration)
                 emissions.append(Emission(kind: .released, event: released))
                 history[index] = candidate
                 emissions.append(Emission(kind: .struck, event: candidate))
@@ -249,6 +255,8 @@ struct StreamingMerge {
                 let newEnd = max(live.offset, candidate.offset)
                 if newEnd > live.offset + 1e-8 {
                     history[index].duration = newEnd - live.onset
+                    history[index].keyDuration = max(history[index].keyDuration,
+                                                    min(candidate.keyDuration, history[index].duration))
                     emissions.append(Emission(kind: .extended, event: history[index]))
                 }
             }
@@ -264,6 +272,7 @@ struct StreamingMerge {
                 let releaseEnd = min(live.offset, candidate.onset - 0.002)
                 var released = live
                 released.duration = max(clipped(releaseEnd, to: live) - live.onset, 1e-8)
+                released.keyDuration = min(released.keyDuration, released.duration)
                 emissions.append(Emission(kind: .released, event: released))
                 liveIndex[pitch] = nil
             }

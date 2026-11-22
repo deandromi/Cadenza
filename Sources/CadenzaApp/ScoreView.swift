@@ -187,6 +187,9 @@ final class ScoreView: NSView {
             drawSlurs(row: row, track: 0, yOn: yOnTreble, gap: gap, ink: ink)
             drawSlurs(row: row, track: 1, yOn: yOnBass, gap: gap, ink: ink)
 
+            // the sustain pedal, written where the score puts it
+            drawPedals(row.bottom, bassBottom: bassBottom, rightX: rightX, gap: gap, ink: ink)
+
 
         }
     }
@@ -333,7 +336,13 @@ final class ScoreView: NSView {
     /// star where it lifts, a line between them, all below the bass staff.
     /// A pedal still down at a row's end runs its line to the final bar.
     private func drawPedals(_ placed: [SheetDraft.Placed], bassBottom: CGFloat, rightX: CGFloat, gap: CGFloat, ink: NSColor) {
-        let lineY = bassBottom + 1.55 * gap
+        guard !placed.isEmpty else { return }
+        // The pedal line runs under everything the bass staff already prints,
+        // so a low chord or a ledger line never crosses "Ped.".
+        let deepest = lowestPrintedPosition(placed)
+        let inkBottom = bassBottom - CGFloat(deepest) * gap / 2
+        let lineY = min(max(bassBottom + 3.1 * gap, inkBottom + 1.5 * gap),
+                         bassBottom + 8.0 * gap)
         // placed.x is in staff spaces from the row start; convert like the
         // symbol loop does
         func pedalX(_ item: SheetDraft.Placed) -> CGFloat {
@@ -369,6 +378,23 @@ final class ScoreView: NSView {
             ink.withAlphaComponent(0.75).setStroke()
             strokeLine(from: NSPoint(x: start, y: lineY), to: NSPoint(x: rightX, y: lineY), width: 0.9)
         }
+    }
+
+    /// The low edge of a staff's printed ink, in staff positions: the lowest
+    /// note of the lowest chord, or where a voice's rests sit.
+    private func lowestPrintedPosition(_ placed: [SheetDraft.Placed]) -> Int {
+        var lowest = 0
+        for item in placed {
+            switch item.symbol {
+            case .chord(let chord):
+                for note in chord.notes { lowest = min(lowest, note.staffPosition) }
+            case .restVoiced(_, _, let voice):
+                lowest = min(lowest, voice == 0 ? -2 : -4)
+            default:
+                break
+            }
+        }
+        return lowest
     }
 
     /// Rests are placed by their ink, not by their baseline: a whole rest

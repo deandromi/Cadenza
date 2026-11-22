@@ -57,6 +57,41 @@ extension SmokeMain {
         }
     }
 
+    /// The pedal round trip: a note struck and kept ringing by the pedal is
+    /// written with the key's own length plus a sustain span, and reading the
+    /// file back must give the sheet the key's length and the pedal's span —
+    /// the two facts the engraver needs and the one the writer used to lose.
+    private static func checkPedalRoundTrip() throws {
+        let notes = [
+            NoteEvent(pitch: 60, velocity: 70, onset: 1.0, duration: 4.0, keyDuration: 0.5),
+            NoteEvent(pitch: 64, velocity: 70, onset: 1.0, duration: 4.0, keyDuration: 0.5),
+        ]
+        let url = URL(fileURLWithPath: "/tmp/cadenza_pedal.mid")
+        try MidiFileWriter.write(notes, to: url)
+        guard let file = try? MidiReader.read(url: url) else {
+            print("midi probe FAILED: the pedal file does not read back")
+            exit(1)
+        }
+        let keyed = file.heldNotes
+        guard keyed.count == 2,
+              keyed.allSatisfy({ abs($0.duration - 0.5) < 0.02 }) else {
+            print("midi probe FAILED: key lengths came back as \(keyed.map(\.duration))")
+            exit(1)
+        }
+        guard file.sustainPedals.count == 1,
+              abs(file.sustainPedals[0].start - 1.5) < 0.03,
+              abs(file.sustainPedals[0].end - 5.0) < 0.03 else {
+            print("midi probe FAILED: pedal spans came back as \(file.sustainPedals)")
+            exit(1)
+        }
+        let sounding = file.notes
+        guard sounding.allSatisfy({ abs($0.duration - 4.0) < 0.05 }) else {
+            print("midi probe FAILED: the pedal no longer sustains (\(sounding.map(\.duration)))")
+            exit(1)
+        }
+        print("midi probe PASSED: keys 0.5 s, pedal 1.5-5.0 s, sound 4.0 s")
+    }
+
     /// MIDI file writer check: three notes in, structurally parsed back out.
     static func runMidiProbe() {
         var notes: [NoteEvent] = [
@@ -102,6 +137,7 @@ extension SmokeMain {
                 exit(1)
             }
             print("midi probe PASSED: \(bytes.count) bytes, 3 note-ons, 1 note-off found")
+            try Self.checkPedalRoundTrip()
         } catch {
             print("midi probe FAILED: \(error)")
             exit(1)
