@@ -180,6 +180,8 @@ public enum SheetEngraver {
         applyBeams(to: &top, track: 0, options: options, groups: &groups, nextID: &nextID)
         applyBeams(to: &bottom, track: 1, options: options, groups: &groups, nextID: &nextID)
 
+        let ties = SheetEngraver.ties(in: top.symbols, measureTicks: measureTicks, track: 0)
+            + SheetEngraver.ties(in: bottom.symbols, measureTicks: measureTicks, track: 1)
         let rows = layout(top: top, bottom: bottom, options: options, pageWidth: pageWidth)
 
         // Pedal spans are known but not inked yet: a mark in the wrong place
@@ -193,17 +195,49 @@ public enum SheetEngraver {
 
         return SheetDraft.Result(options: options, fifths: fifths,
                                  topTrack: top.symbols, bottomTrack: bottom.symbols,
-                                 rows: rows, beamGroups: groups,
+                                 rows: rows, beamGroups: groups, ties: ties,
                                  width: max(pageWidth, widest), rowHeight: rowHeight,
                                  totalHeight: totalHeight(forRows: rows.count),
                                  rowsPerPage: systemsPerPage)
     }
 
+    // MARK: ties
+
+    /// The pitched continuations a score has to tie. A note marked as running
+    /// past its barline is tied to the first column of the next measure that
+    /// strikes the same pitch; if nothing does, there is no tie and the note
+    /// simply ends where it ended.
+    static func ties(in symbols: [SheetDraft.Symbol], measureTicks: Int, track: Int) -> [SheetDraft.Tie] {
+        guard measureTicks > 0 else { return [] }
+        // the columns of each measure, in order
+        var measures: [Int: [(start: Int, chord: SheetDraft.Chord)]] = [:]
+        for symbol in symbols {
+            guard case .chord(let chord) = symbol else { continue }
+            let measure = chord.startTicks / measureTicks
+            measures[measure, default: []].append((chord.startTicks, chord))
+        }
+        for key in measures.keys {
+            measures[key]?.sort { $0.start < $1.start }
+        }
+        var result: [SheetDraft.Tie] = []
+        for (measure, columns) in measures.sorted(by: { $0.key < $1.key }) {
+            guard let last = columns.last,
+                  let next = measures[measure + 1]?.first else { continue }
+            for note in last.chord.notes where note.tieToNext {
+                guard next.chord.notes.contains(where: { $0.pitch == note.pitch }) else { continue }
+                result.append(SheetDraft.Tie(track: track, pitch: note.pitch,
+                                             fromTicks: last.start, toTicks: next.start))
+            }
+        }
+        return result
+    }
+
     // MARK: page metrics
 
-    /// Ten measures to a system and four systems to a page: the proportions
-    /// of an engraved edition rather than a scrolling strip.
-    public static let measuresPerSystem = 10
+    /// Seven measures to a system and four systems to a page: the
+    /// proportions of an engraved edition rather than a scrolling strip.
+    /// Ten made the page a wall of bars; a waltz breathes at seven.
+    public static let measuresPerSystem = 7
     public static let systemsPerPage = 4
     /// How wide a system is, in staff spaces: the paper the sheet is laid
     /// out for, and the width the renderer and the PDF agree on.
@@ -253,6 +287,8 @@ public enum SheetEngraver {
             result.symbols.append(.bar(startTicks: absolute))
             var indices: [Int] = []
             var cursor = 0
+            // the accidentals this measure has already printed, by line
+            var shownAccidentals = Set<String>()
             let moments = grouped.keys.sorted()
             if moments.isEmpty {
                 // an empty bar is one whole rest, centred, not a bar of beats
@@ -280,14 +316,25 @@ public enum SheetEngraver {
                 // which of these notes is still sounding when the bar ends:
                 // those get a tie over the barline
                 let held = Set(notes.filter(\.tied).map(\.pitch))
+                // The slot this column owns: until the hand's next column,
+                // never past the bar. On paper a note fills its slot, so a
+                // half note stays a half instead of decaying into the beat
+                // under it. Only a finger that lifts inside the first half
+                // of the slot prints short (a staccato), because notation
+                // cannot write "eighty percent of a quarter".
+                let slot = max(gridSmall, min(room, next - moment))
                 notes = notes.map { note in
                     var copy = note
-                    copy.duration = max(gridSmall, min(room, next - moment))
+                    let played = min(note.duration, slot)
+                    copy.duration = played * 2 >= slot
+                        ? slot
+                        : max(gridSmall, (played / gridSmall) * gridSmall)
                     return copy
                 }
                 indices.append(result.symbols.count)
                 result.symbols.append(.chord(chord(from: notes, at: absolute + moment,
-                                                   clef: clef, fifths: fifths, held: held)))
+                                                   clef: clef, fifths: fifths, held: held,
+                                                   shown: &shownAccidentals)))
                 let chordEnd = min(end, notes.map { $0.start + $0.duration }.max() ?? moment)
                 cursor = max(cursor, chordEnd)
             }
@@ -356,18 +403,23 @@ public enum SheetEngraver {
     /// One chord from the notes sharing a grid moment.
     private static func chord(from notes: [Event], at start: Int,
                               clef: SheetDraft.Clef, fifths: Int,
-                              held: Set<Int> = []) -> SheetDraft.Chord {
+                              held: Set<Int> = [],
+                              shown: inout Set<String>) -> SheetDraft.Chord {
         var glyphs: [SheetDraft.NoteGlyph] = []
-        var shown = Set<String>()
         for note in notes {
             let value = SheetDraft.noteValue(note.duration)
             let position = clef.position(ofPitch: note.pitch)
             var accidental = SheetDraft.accidental(pitchClass: ((note.pitch % 12) + 12) % 12,
                                                    fifths: fifths)
-            // a measure remembers: the same accidental on the same line shows once
+            // a measure remembers: the same accidental on the same line shows
+            // once, and a line the key already spells carries none
             if accidental != .none {
                 let key = "\(position)-\(accidental)"
-                if shown.contains(key) { accidental = .none } else { shown.insert(key) }
+                if shown.contains(key) {
+                    accidental = .none
+                } else {
+                    shown.insert(key)
+                }
             }
             glyphs.append(SheetDraft.NoteGlyph(
                 pitch: note.pitch,
@@ -393,8 +445,11 @@ public enum SheetEngraver {
             stems = [SheetDraft.Stem(noteRange: 0..<notes.count, up: up,
                                      flags: shortest.flags, beamGroupId: nil)]
         }
-        let end = notes.map { $0.start + $0.duration }.max() ?? start
-        return SheetDraft.Chord(startTicks: start, endTicks: end, notes: glyphs, stems: stems)
+        // the events carry bar-local starts, this chord carries an absolute
+        // one: the end is the start plus the longest played length
+        let longest = notes.map(\.duration).max() ?? 0
+        return SheetDraft.Chord(startTicks: start, endTicks: start + longest,
+                               notes: glyphs, stems: stems)
     }
 
     // MARK: beaming
@@ -487,7 +542,7 @@ public enum SheetEngraver {
         /// bar is never handed a width that forces its columns to collide.
         func naturalWidth(_ measure: Int) -> Double {
             let columns = Set(starts(top, measure) + starts(bottom, measure)).count
-            return 2.8 + Double(max(1, columns)) * 2.0
+            return 3.0 + Double(max(1, columns)) * 2.4
         }
 
         var rows: [SheetDraft.Row] = []
@@ -510,7 +565,7 @@ public enum SheetEngraver {
             // squeezed rather than allowed to overflow.
             let naturalTotal = naturals.reduce(0, +)
             let stretch = naturalTotal > 0
-                ? min(max(usable / naturalTotal, 0.92), 1.9) : 1.0
+                ? min(max(usable / naturalTotal, 0.92), 2.3) : 1.0
             let widths = naturals.map { $0 * stretch }
 
             var topPlaced: [SheetDraft.Placed] = []
@@ -577,7 +632,9 @@ public enum SheetEngraver {
     private static func columnMap(moments: [Int], x: Double,
                                   measureWidth: Double, measureTicks: Int) -> [Int: Double] {
         let inner = max(3.0, measureWidth - 2.6)
-        let floorGap = 1.55
+        // an accidental needs its own air to the left of the head, so two
+        // columns never sit closer than this
+        let floorGap = 2.05
         guard !moments.isEmpty else { return [:] }
         var gaps: [Double] = []
         for (offset, moment) in moments.enumerated() {

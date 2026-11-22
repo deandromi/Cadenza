@@ -252,6 +252,25 @@ public enum SheetDraft {
         public let flags: Int
     }
 
+    /// One tie: a pitch that keeps sounding through a barline, from the last
+    /// column of one measure to the first of the next. The engraver decides
+    /// this; the renderer draws exactly these and nothing else.
+    public struct Tie: Sendable, Equatable, Hashable {
+        public let track: Int
+        public let pitch: Int
+        /// Absolute ticks of the outgoing note, the end of its measure.
+        public let fromTicks: Int
+        /// Absolute ticks of the incoming note, the start of the next measure.
+        public let toTicks: Int
+
+        public init(track: Int, pitch: Int, fromTicks: Int, toTicks: Int) {
+            self.track = track
+            self.pitch = pitch
+            self.fromTicks = fromTicks
+            self.toTicks = toTicks
+        }
+    }
+
     /// One system row: the top and bottom staves with their placed symbols.
     public struct Row: Sendable, Equatable {
         public let clefTop: Clef
@@ -275,6 +294,8 @@ public enum SheetDraft {
         public let bottomTrack: [Symbol]
         public let rows: [Row]
         public let beamGroups: [BeamGroup]
+        /// The ties the score carries, one per pitched continuation.
+        public let ties: [Tie]
         /// Page width in staff spaces.
         public let width: Double
         /// Height of one row in staff spaces.
@@ -286,12 +307,14 @@ public enum SheetDraft {
         public let rowsPerPage: Int
 
         public init(options: Options, fifths: Int, topTrack: [Symbol], bottomTrack: [Symbol],
-                    rows: [Row], beamGroups: [BeamGroup], width: Double, rowHeight: Double,
+                    rows: [Row], beamGroups: [BeamGroup], ties: [Tie] = [],
+                    width: Double, rowHeight: Double,
                     totalHeight: Double, rowsPerPage: Int = 0) {
             self.options = options
             self.fifths = fifths
             self.topTrack = topTrack
             self.bottomTrack = bottomTrack
+            self.ties = ties
             self.rows = rows
             self.beamGroups = beamGroups
             self.width = width

@@ -772,7 +772,11 @@ do {
         }
         return false
     }
-    expect(beamedChords.count == 2, "the on-beat eighths get beamed, the trailing ones stand alone")
+    // Four eighths on beats one and two: two beams, one per beat, and no
+    // eighth left carrying a lone flag that nobody can read.
+    expect(result.beamGroups.map(\.chordIndices.count) == [2, 2],
+           "four eighths beam as two beats of pairs")
+    expect(beamedChords.count == 4, "every eighth of a beat is beamed")
 }
 
 do {

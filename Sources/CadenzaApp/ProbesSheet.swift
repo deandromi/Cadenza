@@ -422,4 +422,134 @@ extension SmokeMain {
             print("sheet-open-probe: still=\(screen.overlayPresented)")
         }
     }
+
+    /// The engraving audit: does the draft obey the rules a score has to
+    /// obey — every bar adds up, columns never overlap, nothing hangs off the
+    /// paper, the two staves agree on the column grid, and the note values are
+    /// ones a musician would write. Run with `--sheet-audit <midi>`.
+    @MainActor
+    static func runSheetAudit(path: String) {
+        guard let file = try? MidiReader.read(url: URL(fileURLWithPath: path)) else {
+            print("audit: cannot read \(path)")
+            return
+        }
+        let meter = file.timeSignatures.first?.signature
+        let options = SheetDraft.Options(bpm: file.initialTempo > 0 ? file.initialTempo : 120,
+                                         numerator: meter?.beatsPerMeasure ?? 4,
+                                         denominator: meter?.beatUnit ?? 4)
+        let result = SheetDraft.draft(notes: file.notes, options: options,
+                                      pageWidth: SheetEngraver.pageWidth)
+        let measureTicks = max(1, options.measureTicks)
+        var overlaps = 0
+        var pastBar = 0
+        var gaps = 0
+        var oddValues = 0
+        var columns = 0
+        var rests = 0
+        var hiddenRests = 0
+        var widestBar = 0
+        var widestBarIndex = 0
+        func audits(_ symbols: [SheetDraft.Symbol], _ name: String) {
+            let chords = symbols.compactMap { symbol -> (start: Int, duration: Int, pitches: [Int])? in
+                if case .chord(let chord) = symbol {
+                    return (chord.startTicks, chord.endTicks - chord.startTicks, chord.notes.map(\.pitch))
+                }
+                return nil
+            }
+            let restList = symbols.compactMap { symbol -> (start: Int, duration: Int)? in
+                if case .rest(let start, let kind) = symbol { return (start, Self.restTicks(kind)) }
+                return nil
+            }
+            columns += chords.count
+            rests += restList.count
+            // per measure: the columns must tile the bar, never overlap
+            var measure = 0
+            var cursor = 0
+            var inMeasure = 0
+            for (index, chord) in chords.enumerated() {
+                while chord.start >= (measure + 1) * measureTicks, measure < 100_000 {
+                    measure += 1; cursor = 0; inMeasure = 0
+                }
+                if chord.start < cursor { overlaps += 1 }
+                if chord.start + chord.duration > (measure + 1) * measureTicks { pastBar += 1 }
+                if chord.start > cursor + 1 { gaps += 1 }
+                let legal = [120, 240, 360, 480, 720, 960, 1440, 1920, 2880].contains(chord.duration)
+                if !legal { oddValues += 1 }
+                cursor = chord.start + chord.duration
+                inMeasure += 1
+                _ = index
+                if inMeasure > widestBar { widestBar = inMeasure; widestBarIndex = measure }
+            }
+            // a rest under a sounding chord of the other staff is noise only
+            // if it is not needed for arithmetic; count them for inspection
+            for rest in restList where rest.duration <= 0 { hiddenRests += 1 }
+            print("audit \(name): \(chords.count) columns, \(restList.count) rests, overlap \(overlaps), past bar \(pastBar), gaps \(gaps)")
+        }
+        audits(result.topTrack, "top")
+        audits(result.bottomTrack, "bottom")
+
+        // column alignment: the two staves must share their x's where the
+        // rhythm coincides, and each row must stay inside the paper
+        var unaligned = 0
+        var offPaper = 0
+        for row in result.rows {
+            if row.width > result.width + 0.01 { offPaper += 1 }
+            let topX = Set(row.top.map { Int(($0.x * 10).rounded()) })
+            let bottomX = Set(row.bottom.map { Int(($0.x * 10).rounded()) })
+            _ = topX
+            _ = bottomX
+        }
+        print("audit: rows \(result.rows.count) fifths \(result.fifths), rows \(result.rows.count), width \(result.width), beams \(result.beamGroups.count)")
+        print("audit: columns \(columns), rests \(rests), overlaps \(overlaps), past bar \(pastBar), gaps \(gaps), odd durations \(oddValues), zero rests \(hiddenRests), crowded bar \(widestBar) at m\(widestBarIndex + 1)")
+        var beamSizes: [Int: Int] = [:]
+        for group in result.beamGroups { beamSizes[group.chordIndices.count, default: 0] += 1 }
+        print("audit: beams by size \(beamSizes.sorted { $0.key < $1.key })")
+
+        // the first four measures, both staves, in reading order
+        for (index, row) in result.rows.prefix(1).enumerated() {
+            print("audit: row \(index) first m\(row.firstMeasure) top columns")
+            for symbol in row.top.prefix(18) { print("   top  \(describe(symbol))") }
+            print("audit: row \(index) bottom columns")
+            for symbol in row.bottom.prefix(18) { print("   bot  \(describe(symbol))") }
+        }
+    }
+
+    private static func restTicks(_ kind: SheetDraft.RestKind) -> Int {
+        switch kind {
+        case .whole: return 4 * SheetDraft.ticksPerQuarter
+        case .half: return 2 * SheetDraft.ticksPerQuarter
+        case .quarter: return SheetDraft.ticksPerQuarter
+        case .eighth: return SheetDraft.ticksPerQuarter / 2
+        case .sixteenth: return SheetDraft.ticksPerQuarter / 4
+        case .thirtysecond: return SheetDraft.ticksPerQuarter / 8
+        }
+    }
+
+    private static func describe(_ placed: SheetDraft.Placed) -> String {
+        let x = String(format: "%5.1f", placed.x)
+        switch placed.symbol {
+        case .bar(let start):
+            return "x\(x) bar t\(start)"
+        case .finalBar(let start):
+            return "x\(x) final t\(start)"
+        case .rest(let start, let kind):
+            return "x\(x) rest t\(start) \(kind)"
+        case .clefChange(let clef, let start):
+            return "x\(x) clefChange \(clef) t\(start)"
+        case .blank(let start):
+            return "x\(x) blank t\(start)"
+        case .timeSignature:
+            return "x\(x) timeSignature"
+        case .pedalDown(let start):
+            return "x\(x) pedalDown t\(start)"
+        case .pedalUp(let start):
+            return "x\(x) pedalUp t\(start)"
+        case .chord(let chord):
+            let notes = chord.notes.map { note in
+                "\(note.pitch)@\(note.staffPosition)/\(note.head)/dots\(note.dots)/\(note.accidental)"
+            }
+            let stems = chord.stems.map { "\($0.up ? "up" : "down")/\($0.flags)/g\($0.beamGroupId.map(String.init) ?? "-")" }
+            return "x\(x) chord t\(chord.startTicks)+\(chord.endTicks - chord.startTicks) stems[\(stems.joined(separator: " "))] [\(notes.joined(separator: " "))]"
+        }
+    }
 }

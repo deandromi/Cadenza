@@ -184,63 +184,55 @@ final class ScoreView: NSView {
 
     // MARK: ties
 
-    /// Ties are drawn as two halves, one either side of the barline, the way
-    /// an engraver writes a note that crosses the bar. The outgoing half
-    /// comes from the note the engraver marked, the incoming half from the
-    /// same pitch ending the bar before.
+    /// The ties the engraver wrote, drawn as two halves either side of the
+    /// barline the way a score sets them: one arc closing the measure, one
+    /// opening the next. Nothing here guesses — if the model did not ask for
+    /// a tie, no curve appears.
     private func drawTies(row: SheetDraft.Row, track: Int,
                           yOn: (Int) -> CGFloat, gap: CGFloat, ink: NSColor) {
+        let ties = result.ties.filter { $0.track == track }
+        guard !ties.isEmpty else { return }
         let placed = track == 0 ? row.top : row.bottom
-        var barXs: [CGFloat] = []
-        var chords: [(x: CGFloat, chord: SheetDraft.Chord)] = []
+        var chords: [Int: SheetDraft.Chord] = [:]
+        var xs: [Int: CGFloat] = [:]
+        var barXs: [Int: CGFloat] = [:]
         for item in placed {
             let x = marginX + CGFloat(item.x) * gap
             switch item.symbol {
-            case .bar, .finalBar:
-                barXs.append(x)
             case .chord(let chord):
-                chords.append((x, chord))
+                chords[chord.startTicks] = chord
+                xs[chord.startTicks] = x
+            case .bar(let start), .finalBar(let start):
+                barXs[start] = x
             default:
                 break
             }
         }
-        guard !chords.isEmpty else { return }
-        barXs.sort()
-        chords.sort { $0.x < $1.x }
-
-        for (index, item) in chords.enumerated() {
-            let leftBar = barXs.last(where: { $0 <= item.x + 1 }) ?? (marginX + 1)
-            guard let rightBar = barXs.first(where: { $0 > item.x + 1 }) else { continue }
-            let headHalf = 0.6 * gap
-            let next = index + 1 < chords.count ? chords[index + 1] : nil
-            let previous = index > 0 ? chords[index - 1] : nil
-            // a tie only exists when the same pitch is struck again on the
-            // next downbeat: half a tie hanging over a barline is not music
-            let resumesNextBar = next.map { $0.x >= rightBar && $0.x - rightBar < 1.9 * gap } ?? false
-            let cameFromPrevious = previous.map { $0.x < leftBar && leftBar - $0.x < 1.9 * gap } ?? false
-            let startsThisBar = item.x - leftBar < 1.9 * gap
-
-            for note in item.chord.notes {
-                let y = yOn(note.staffPosition)
-                // ties bow away from the stems, the way an engraver sets them
-                let middle = yOn(4)
-                let bow: CGFloat = y > middle ? 0.48 * gap : -0.48 * gap
-
-                if note.tieToNext, resumesNextBar,
-                   let next, next.chord.notes.contains(where: { $0.pitch == note.pitch }) {
-                    tie(from: NSPoint(x: item.x + headHalf + 0.12 * gap, y: y),
-                        to: NSPoint(x: rightBar - 0.34 * gap, y: y),
-                        bow: bow, gap: gap, ink: ink)
-                }
-                if startsThisBar, cameFromPrevious,
-                   let previous, previous.chord.notes.contains(where: {
-                       $0.pitch == note.pitch && $0.tieToNext
-                   }) {
-                    tie(from: NSPoint(x: leftBar + 0.34 * gap, y: y),
-                        to: NSPoint(x: item.x - headHalf - 0.12 * gap, y: y),
-                        bow: bow, gap: gap, ink: ink)
-                }
-            }
+        let headHalf = 0.62 * gap
+        for link in ties {
+            guard let fromX = xs[link.fromTicks], let toX = xs[link.toTicks],
+                  let chord = chords[link.fromTicks],
+                  let note = chord.notes.first(where: { $0.pitch == link.pitch }) else { continue }
+            // A tie clears the head it leaves and the head it reaches: drawn
+            // at head level it reads as a slur between two different notes,
+            // which is exactly what it is not.
+            let y = yOn(note.staffPosition)
+            // Inside a chord the outer notes bow outward, so two ties a third
+            // apart never land on the same line of the staff.
+            let positions = chord.notes.map(\.staffPosition)
+            let middle = Double((positions.min() ?? 0) + (positions.max() ?? 0)) / 2
+            let away: CGFloat = positions.count == 1
+                ? (y > yOn(4) ? 1 : -1)
+                : (Double(note.staffPosition) > middle ? -1 : 1)
+            let baseline = y + away * 0.62 * gap
+            let bow: CGFloat = away * 0.36 * gap
+            let startX = fromX + headHalf + 0.1 * gap
+            let endX = toX - headHalf - 0.1 * gap
+            guard endX > startX else { continue }
+            // one arc across the barline: splitting it into two leaves a
+            // stub hanging in the air whenever the next measure starts close
+            tie(from: NSPoint(x: startX, y: baseline), to: NSPoint(x: endX, y: baseline),
+                bow: bow, gap: gap, ink: ink)
         }
     }
 
@@ -395,7 +387,11 @@ final class ScoreView: NSView {
                     : note.accidental == .flat ? Glyph.accidentalFlat : Glyph.accidentalNatural
                 let acc = MusicFont.info(cp)
                 let accWidth = (acc?.width ?? 0.9) * fontSize
-                inkGlyph(cp, centerX: cx - 0.55 * gap - accWidth / 2, centerY: cy, gap: gap, ink: ink)
+                // A flat's bounding box runs from the bowl up the stem, so
+                // centring the box drops its bowl a space below the line.
+                // The bowl is the part that must sit on the note's line.
+                let accY = note.accidental == .flat ? cy - 0.9 * gap : cy
+                inkGlyph(cp, centerX: cx - 0.85 * gap - accWidth / 2, centerY: accY, gap: gap, ink: ink)
             }
             let headGlyph = note.head == .whole ? Glyph.noteheadWhole
                 : note.head == .half ? Glyph.noteheadHalf : Glyph.noteheadBlack

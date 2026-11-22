@@ -37,6 +37,12 @@ if CommandLine.arguments.contains("--morph-shot") {
     SmokeMain.runMorphShot()
     exit(0)
 }
+if let index = CommandLine.arguments.firstIndex(of: "--sheet-audit"), CommandLine.arguments.count > index + 1 {
+    let path = CommandLine.arguments[index + 1]
+    @MainActor func go() { SmokeMain.runSheetAudit(path: path) }
+    MainActor.assumeIsolated { go() }
+    exit(0)
+}
 if let index = CommandLine.arguments.firstIndex(of: "--sheet-report"), CommandLine.arguments.count > index + 1 {
     SmokeMain.runSheetReport(path: CommandLine.arguments[index + 1])
     exit(0)
