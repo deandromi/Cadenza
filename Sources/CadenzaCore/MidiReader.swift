@@ -19,6 +19,13 @@ public struct MidiFile: Sendable {
     /// already carry the pedal's effect folded into their durations; this
     /// keeps the pedal itself so the sheet can engrave real pedal lines.
     public var sustainPedals: [(start: Double, end: Double)]
+    /// The score's own name, when the file carries one (meta 0x03). A sheet
+    /// without a title reads as a fragment, so the engraver prints this.
+    public var title: String?
+    /// The same notes with the sustain pedal left out: how long a key was
+    /// actually held. Notation wants these — a pedalled chord is written as
+    /// its written value over a pedal line, not as a tie across four bars.
+    public var heldNotes: [NoteEvent]
 
     public init(
         notes: [NoteEvent],
@@ -26,7 +33,9 @@ public struct MidiFile: Sendable {
         tempoChanges: [(tick: Int, bpm: Double)],
         timeSignatures: [(tick: Int, signature: TimeSignature)],
         keySignatures: [(tick: Int, key: KeySignature)],
-        sustainPedals: [(start: Double, end: Double)] = []
+        sustainPedals: [(start: Double, end: Double)] = [],
+        title: String? = nil,
+        heldNotes: [NoteEvent]? = nil
     ) {
         self.notes = notes
         self.ticksPerQuarter = ticksPerQuarter
@@ -34,6 +43,8 @@ public struct MidiFile: Sendable {
         self.timeSignatures = timeSignatures
         self.keySignatures = keySignatures
         self.sustainPedals = sustainPedals
+        self.title = title
+        self.heldNotes = heldNotes ?? notes
     }
 
     /// The file's tempo at its start; 120 when it carries no tempo event.
@@ -71,6 +82,7 @@ public enum MidiReader {
         var tempoChanges: [(tick: Int, bpm: Double)] = []
         var timeSignatures: [(tick: Int, signature: TimeSignature)] = []
         var keySignatures: [(tick: Int, key: KeySignature)] = []
+        var fileTitle: String?
         // raw notes in ticks: (onTick, offTick, pitch, velocity)
         var raw: [(on: Int, off: Int, pitch: Int, velocity: Int)] = []
         // sustain pedal events across all tracks: (tick, isDown)
@@ -134,6 +146,16 @@ public enum MidiReader {
                         let beats = Int(payload[0])
                         let unit = 1 << Int(payload[1])
                         timeSignatures.append((tick, TimeSignature(beatsPerMeasure: beats, beatUnit: unit)))
+                    case 0x03:
+                        if fileTitle == nil, !payload.isEmpty {
+                            // meta strings are padded with NULs by some
+                            // writers; a title with a NUL is no title
+                            let text = String(decoding: payload, as: UTF8.self)
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                                .trimmingCharacters(in: CharacterSet(charactersIn: "\0"))
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !text.isEmpty { fileTitle = text }
+                        }
                     case 0x59 where length >= 2:
                         let sf = Int(Int8(bitPattern: payload[0]))
                         let minor = payload[1] == 1
@@ -222,16 +244,20 @@ public enum MidiReader {
             sustainPedals.append((seconds(atTick: start), seconds(atTick: trackEndTick)))
         }
 
-        let notes = sustained
-            .map { note in
-                NoteEvent(
-                    pitch: note.pitch,
-                    velocity: note.velocity,
-                    onset: seconds(atTick: note.on),
-                    duration: seconds(atTick: note.off) - seconds(atTick: note.on)
-                )
-            }
-            .sorted { ($0.onset, $0.pitch) < ($1.onset, $1.pitch) }
+        func events(_ source: [(on: Int, off: Int, pitch: Int, velocity: Int)]) -> [NoteEvent] {
+            source
+                .map { note in
+                    NoteEvent(
+                        pitch: note.pitch,
+                        velocity: note.velocity,
+                        onset: seconds(atTick: note.on),
+                        duration: seconds(atTick: note.off) - seconds(atTick: note.on)
+                    )
+                }
+                .sorted { ($0.onset, $0.pitch) < ($1.onset, $1.pitch) }
+        }
+        let notes = events(sustained)
+        let held = events(raw)
 
         return MidiFile(
             notes: notes,
@@ -239,7 +265,9 @@ public enum MidiReader {
             tempoChanges: tempos,
             timeSignatures: timeSignatures.sorted { $0.tick < $1.tick },
             keySignatures: keySignatures.sorted { $0.tick < $1.tick },
-            sustainPedals: sustainPedals.sorted { $0.start < $1.start }
+            sustainPedals: sustainPedals.sorted { $0.start < $1.start },
+            title: fileTitle,
+            heldNotes: held
         )
     }
 

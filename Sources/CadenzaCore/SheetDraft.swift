@@ -111,19 +111,25 @@ public enum SheetDraft {
         case whole, half, quarter, eighth, sixteenth, thirtysecond
     }
 
-    /// What a duration draws, by the classic whole / dotted half / half /
-    /// dotted quarter / quarter / dotted eighth / eighth / sixteenth /
-    /// thirty-second ladder.
+    /// What a duration draws: the largest value of the classic ladder that
+    /// fits inside it. Engraving shares the old rule that a note never
+    /// prints longer than the time it owns — a half note in an 840-tick slot
+    /// would run straight through the column after it — so a length that
+    /// falls between rungs takes the rung below.
     public static func noteValue(_ durationTicks: Int) -> (head: Head, dots: Int, flags: Int) {
-        let whole = 4 * ticksPerQuarter
-        if durationTicks >= 28 * whole / 32 { return (.whole, 0, 0) }
-        if durationTicks >= 20 * whole / 32 { return (.half, 1, 0) }
-        if durationTicks >= 14 * whole / 32 { return (.half, 0, 0) }
-        if durationTicks >= 10 * whole / 32 { return (.filled, 1, 0) }
-        if durationTicks >= 7 * whole / 32 { return (.filled, 0, 0) }
-        if durationTicks >= 5 * whole / 32 { return (.filled, 1, 1) }
-        if durationTicks >= 6 * whole / 64 { return (.filled, 0, 1) }
-        if durationTicks >= 3 * whole / 64 { return (.filled, 0, 2) }
+        let ladder: [(ticks: Int, value: (Head, Int, Int))] = [
+            (4 * ticksPerQuarter, (.whole, 0, 0)),
+            (3 * ticksPerQuarter, (.half, 1, 0)),
+            (2 * ticksPerQuarter, (.half, 0, 0)),
+            (3 * ticksPerQuarter / 2, (.filled, 1, 0)),
+            (ticksPerQuarter, (.filled, 0, 0)),
+            (3 * ticksPerQuarter / 4, (.filled, 1, 1)),
+            (ticksPerQuarter / 2, (.filled, 0, 1)),
+            (3 * ticksPerQuarter / 8, (.filled, 1, 2)),
+            (ticksPerQuarter / 4, (.filled, 0, 2)),
+            (ticksPerQuarter / 8, (.filled, 0, 3)),
+        ]
+        for rung in ladder where durationTicks >= rung.ticks { return rung.value }
         return (.filled, 0, 3)
     }
 

@@ -229,10 +229,25 @@ final class ScoreView: NSView {
             let startX = fromX + headHalf + 0.1 * gap
             let endX = toX - headHalf - 0.1 * gap
             guard endX > startX else { continue }
-            // one arc across the barline: splitting it into two leaves a
-            // stub hanging in the air whenever the next measure starts close
-            tie(from: NSPoint(x: startX, y: baseline), to: NSPoint(x: endX, y: baseline),
-                bow: bow, gap: gap, ink: ink)
+            // Two halves, one either side of the barline, the way a score sets
+            // a tie across a system break: the curve belongs to the measure it
+            // leaves and to the one it enters, so it never sails over the
+            // chords in between.
+            let line = result.options.measureTicks
+            let barTick = (link.toTicks / max(1, line)) * line
+            if let barX = barXs[barTick], barX > startX, barX < endX {
+                let leftEnd = min(barX - 0.15 * gap, endX)
+                tie(from: NSPoint(x: startX, y: baseline), to: NSPoint(x: leftEnd, y: baseline),
+                    bow: bow, gap: gap, ink: ink)
+                let rightStart = max(barX + 0.15 * gap, startX)
+                if endX - rightStart > 0.6 * gap {
+                    tie(from: NSPoint(x: rightStart, y: baseline), to: NSPoint(x: endX, y: baseline),
+                        bow: bow, gap: gap, ink: ink)
+                }
+            } else {
+                tie(from: NSPoint(x: startX, y: baseline), to: NSPoint(x: endX, y: baseline),
+                    bow: bow, gap: gap, ink: ink)
+            }
         }
     }
 
@@ -455,8 +470,13 @@ final class ScoreView: NSView {
         let bottomMap = placedMap(row.bottom)
 
         for group in result.beamGroups {
-            let map = group.track == 0 ? topMap : bottomMap
-            let yOn = group.track == 0 ? topY : bottomY
+            // The beam belongs to the staff its chords were placed on, not to
+            // a track id that a two-stem chord can move: a bass group drawn
+            // against the treble staff's rows hangs its stems below the wrong
+            // staff entirely.
+            let onTop = group.chordIndices.first.map { topMap[$0] != nil } ?? (group.track == 0)
+            let map = onTop ? topMap : bottomMap
+            let yOn = onTop ? topY : bottomY
             var members: [(x: CGFloat, attach: CGFloat)] = []
             for index in group.chordIndices {
                 guard let placed = map[index], case .chord(let chord) = placed.symbol,

@@ -85,28 +85,54 @@ extension SheetDraft {
     /// half, quarter and eighth gaps take one rest; dotted gaps split into
     /// plain plus a shorter one (dotted half = half + quarter); gaps that
     /// bucket to sixteenth or smaller draw nothing.
+    /// The rest a length draws, when that length is exactly a plain value.
+    static func restKind(for length: Int) -> RestKind? {
+        switch length {
+        case ticksPerQuarter: return .quarter
+        case ticksPerQuarter / 2: return .eighth
+        case ticksPerQuarter / 4: return .sixteenth
+        case ticksPerQuarter / 8: return .thirtysecond
+        case 2 * ticksPerQuarter: return .half
+        case 4 * ticksPerQuarter: return .whole
+        default: return nil
+        }
+    }
+
+    /// Fills a stretch of time with rests that add up to it exactly. Rests
+    /// respect the beat where they can — a hole that opens mid-beat is filled
+    /// to the next beat first, so a bar reads as beats instead of a stutter —
+    /// but a rest never runs past the gap it fills: the old thresholds handed
+    /// a 600-tick hole a quarter plus an eighth, which is 720 and landed on
+    /// the next column.
     public static func rests(start: Int, end: Int) -> [Symbol] {
-        let gap = end - start
-        guard gap > 0 else { return [] }
-        let whole = 4 * ticksPerQuarter
-        let q = ticksPerQuarter
-        if gap >= 28 * whole / 32 { return [.rest(startTicks: start, kind: .whole)] }
-        if gap >= 20 * whole / 32 {
-            return [.rest(startTicks: start, kind: .half),
-                    .rest(startTicks: start + 2 * q, kind: .quarter)]
+        var result: [Symbol] = []
+        var cursor = start
+        var left = end - start
+        let rungs: [(length: Int, kind: RestKind)] = [
+            (4 * ticksPerQuarter, .whole),
+            (2 * ticksPerQuarter, .half),
+            (ticksPerQuarter, .quarter),
+            (ticksPerQuarter / 2, .eighth),
+            (ticksPerQuarter / 4, .sixteenth),
+            (ticksPerQuarter / 8, .thirtysecond),
+        ]
+        while left > 0 {
+            let toBeat = ticksPerQuarter - (cursor % ticksPerQuarter)
+            if toBeat < ticksPerQuarter, toBeat <= left, let kind = restKind(for: toBeat) {
+                result.append(.rest(startTicks: cursor, kind: kind))
+                cursor += toBeat
+                left -= toBeat
+                continue
+            }
+            guard let rung = rungs.first(where: { $0.length <= left }) else {
+                // less than a thirty-second left: nothing a musician would draw
+                break
+            }
+            result.append(.rest(startTicks: cursor, kind: rung.kind))
+            cursor += rung.length
+            left -= rung.length
         }
-        if gap >= 14 * whole / 32 { return [.rest(startTicks: start, kind: .half)] }
-        if gap >= 10 * whole / 32 {
-            return [.rest(startTicks: start, kind: .quarter),
-                    .rest(startTicks: start + q, kind: .eighth)]
-        }
-        if gap >= 7 * whole / 32 { return [.rest(startTicks: start, kind: .quarter)] }
-        if gap >= 5 * whole / 32 {
-            return [.rest(startTicks: start, kind: .eighth),
-                    .rest(startTicks: start + q / 2, kind: .sixteenth)]
-        }
-        if gap >= 6 * whole / 64 { return [.rest(startTicks: start, kind: .eighth)] }
-        return []
+        return result
     }
 
     // MARK: symbol list

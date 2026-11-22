@@ -270,8 +270,8 @@ extension SmokeMain {
                         endTick: SheetDraft.ticks(seconds: span.end, options: options))
                 }
                 : []
-            let result = SheetDraft.draft(notes: file.notes, options: options, pageWidth: SheetEngraver.pageWidth,
-                                          pedals: pedalSpans)
+            let result = SheetDraft.draft(notes: file.heldNotes, options: options, pageWidth: SheetEngraver.pageWidth,
+                                          pedals: pedalSpans, originTicks: 0)
             print("sheet draft: \(result.rows.count) rows, fifths \(result.fifths), "
                 + "\(result.beamGroups.count) beams, options \(result.options.numerator)/\(result.options.denominator)")
 
@@ -289,8 +289,28 @@ extension SmokeMain {
                 print("pdf: cannot read \(path)")
                 exit(1)
             }
+            let meter = file.timeSignatures.first?.signature
+            let options = SheetDraft.Options(
+                bpm: file.initialTempo > 0 ? file.initialTempo : 120,
+                numerator: meter?.beatsPerMeasure ?? 4,
+                denominator: meter?.beatUnit ?? 4)
+            let pedals = file.sustainPedals.map { span in
+                SheetDraft.PedalSpan(
+                    startTick: SheetDraft.ticks(seconds: span.start, options: options),
+                    endTick: SheetDraft.ticks(seconds: span.end, options: options))
+            }
+            // A DAW names its track "Piano"; that is not a title. Only the
+            // score's own name beats the file's name.
+            let fallback = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+                .replacingOccurrences(of: "-", with: " ")
+                .capitalized
+            let generic: Set<String> = ["piano", "piano 1", "piano 2", "track 1", "music", "untitled"]
+            let metaTitle = file.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = metaTitle.flatMap { generic.contains($0.lowercased()) ? nil : $0 } ?? fallback
             do {
-                try SheetPDF.write(notes: file.notes, to: URL(fileURLWithPath: out))
+                try SheetPDF.write(notes: file.heldNotes, options: options, originTicks: 0,
+                                   title: title, pedals: pedals,
+                                   to: URL(fileURLWithPath: out))
                 print("pdf: wrote \(out)")
             } catch {
                 print("pdf: \(error.localizedDescription)")
@@ -318,7 +338,8 @@ extension SmokeMain {
                 SheetDraft.PedalSpan(startTick: SheetDraft.ticks(seconds: span.start, options: options),
                                      endTick: SheetDraft.ticks(seconds: span.end, options: options))
             }
-            let result = SheetDraft.draft(notes: file.notes, options: options, pageWidth: SheetEngraver.pageWidth, pedals: pedals)
+            let result = SheetDraft.draft(notes: file.heldNotes, options: options, pageWidth: SheetEngraver.pageWidth,
+                                          pedals: pedals, originTicks: 0)
             let guessed = SheetDraft.inferredOptions(notes: file.notes)
             print("report: inferred tempo \(Int(guessed.bpm)) meter \(guessed.numerator)/\(guessed.denominator)")
             print("report: notes \(file.notes.count), range \(file.notes.map(\.pitch).min() ?? 0)-\(file.notes.map(\.pitch).max() ?? 0), "
@@ -437,8 +458,9 @@ extension SmokeMain {
         let options = SheetDraft.Options(bpm: file.initialTempo > 0 ? file.initialTempo : 120,
                                          numerator: meter?.beatsPerMeasure ?? 4,
                                          denominator: meter?.beatUnit ?? 4)
-        let result = SheetDraft.draft(notes: file.notes, options: options,
-                                      pageWidth: SheetEngraver.pageWidth)
+        let result = SheetDraft.draft(notes: file.heldNotes, options: options,
+                                      pageWidth: SheetEngraver.pageWidth,
+                                      originTicks: 0)
         let measureTicks = max(1, options.measureTicks)
         var overlaps = 0
         var pastBar = 0

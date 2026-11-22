@@ -23,6 +23,11 @@ if let index = CommandLine.arguments.firstIndex(of: "--pdf"), CommandLine.argume
     exit(0)
 }
 
+if let index = CommandLine.arguments.firstIndex(of: "--sheet-rules"), CommandLine.arguments.count > index + 1 {
+    SmokeMain.runSheetRules(path: CommandLine.arguments[index + 1])
+    exit(0)
+}
+
 if let index = CommandLine.arguments.firstIndex(of: "--sheet"), CommandLine.arguments.count > index + 1 {
     SmokeMain.runSheet(path: CommandLine.arguments[index + 1])
     exit(0)

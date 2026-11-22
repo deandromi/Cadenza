@@ -728,7 +728,42 @@ do {
     let dottedHalf = SheetDraft.rests(start: 0, end: 1440)
     expect(dottedHalf == [.rest(startTicks: 0, kind: .half), .rest(startTicks: 960, kind: .quarter)],
            "a dotted half splits into half plus quarter")
-    expect(SheetDraft.rests(start: 0, end: 120).isEmpty, "a tiny gap draws nothing")
+    // A MIDI file's own measure grid is the notation: an upbeat prints as the
+    // rest in front of it instead of pulling the first barline onto the first
+    // attack. Two quarter notes on beats two and three, in 3/4, from tick 0.
+    do {
+        let options = SheetDraft.Options(bpm: 120, numerator: 3, denominator: 4)
+        let upbeat = [
+            NoteEvent(pitch: 64, velocity: 80, onset: 0.5, duration: 0.5),
+            NoteEvent(pitch: 67, velocity: 80, onset: 1.0, duration: 0.5),
+        ]
+        let filed = SheetDraft.draft(notes: upbeat, options: options, originTicks: 0)
+        let firstRow = filed.rows[0]
+        var sawPickupRest = false
+        var firstChordTick: Int?
+        for placed in firstRow.top {
+            if case .rest(let tick, let kind) = placed.symbol, tick == 0, kind == .quarter {
+                sawPickupRest = true
+            }
+            if case .chord(let chord) = placed.symbol, firstChordTick == nil {
+                firstChordTick = chord.startTicks
+            }
+        }
+        expect(sawPickupRest, "a file grid puts the upbeat behind a quarter rest")
+        expect(firstChordTick == 480, "the file grid keeps the first chord on beat two")
+        let loose = SheetDraft.draft(notes: upbeat, options: options)
+        var looseChordTick: Int?
+        for placed in loose.rows[0].top {
+            if case .chord(let chord) = placed.symbol, looseChordTick == nil {
+                looseChordTick = chord.startTicks
+            }
+        }
+        expect(looseChordTick == 0, "a performance starts its bar on the first attack instead")
+    }
+
+    let sixteenthGap = SheetDraft.rests(start: 0, end: 120)
+    expect(sixteenthGap == [.rest(startTicks: 0, kind: .sixteenth)],
+           "a sixteenth gap draws a sixteenth rest, so the bar still adds up")
 }
 
 do {
@@ -919,7 +954,7 @@ sheetLayout: do {
     // A key held past the barline is written again on the next downbeat and
     // tied to what came before, never restruck and never closed by a rest.
     let heldChord = [
-        NoteEvent(pitch: 72, velocity: 80, onset: 0.0, duration: 2.4),
+        NoteEvent(pitch: 72, velocity: 80, onset: 0.0, duration: 3.6),
         NoteEvent(pitch: 43, velocity: 80, onset: 0.0, duration: 0.4),
     ]
     let held = SheetDraft.draft(notes: heldChord,

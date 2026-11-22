@@ -50,7 +50,8 @@ public enum SheetEngraver {
 
     public static func engrave(notes: [NoteEvent], options: SheetDraft.Options,
                                pageWidth: Double,
-                               pedals: [SheetDraft.PedalSpan] = []) -> SheetDraft.Result {
+                               pedals: [SheetDraft.PedalSpan] = [],
+                               originTicks: Int? = nil) -> SheetDraft.Result {
         let measureTicks = options.measureTicks
         let grid = max(1, SheetDraft.ticksPerQuarter / 4)
 
@@ -90,23 +91,52 @@ public enum SheetEngraver {
         // lands on the offbeat. So each barline starts from the previous one
         // plus a bar and then steps to the nearest played attack, which
         // keeps the harmony on the beat where it was played.
-        let root = snap(earliest, to: grid)
-        var barStarts = [0]
+        //
+        // A MIDI file is not a performance: its ticks are the notation, and
+        // the file's own measure grid is the truth. So an imported file hands
+        // its bar origin in, and the barlines stay exactly a measure apart —
+        // an upbeat then prints as the rests in front of it, the way the
+        // printed page does, instead of walking every barline forward to the
+        // first attack it can find.
+        let root = originTicks.map { snap($0, to: grid) } ?? snap(earliest, to: grid)
         let lastTick = raw.map { $0.start + $0.duration }.max() ?? measureTicks
-        let reach = max(grid * 2, measureTicks / 6)
-        while barStarts.last.map({ $0 + root < lastTick + measureTicks }) ?? false {
-            let expected = barStarts[barStarts.count - 1] + measureTicks
-            let nearby = anchors
-                .map { snap($0, to: grid) - root }
-                .filter { abs($0 - expected) <= reach }
-            let chosen = nearby.min { abs($0 - expected) < abs($1 - expected) } ?? expected
-            // a barline never moves more than half a bar: a note half a bar
-            // away is the next beat, not this bar's downbeat
-            let floor = barStarts[barStarts.count - 1] + measureTicks / 2
-            barStarts.append(max(floor, chosen))
+        var barStarts = [0]
+        if let origin = originTicks {
+            let originTick = snap(origin, to: grid)
+            var position = 0
+            let end = max(0, lastTick - originTick)
+            while position < end {
+                position += measureTicks
+                barStarts.append(position)
+            }
+        } else {
+            let reach = max(grid * 2, measureTicks / 6)
+            while barStarts.last.map({ $0 + root < lastTick + measureTicks }) ?? false {
+                let expected = barStarts[barStarts.count - 1] + measureTicks
+                let nearby = anchors
+                    .map { snap($0, to: grid) - root }
+                    .filter { abs($0 - expected) <= reach }
+                let chosen = nearby.min { abs($0 - expected) < abs($1 - expected) } ?? expected
+                // a barline never moves more than half a bar: a note half a bar
+                // away is the next beat, not this bar's downbeat
+                let floor = barStarts[barStarts.count - 1] + measureTicks / 2
+                barStarts.append(max(floor, chosen))
+            }
         }
 
         // 3. Notes land on the grid of their own bar.
+        // First, where the player actually struck each key: a note carried
+        // over a barline may only continue into a bar where that key was not
+        // struck again. A re-struck note is a new note, not a tie.
+        var attacks = Set<String>()
+        for cluster in clusters {
+            guard let anchor = cluster.map(\.start).min() else { continue }
+            let absolute = snap(anchor, to: grid) - root
+            var bar = 0
+            for (index, start) in barStarts.enumerated() where start <= absolute { bar = index }
+            let local = max(0, absolute - barStarts[bar])
+            for note in cluster { attacks.insert("\(bar)-\(local)-\(note.pitch)") }
+        }
         var byMeasure: [[Event]] = Array(repeating: [], count: barStarts.count)
         var strongest: [String: Event] = [:]
         for cluster in clusters {
@@ -120,28 +150,43 @@ public enum SheetEngraver {
             let local = max(0, absolute - barStart)
             guard local < measureTicks else { continue }
             for note in cluster {
-                // A note still sounding at the barline is written again on
-                // the next downbeat and tied to what came before: one note
-                // across two bars, the way a score writes a held key. It is
-                // never closed with a rest under the finger.
+                // A note still sounding at the barline is written again on the
+                // next downbeat and tied to what came before: one note across
+                // two bars, the way a score writes a held key. The segment
+                // plan comes first, because whether a tie is written depends
+                // on whether the continuation is written at all: a key struck
+                // again, or a finger that lifts just past the line, ends the
+                // note at the barline instead.
+                var segments: [(bar: Int, start: Int, length: Int)] = []
                 var remaining = snap(note.duration, to: grid)
                 var barIndex = bar
                 var startLocal = local
                 while remaining > 0, barIndex < byMeasure.count {
+                    if !segments.isEmpty,
+                       attacks.contains("\(barIndex)-\(startLocal)-\(note.pitch)") { break }
                     let room = measureTicks - startLocal
                     let inThisBar = min(remaining, room)
-                    let overflows = remaining > room
                     if inThisBar >= grid || room == measureTicks {
-                        let key = "\(barIndex)-\(startLocal)-\(note.pitch)"
-                        let length = max(grid, inThisBar)
-                        if (strongest[key]?.duration ?? -1) < length {
-                            strongest[key] = Event(start: startLocal, duration: length,
-                                                   pitch: note.pitch, tied: overflows)
-                        }
+                        segments.append((barIndex, startLocal, max(grid, inThisBar)))
                     }
+                    let carry = remaining - room
+                    // A note that sustains less than a beat past the barline
+                    // is the pedal ringing, not a held key: the player struck
+                    // again on the downbeat, so the note ends at the line and
+                    // no tie is written.
+                    if carry > 0, carry < 2 * SheetDraft.ticksPerQuarter { break }
                     remaining -= inThisBar
                     barIndex += 1
                     startLocal = 0
+                }
+                for (offset, segment) in segments.enumerated() {
+                    let key = "\(segment.bar)-\(segment.start)-\(note.pitch)"
+                    let length = segment.length
+                    if (strongest[key]?.duration ?? -1) < length {
+                        strongest[key] = Event(start: segment.start, duration: length,
+                                               pitch: note.pitch,
+                                               tied: offset < segments.count - 1)
+                    }
                 }
             }
         }
@@ -237,7 +282,7 @@ public enum SheetEngraver {
     /// Seven measures to a system and four systems to a page: the
     /// proportions of an engraved edition rather than a scrolling strip.
     /// Ten made the page a wall of bars; a waltz breathes at seven.
-    public static let measuresPerSystem = 7
+    public static let measuresPerSystem = 10
     public static let systemsPerPage = 4
     /// How wide a system is, in staff spaces: the paper the sheet is laid
     /// out for, and the width the renderer and the PDF agree on.
@@ -301,7 +346,7 @@ public enum SheetEngraver {
                 notes.sort { $0.pitch < $1.pitch }
                 guard !notes.isEmpty else { continue }
                 if moment > cursor {
-                    for rest in rests(from: cursor, to: moment, options: options) {
+                    for rest in SheetDraft.rests(start: cursor, end: moment) {
                         indices.append(result.symbols.count)
                         result.symbols.append(lifted(rest, by: absolute))
                     }
@@ -317,18 +362,20 @@ public enum SheetEngraver {
                 // those get a tie over the barline
                 let held = Set(notes.filter(\.tied).map(\.pitch))
                 // The slot this column owns: until the hand's next column,
-                // never past the bar. On paper a note fills its slot, so a
-                // half note stays a half instead of decaying into the beat
-                // under it. Only a finger that lifts inside the first half
-                // of the slot prints short (a staccato), because notation
-                // cannot write "eighty percent of a quarter".
+                // never past the bar. A chord is one vertical unit, so every
+                // head in it takes the same value — one hand cannot hold a
+                // half and strike an eighth under one stem. The value fills
+                // the slot when the player held the key through it; a note
+                // let go early prints short and rests close the bar after it,
+                // instead of stretching a staccato to the barline.
                 let slot = max(gridSmall, min(room, next - moment))
+                let played = min(notes.map(\.duration).max() ?? slot, slot)
+                let value = played * 2 >= slot
+                    ? slot
+                    : max(gridSmall, (played / gridSmall) * gridSmall)
                 notes = notes.map { note in
                     var copy = note
-                    let played = min(note.duration, slot)
-                    copy.duration = played * 2 >= slot
-                        ? slot
-                        : max(gridSmall, (played / gridSmall) * gridSmall)
+                    copy.duration = value
                     return copy
                 }
                 indices.append(result.symbols.count)
@@ -339,7 +386,7 @@ public enum SheetEngraver {
                 cursor = max(cursor, chordEnd)
             }
             if cursor < end {
-                for rest in rests(from: cursor, to: end, options: options) {
+                for rest in SheetDraft.rests(start: cursor, end: end) {
                     indices.append(result.symbols.count)
                     result.symbols.append(lifted(rest, by: absolute))
                 }
@@ -359,45 +406,6 @@ public enum SheetEngraver {
     private static func lifted(_ symbol: SheetDraft.Symbol, by offset: Int) -> SheetDraft.Symbol {
         guard case .rest(let start, let kind) = symbol else { return symbol }
         return .rest(startTicks: start + offset, kind: kind)
-    }
-
-    /// Fills a stretch of time with the largest rests that fit, so a bar
-    /// always adds up.
-    /// Rests respect the beat: a measure's rest counts as quarters and
-    /// halves on the beats, never as a run of eighths that straddles them.
-    /// That is the difference between "no notes here" and a bar that reads
-    /// like a stutter.
-    private static func rests(from start: Int, to end: Int,
-                              options: SheetDraft.Options) -> [SheetDraft.Symbol] {
-        let beat = SheetDraft.ticksPerQuarter
-        var result: [SheetDraft.Symbol] = []
-        var cursor = start
-        // a gap that opens mid-beat is filled to the next beat first
-        while cursor < end {
-            let toNextBeat = beat - (cursor % beat)
-            if toNextBeat < beat {
-                let length = min(end - cursor, toNextBeat)
-                result.append(.rest(startTicks: cursor,
-                                    kind: length >= beat / 2 ? .eighth : .sixteenth))
-                cursor += length
-                continue
-            }
-            let beatsLeft = (end - cursor) / beat
-            if beatsLeft >= 4 {
-                result.append(.rest(startTicks: cursor, kind: .whole))
-                cursor += 4 * beat
-            } else if beatsLeft >= 2 {
-                result.append(.rest(startTicks: cursor, kind: .half))
-                cursor += 2 * beat
-            } else if beatsLeft >= 1 {
-                result.append(.rest(startTicks: cursor, kind: .quarter))
-                cursor += beat
-            } else {
-                result.append(.rest(startTicks: cursor, kind: .eighth))
-                cursor += beat / 2
-            }
-        }
-        return result
     }
 
     /// One chord from the notes sharing a grid moment.
@@ -542,7 +550,10 @@ public enum SheetEngraver {
         /// bar is never handed a width that forces its columns to collide.
         func naturalWidth(_ measure: Int) -> Double {
             let columns = Set(starts(top, measure) + starts(bottom, measure)).count
-            return 3.0 + Double(max(1, columns)) * 2.4
+            // A bar's width is its rhythm: one column of air per moment, plus
+            // the barline. An engraver fits ten bars on this page, so the
+            // column is about one head wide, not a head plus a gap.
+            return 0.9 + Double(max(1, columns)) * 1.45
         }
 
         var rows: [SheetDraft.Row] = []
@@ -581,15 +592,22 @@ public enum SheetEngraver {
                 // columns share the bar by how long they last — but never
                 // closer than a head's width, so two sixteenths can sit in
                 // one bar without their noteheads landing on each other.
+                // The first bar of a page carries the clef, the key and the
+                // time signature in front of its music, so its notes start
+                // after that framing instead of under it: a pickup rest
+                // printed on top of the clef is not a pickup rest.
+                let inset: Double = (index == 0 && rows.isEmpty) ? 6.8 : 0
+                let musicX = x + inset
+                let musicWidth = max(3.0, widths[offset] - inset)
                 let moments = Set(starts(top, index) + starts(bottom, index)).sorted()
-                let columns = columnMap(moments: moments, x: x,
-                                        measureWidth: widths[offset],
+                let columns = columnMap(moments: moments, x: musicX,
+                                        measureWidth: musicWidth,
                                         measureTicks: measureTicks)
-                place(staff: top, measure: index, start: start, x: x,
-                      measureWidth: widths[offset], measureTicks: measureTicks,
+                place(staff: top, measure: index, start: start, x: musicX,
+                      measureWidth: musicWidth, measureTicks: measureTicks,
                       columns: columns, into: &topPlaced)
-                place(staff: bottom, measure: index, start: start, x: x,
-                      measureWidth: widths[offset], measureTicks: measureTicks,
+                place(staff: bottom, measure: index, start: start, x: musicX,
+                      measureWidth: musicWidth, measureTicks: measureTicks,
                       columns: columns, into: &bottomPlaced)
                 x += widths[offset]
             }
@@ -634,7 +652,7 @@ public enum SheetEngraver {
         let inner = max(3.0, measureWidth - 2.6)
         // an accidental needs its own air to the left of the head, so two
         // columns never sit closer than this
-        let floorGap = 2.05
+        let floorGap = 1.55
         guard !moments.isEmpty else { return [:] }
         var gaps: [Double] = []
         for (offset, moment) in moments.enumerated() {
