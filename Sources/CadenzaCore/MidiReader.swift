@@ -45,6 +45,9 @@ public struct MidiFile: Sendable {
 public enum MidiReaderError: Error, Sendable, Equatable {
     case notMidi
     case unsupportedDivision
+    /// format 2 holds several independent songs in one file, which this
+    /// reader would flatten into one timeline
+    case unsupportedFormat
     case truncated
 }
 
@@ -58,6 +61,7 @@ public enum MidiReader {
         let headerLength = Int(reader.u32())
         guard headerLength >= 6 else { throw MidiReaderError.truncated }
         let format = Int(reader.u16())
+        guard format == 0 || format == 1 else { throw MidiReaderError.unsupportedFormat }
         let trackCount = Int(reader.u16())
         let division = Int(reader.u16())
         if division & 0x8000 != 0 { throw MidiReaderError.unsupportedDivision }

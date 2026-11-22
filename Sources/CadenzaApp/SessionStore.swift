@@ -67,8 +67,16 @@ extension WavWriter {
     final class Sink {
         let url: URL
         private let handle: FileHandle
-        private(set) var frames = 0
+        private let lock = NSLock()
+        private var frames = 0
         private var closed = false
+
+        /// Written from the drain thread, read when the session closes.
+        var frameCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return frames
+        }
 
         init?(url: URL, rate: Double) {
             self.url = url
@@ -80,6 +88,8 @@ extension WavWriter {
 
         /// Appends one chunk of raw mono samples as 16-bit PCM.
         func append(_ samples: [Float]) {
+            lock.lock()
+            defer { lock.unlock() }
             guard !closed, !samples.isEmpty else { return }
             var pcm = Data(capacity: samples.count * 2)
             for sample in samples {
@@ -94,6 +104,8 @@ extension WavWriter {
         /// Patches the RIFF and data sizes with the real byte counts and
         /// closes the file.
         func close() {
+            lock.lock()
+            defer { lock.unlock() }
             guard !closed else { return }
             closed = true
             var size = UInt32(36 + (frames * 2)).littleEndian
@@ -376,8 +388,8 @@ final class SessionStore {
 /// instead of minting one per label; `string(from:)` is safe to call from any
 /// thread, which is the only thing that ever happens to them.
 enum SessionStamp {
-    nonisolated(unsafe) static let panel: DateFormatter = make("d MMM HH:mm")
-    nonisolated(unsafe) static let day: DateFormatter = make("EEE d MMM")
+    static let panel: DateFormatter = make("d MMM HH:mm")
+    static let day: DateFormatter = make("EEE d MMM")
 
     private static func make(_ format: String) -> DateFormatter {
         let formatter = DateFormatter()

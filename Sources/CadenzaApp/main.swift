@@ -58,6 +58,11 @@ if CommandLine.arguments.contains("--describe-latest") {
     MainActor.assumeIsolated { go() }
     exit(0)
 }
+if CommandLine.arguments.contains("--record-probe") {
+    @MainActor func go() { SmokeMain.runRecordProbe() }
+    MainActor.assumeIsolated { go() }
+    exit(0)
+}
 if CommandLine.arguments.contains("--sessions-probe") {
     @MainActor func go() { SmokeMain.runSessionsProbe() }
     MainActor.assumeIsolated { go() }

@@ -86,8 +86,8 @@ extension SheetDraft {
     }
 
     private static func emptyResult(options: Options) -> Result {
-        var top: [Symbol] = [.bar(startTicks: 0), .finalBar(startTicks: options.measureTicks)]
-        var bottom: [Symbol] = [.bar(startTicks: 0), .finalBar(startTicks: options.measureTicks)]
+        let top: [Symbol] = [.bar(startTicks: 0), .finalBar(startTicks: options.measureTicks)]
+        let bottom: [Symbol] = [.bar(startTicks: 0), .finalBar(startTicks: options.measureTicks)]
         func place(_ list: [Symbol]) -> [Placed] {
             var x = 9.5
             return list.enumerated().map { i, s in

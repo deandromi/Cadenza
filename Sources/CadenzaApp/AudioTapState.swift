@@ -18,7 +18,10 @@ final class AudioTapState: @unchecked Sendable {
     /// the streaming recording of the raw microphone; untouched by gain
     /// and tuning, so the .wav is the piano as it was heard
     private var recording: WavWriter.Sink?
-    private var recordingRaw = false
+    /// Samples the sink has not written yet. The tap only copies them here:
+    /// a disk write must never happen on the thread that is capturing audio.
+    private var staging: [Float] = []
+    private var stagedCount = 0
     /// stretch applied at append: a4/440, slowing content so a piano tuned
     /// sharp of A=440 still lands on a 440-referenced model
     private var pitchRatio: Double = 1.0
@@ -58,14 +61,36 @@ final class AudioTapState: @unchecked Sendable {
         defer { lock.unlock() }
         recording?.close()
         recording = WavWriter.Sink(url: url, rate: rate)
+        // two seconds of slack: the drain runs twice a second, so this only
+        // fills when the disk itself stalls
+        staging = [Float](repeating: 0, count: Int(rate * 2))
+        stagedCount = 0
+    }
+
+    /// Hands the staged capture to the wav sink on the caller's thread. The
+    /// tap never writes: it copies into the staging buffer under the lock,
+    /// which is a memcpy rather than a file write.
+    func drainRecording() {
+        lock.lock()
+        let sink = recording
+        let count = stagedCount
+        guard count > 0, sink != nil else {
+            lock.unlock()
+            return
+        }
+        let chunk = Array(staging[0..<count])
+        stagedCount = 0
+        lock.unlock()
+        sink?.append(chunk)
     }
 
     /// Finalizes the streaming wav and hands back its url, or nil when
     /// nothing had been recorded.
     func finishRecording() -> URL? {
+        drainRecording()
         lock.lock()
         defer { lock.unlock() }
-        guard let recording, recording.frames > 0 else {
+        guard let recording, recording.frameCount > 0 else {
             recording?.close()
             self.recording = nil
             return nil
@@ -84,12 +109,19 @@ final class AudioTapState: @unchecked Sendable {
         recording = nil
     }
 
+    /// Convenience for the probes, which hold an array already.
     func append(_ samples: [Float]) {
+        samples.withUnsafeBufferPointer { append($0) }
+    }
+
+    /// The capture path. Takes a pointer so the tap does not have to allocate
+    /// an array per buffer on the audio thread.
+    func append(_ samples: UnsafeBufferPointer<Float>) {
         lock.lock()
         defer { lock.unlock() }
         // model path: the user's gain, and the tuning stretch that walks a
         // stream tuned to a4 back onto 440; raw stays untouched for the wav
-        var modelPath = samples
+        var modelPath: [Float]? = nil
         if pitchRatio != 1.0 || gainValue != 1.0 {
             let chunkStart = rawConsumed
             let count = samples.count
@@ -111,9 +143,26 @@ final class AudioTapState: @unchecked Sendable {
             modelPath = out
         }
         rawConsumed += samples.count
-        ring.append(contentsOf: modelPath)
-        if recordingRaw, let sink = recording {
-            sink.append(samples)
+        if let modelPath {
+            ring.append(contentsOf: modelPath)
+        } else {
+            ring.append(contentsOf: samples)
+        }
+        if recording != nil {
+            // copy, never write: the drain moves it to the file
+            let needed = stagedCount + samples.count
+            if needed > staging.count {
+                // rare: the disk stalled for longer than the slack
+                staging.append(contentsOf: repeatElement(0, count: needed - staging.count))
+            }
+            if let destination = staging.withUnsafeMutableBufferPointer({ $0.baseAddress }) {
+                var offset = stagedCount
+                for sample in samples {
+                    destination[offset] = sample
+                    offset += 1
+                }
+                stagedCount = needed
+            }
         }
         var sum = 0.0
         for sample in samples { sum += Double(sample) * Double(sample) }
@@ -139,7 +188,7 @@ final class AudioTapState: @unchecked Sendable {
     /// Raw sample at global stream index `index` when the current chunk
     /// starts at `chunkStart`: before the chunk the carry speaks, inside it
     /// the buffer (clamped at its end).
-    private func read(chunk: [Float], chunkStart: Int, index: Int) -> Float {
+    private func read(chunk: UnsafeBufferPointer<Float>, chunkStart: Int, index: Int) -> Float {
         let local = index - chunkStart
         if local < 0 { return carry }
         return chunk[min(local, chunk.count - 1)]

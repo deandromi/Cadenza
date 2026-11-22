@@ -45,15 +45,31 @@ conversion close to real time with near-perfect note capture.
 - The CoreMIDI virtual source is live, the chord sheet updates as chords
   land, and MIDI export is verified.
 
-## Known bugs to fix (user-reported)
+## Known bugs (user-reported, and where they stand)
 
-- **"New session" closes the app** — a crash on start-listening (seen as an
-  EXC_BREAKPOINT on the audio realtime thread). Must be fixed first: a
-  session start may never take the app down.
-- **The Cadenza MIDI source is not visible to websites** (e.g. BandLab in a
-  browser) although desktop apps see it. Investigate CoreMIDI virtual
-  endpoint visibility for Web MIDI; the endpoint must be advertised so
-  browser-based DAWs can subscribe.
+- **"New session" closes the app.** Not reproduced as a crash since the audio
+  path was rebuilt. The audit that came out of it found three things worth
+  keeping fixed, all in the capture path:
+  - the session wav was never written: the sink was gated on a flag that was
+    never set, so `hasAudio` could only ever be false and audio export had
+    nothing to hand over. The recording now runs unconditionally into the temp
+    file and is proven by `--record-probe` (one second of a 440 Hz sine lands
+    as 48000 frames, peak 16383).
+  - the wav write happened *on the audio thread*, under the sample ring's
+    lock — a disk stall could hold up capture. The tap now only copies into a
+    two-second staging buffer, and the level timer drains it to the file.
+  - the tap block built an `Array` per buffer. It now hands its buffer
+    pointer straight to the ring.
+- **The Cadenza MIDI source is not visible to websites.** Fixed earlier by
+  creating the endpoint as an explicit MIDI 1.0 source with real manufacturer
+  metadata; `--midi-check` proves the packet path and the republish path.
+- **A trap on CoreMIDI's realtime queue** is what an actor-isolation mistake
+  in a callback looks like: a block handed to CoreMIDI (or AVFoundation) that
+  silently inherits the main actor traps with `SIGTRAP` the moment the system
+  calls it on its own queue. Both callbacks in the app now say `@Sendable`
+  explicitly, and the record-permission completion does too. Worth remembering
+  when adding any new callback: `--midi-check` reproduced the trap instantly
+  when the annotation was missing.
 
 ## Session panel and export (redesign agreed)
 

@@ -16,6 +16,7 @@ import Foundation
 /// browser, MIDI monitor pages) are much pickier about what they list than
 /// desktop DAWs, and an endpoint that carries its protocol and identity from
 /// creation is listed by every one of them.
+@MainActor
 final class MIDIPublisher {
     private(set) var client = MIDIClientRef()
     private(set) var source = MIDIEndpointRef()
@@ -161,6 +162,7 @@ final class MIDIPublisher {
 /// but the packet path can, and it is the half that silently breaks.
 enum MIDILoopbackCheck {
     @discardableResult
+    @MainActor
     static func run() -> Bool {
         let publisher = MIDIPublisher()
         publisher.setup()
@@ -175,9 +177,15 @@ enum MIDILoopbackCheck {
             var port = MIDIPortRef()
         }
         let box = Box()
-        var status = MIDIInputPortCreateWithProtocol(publisher.client, "probe" as CFString, ._1_0, &box.port) { list, _ in
+        // @Sendable on purpose: this block runs on CoreMIDI's own realtime
+        // messenger queue, so it must not inherit the main actor or it traps
+        // the moment a packet arrives
+        var status = MIDIInputPortCreateWithProtocol(publisher.client, "probe" as CFString, ._1_0, &box.port) { @Sendable list, _ in
             for packet in list.unsafeSequence() {
-                let wordCount = Int(packet.pointee.wordCount)
+                // the words tuple is 64 words, and a malformed or future
+                // packet must never index past it on CoreMIDI's own queue
+                let storage = MemoryLayout.size(ofValue: packet.pointee.words) / 4
+                let wordCount = min(Int(packet.pointee.wordCount), storage)
                 guard wordCount > 0 else { continue }
                 withUnsafeBytes(of: packet.pointee.words) { raw in
                     let words = raw.bindMemory(to: UInt32.self)

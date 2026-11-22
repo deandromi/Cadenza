@@ -1108,6 +1108,29 @@ do {
     expect(abs(kept[0].offset - 2.4) < 1e-9, "a plausible length is left alone")
 }
 
+// MARK: the MIDI reader's refusals
+
+do {
+    // format 2 is a set of independent songs, not one timeline
+    var data = Data("MThd".utf8)
+    data.append(contentsOf: [0, 0, 0, 6])
+    data.append(contentsOf: [0, 2])       // format 2
+    data.append(contentsOf: [0, 1])       // one track
+    data.append(contentsOf: [1, 0xE0])    // 480 ticks per quarter
+    var refused = false
+    do { _ = try MidiReader.read(data) } catch { refused = true }
+    expect(refused, "a format 2 file is refused instead of flattened")
+
+    // and a good header still reads
+    var good = Data("MThd".utf8)
+    good.append(contentsOf: [0, 0, 0, 6])
+    good.append(contentsOf: [0, 0])       // format 0
+    good.append(contentsOf: [0, 0])       // no tracks
+    good.append(contentsOf: [1, 0xE0])
+    let empty = try? MidiReader.read(good)
+    expect(empty != nil, "a well formed header still reads")
+}
+
 if failures == 0 {
     print("all \(checks) checks passed")
 } else {

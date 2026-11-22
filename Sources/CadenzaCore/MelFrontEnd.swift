@@ -126,7 +126,7 @@ public final class MelFrontEnd {
         let eps = MelFrontEnd.eps
         var epsVar = eps
         var elementCount = Int32(melBlock.count)
-        var log2n: vDSP_Length = 12
+        let log2n: vDSP_Length = 12
 
         for f in 0..<nFrames {
             let frameStart = f * MelFrontEnd.hopSize

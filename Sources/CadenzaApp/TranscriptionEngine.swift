@@ -93,7 +93,10 @@ final class TranscriptionEngine: ObservableObject {
     /// A start while already running is a no-op: the transport toggles.
     func start(tensorsDir: URL, modelURL: URL) {
         guard !isRunning else { return }
-        AVAudioApplication.requestRecordPermission { [weak self] granted in
+        // @Sendable: the answer arrives on a queue of Apple's choosing, and a
+        // closure that inherited this type's main-actor isolation would trap
+        // there instead of hopping back
+        AVAudioApplication.requestRecordPermission { @Sendable [weak self] granted in
             Task { @MainActor in
                 guard let self else { return }
                 if granted {
@@ -160,8 +163,9 @@ final class TranscriptionEngine: ObservableObject {
                 // @MainActor isolation and trap when AVFoundation calls it
                 // on its realtime queue.
                 guard let channel = buffer.floatChannelData?[0] else { return }
-                let frames = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
-                tapState.append(Array(frames))
+                // straight from the capture buffer: no array is built on the
+                // audio thread, and nothing here touches the disk
+                tapState.append(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
             }
             try audioEngine.start()
             // ticks are fast and cheap: they only submit the next window when
@@ -172,6 +176,8 @@ final class TranscriptionEngine: ObservableObject {
             levelTimer = Clock.every(0.5) { [weak self] in
                 guard let self else { return }
                 self.level = self.tapState.currentLevel()
+                // the recording is written from here, never from the tap
+                self.tapState.drainRecording()
             }
             isRunning = true
             lastError = nil
@@ -273,22 +279,26 @@ final class TranscriptionEngine: ObservableObject {
     }
 
     /// Builds the pipelined decoders: two independent CoreML contexts so
-    /// two windows decode at once. The compiles run in parallel.
+    /// two windows decode at once. The compiles run in parallel, each into its
+    /// own slot, so the result order is the slot order and no append can race.
     private static func buildDecoders(tensorsDir: URL, modelURL: URL) throws -> [InferenceContext] {
-        // Both compiles at once: they are the slow half of a session starting.
-        var built: [InferenceContext] = []
-        var failure: Error?
-        let lock = NSLock()
-        DispatchQueue.concurrentPerform(iterations: 2) { _ in
+        final class Slots: @unchecked Sendable {
+            var decoders: [InferenceContext?] = [nil, nil]
+            var failure: Error?
+            let lock = NSLock()
+        }
+        let slots = Slots()
+        DispatchQueue.concurrentPerform(iterations: slots.decoders.count) { index in
             let outcome = Result { try InferenceContext(tensorsDir: tensorsDir, modelURL: modelURL) }
-            lock.lock()
-            defer { lock.unlock() }
+            slots.lock.lock()
+            defer { slots.lock.unlock() }
             switch outcome {
-            case .success(let decoder): built.append(decoder)
-            case .failure(let error): failure = error
+            case .success(let decoder): slots.decoders[index] = decoder
+            case .failure(let error): slots.failure = error
             }
         }
-        if let failure { throw failure }
+        if let failure = slots.failure { throw failure }
+        let built = slots.decoders.compactMap { $0 }
         guard built.count == 2 else { throw EngineError.modelLoadFailed }
         return built
     }

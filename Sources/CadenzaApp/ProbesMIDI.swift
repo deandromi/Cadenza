@@ -211,4 +211,53 @@ extension SmokeMain {
             exit(1)
         }
     }
+
+    /// Proves the session recording path end to end, without a microphone:
+    /// one second of a sine is fed through the tap the way the capture thread
+    /// feeds it, drained the way the level timer drains it, and the wav the
+    /// sink wrote is read back and checked. Run with `--record-probe`.
+    @MainActor
+    static func runRecordProbe() {
+        let url = URL(fileURLWithPath: "/tmp/cadenza-record-probe.wav")
+        try? FileManager.default.removeItem(at: url)
+        let rate = 48000.0
+        let tapState = AudioTapState()
+        tapState.reset(rate: rate)
+        tapState.startRecording(url: url)
+        var phase = 0.0
+        var fed = 0
+        let total = Int(rate)
+        let chunk = 4096
+        while fed < total {
+            let count = min(chunk, total - fed)
+            var samples = [Float](repeating: 0, count: count)
+            for index in 0..<count {
+                samples[index] = Float(sin(phase)) * 0.5
+                phase += 2 * Double.pi * 440 / rate
+            }
+            samples.withUnsafeBufferPointer { tapState.append($0) }
+            fed += count
+            // the timer drains twice a second; drain as if it had
+            if fed % (chunk * 6) == 0 { tapState.drainRecording() }
+        }
+        guard let written = tapState.finishRecording() else {
+            print("record-probe FAILED: no recording was written")
+            return
+        }
+        let data = (try? Data(contentsOf: written)) ?? Data()
+        let payload = max(0, data.count - 44)
+        let frames = payload / 2
+        // read the samples back: 16-bit PCM, so a 0.5 sine is ~16384
+        var peak: Int16 = 0
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            let pcm = base.advanced(by: 44).assumingMemoryBound(to: Int16.self)
+            for index in 0..<frames { peak = max(peak, abs(pcm[index])) }
+        }
+        let expected = Int(rate)
+        print(String(format: "record-probe: %d frames of %d expected, peak %d of ~16384 at %@",
+                     frames, expected, Int(peak), written.lastPathComponent))
+        let passed = abs(frames - expected) <= 4096 && peak > 8000
+        print(passed ? "record-probe PASSED" : "record-probe FAILED")
+    }
 }
