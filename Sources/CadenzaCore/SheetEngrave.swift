@@ -176,39 +176,25 @@ public enum SheetEngraver {
             let slot = min(meter.capacity(grid: step) - 1,
                            max(0, Int((Double(local) / Double(step)).rounded())))
             let moment = bar * measureTicks + slot * step
+            // One rule decides the staff, and only one. A grip the hands
+            // divide goes the way it was divided; a grip that was not divided
+            // goes to the staff its centre asks for. Two rules for one job is
+            // how a six-note left-hand chord ended up printed four ledger
+            // lines above the bass staff: the split said treble, the centre
+            // said bass, and the whole grip was re-decided as one.
             let divided = SheetDraft.divideGrip(cluster.map(\.pitch))
-            // No note hangs more than three ledger lines off its staff. A note
-            // read four lines down is unreadable and the other staff is right
-            // there, which is why a printed score shifts a low right-hand note
-            // onto the bass staff instead of stacking lines under the treble.
-            // The limits are the third ledger below the treble staff (F3) and
-            // the third above the bass staff (G4).
-            // Which staff a group of notes reads on is a register question,
-            // not a hand question: a grip's upper part can still be the left
-            // hand's chord, and printing it on the treble staff hangs three
-            // ledger lines under every bar. So each group is placed by its own
-            // centre, and a group is never torn note by note — a chord split
-            // across the staves is the look of a transcription, not of music.
+            let upper = divided.top.map { cluster[$0] }
+            let lower = divided.bottom.map { cluster[$0] }
             var treble: [Note] = []
             var bass: [Note] = []
-            func place(_ notes: [Note]) {
-                guard !notes.isEmpty else { return }
-                // A pair of hands striking together is not one chord. When the
-                // notes a single instant holds reach past an octave and open a
-                // wide leap, the leap is the seam between the hands: printing
-                // the whole group on one staff is what hangs a bass note five
-                // ledger lines under the treble and runs a stem through both.
-                let ordered = notes.sorted { $0.pitch < $1.pitch }
-                if let seam = SheetDraft.handSeam(ordered.map(\.pitch)) {
-                    bass.append(contentsOf: ordered[..<seam])
-                    treble.append(contentsOf: ordered[seam...])
-                    return
-                }
-                let mean = Double(notes.map(\.pitch).reduce(0, +)) / Double(notes.count)
-                if mean >= 60 { treble.append(contentsOf: notes) } else { bass.append(contentsOf: notes) }
+            if !upper.isEmpty, !lower.isEmpty {
+                treble.append(contentsOf: upper)
+                bass.append(contentsOf: lower)
+            } else {
+                let grip = upper.isEmpty ? lower : upper
+                let mean = Double(grip.map(\.pitch).reduce(0, +)) / Double(max(1, grip.count))
+                if mean >= 60 { treble.append(contentsOf: grip) } else { bass.append(contentsOf: grip) }
             }
-            place(divided.top.map { cluster[$0] })
-            place(divided.bottom.map { cluster[$0] })
             if !treble.isEmpty {
                 appendColumn(&topBars[bar], at: moment, notes: treble, quantizer: quantizer)
             }
@@ -294,11 +280,13 @@ public enum SheetEngraver {
 
     // MARK: page metrics
 
-    /// Seven measures to a system and four systems to a page: the
-    /// proportions of an engraved edition rather than a scrolling strip. Ten
-    /// made the page a wall of bars and squeezed the columns until a rest sat
-    /// on a stem; a waltz breathes at seven.
-    public static let measuresPerSystem = 10
+    /// How many bars a system may hold at most. An edition of dense piano
+    /// music puts five to seven on a line; this ceiling only guards a run of
+    /// empty bars, because the width rule decides the rest. It used to be ten,
+    /// which capped the line before the paper was full and left the layout to
+    /// stretch ten quiet bars across the margin — the airy, gappy look of a
+    /// page with nothing on it.
+    public static let measuresPerSystem = 16
     public static let systemsPerPage = 4
     /// How wide a system is, in staff spaces: the paper the sheet is laid
     /// out for, and the width the renderer and the PDF agree on.
@@ -427,8 +415,11 @@ public enum SheetEngraver {
                     return (note.staffPosition, kind)
                 }
                 let stack = AccidentalInk.width(marks)
+                // A chord holding a second prints one head displaced left,
+                // and that head is ink like any other.
+                let heads = ChordInk.headReach(chord.notes.map(\.staffPosition))
                 let dots = (chord.notes.map(\.dots).max() ?? 0) > 0 ? 0.72 : 0
-                return (0.6 + stack, 0.6 + dots)
+                return (0.6 + stack + heads, 0.6 + dots)
             case .rest(_, let kind), .restVoiced(_, let kind, _):
                 // an eighth rest has a hook that reaches, a whole rest is a
                 // small block sitting under the fourth line

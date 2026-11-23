@@ -70,6 +70,10 @@ final class ScoreView: NSView {
     struct Page: Sendable, Equatable {
         var rows: Range<Int>
         var top: CGFloat
+        /// The distance between two systems on this page. A printed page is
+        /// filled to the bottom margin, so the pitch is the page's own number
+        /// and not the draft's.
+        var pitch: CGFloat = 0
     }
     var page: Page?
     private var result: SheetDraft.Result
@@ -104,6 +108,7 @@ final class ScoreView: NSView {
     /// Rows stack at one pitch. On the screen a page gap keeps the printed
     /// pages apart; a printed page draws one page and needs no gap at all.
     private func systemTop(_ rowIndex: Int, rowHeight: CGFloat) -> CGFloat {
+        if let page, page.pitch > 0 { return CGFloat(rowIndex) * page.pitch }
         guard page == nil else { return CGFloat(rowIndex) * rowHeight }
         var y = CGFloat(rowIndex) * rowHeight
         let perPage = result.rowsPerPage
@@ -513,20 +518,11 @@ final class ScoreView: NSView {
         // Two heads a second apart would sit on top of each other. Engraving
         // shifts the lower one left by a whole head so both stay round; a
         // nudge is what left a chord looking like a smudge of overlapping
-        // ovals.
-        var columns = [Int](repeating: 0, count: chord.notes.count)
+        // ovals. The rule lives in ChordInk, which the engraver reads too: the
+        // room a displaced head needs is ink it has to reserve.
         let byPosition = chord.notes.indices.sorted { chord.notes[$0].staffPosition < chord.notes[$1].staffPosition }
-        var previousPosition: Int?
-        var previousColumn = 0
-        for index in byPosition {
-            let position = chord.notes[index].staffPosition
-            if let previous = previousPosition, position - previous == 1 {
-                columns[index] = previousColumn == 0 ? -1 : 0
-            }
-            previousColumn = columns[index]
-            previousPosition = position
-        }
-        let shift = 1.05 * gap
+        let columns = ChordInk.headColumns(chord.notes.map(\.staffPosition))
+        let shift = CGFloat(ChordInk.secondStep) * gap
         let headGlyphWidth = (MusicFont.info(Glyph.noteheadBlack).map { CGFloat($0.width) } ?? 1.18) * fontSize
         let chordLeft = x + CGFloat(columns.min() ?? 0) * shift - headGlyphWidth / 2
         let chordRight = x + CGFloat(columns.max() ?? 0) * shift + headGlyphWidth / 2

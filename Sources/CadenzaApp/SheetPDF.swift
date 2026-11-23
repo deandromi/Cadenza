@@ -60,7 +60,11 @@ enum SheetPDF {
         // page breaks stay identical, which is how a printed part reads.
         let header: CGFloat = block == nil ? 0 : 104
         let rowPitch = rowHeight * scale
-        let perPage = max(1, Int(((pageHeight - 2 * margin - header) / rowPitch).rounded(.down)))
+        // The title belongs to the first page only, so the pages after it can
+        // hold one more system. Reserving the head on every page is why every
+        // page ended with a band of empty paper under the music.
+        let perPageFirst = max(1, Int(((pageHeight - 2 * margin - header) / rowPitch).rounded(.down)))
+        let perPage = max(1, Int(((pageHeight - 2 * margin) / rowPitch).rounded(.down)))
         let modelMargin = margin / scale
         let modelWidth = drawnWidth + 2 * modelMargin
         let modelHeight = pageHeight / scale
@@ -77,15 +81,39 @@ enum SheetPDF {
         view.showsTempoMark = true
         view.frame = NSRect(x: 0, y: 0, width: modelWidth, height: modelHeight)
 
-        let rows = result.rows.count
-        let pageCount = max(1, (rows + perPage - 1) / perPage)
+        // Walk the systems into pages: the first page carries the title block,
+        // the rest fill the paper.
+        var starts: [Int] = []
+        var cursor = 0
+        while cursor < result.rows.count {
+            starts.append(cursor)
+            cursor += starts.count == 1 ? perPageFirst : perPage
+        }
+        let pageCount = max(1, starts.count)
         for page in 0..<pageCount {
-            let from = page * perPage
-            let to = min(rows, from + perPage)
+            let from = starts[page]
+            let to = min(result.rows.count, page + 1 < starts.count ? starts[page + 1] : result.rows.count)
             guard from < to else { continue }
+            // The folio stands under the last system: a page that prints its
+            // number inside the music is not a page anyone has seen.
+            let folio: CGFloat = pageCount > 1 ? 20 : 0
+            let room = pageHeight - 2 * margin - (page == 0 ? header : 0) - folio
+            let count = to - from
+            // An edition fills the page: the air left over is shared out
+            // between the systems, so the last one stands on the bottom
+            // margin instead of leaving a band of nothing under it.
+            // The staves themselves take this much of a system; the rest of
+            // the pitch is the air the page shares out. The view draws in its
+            // own points, so the page's room is converted the way the margin
+            // above it is.
+            let core = (8 + CGFloat(ScoreLayout.staffGap)) * gap
+            let roomInView = room / scale
+            let fill = count > 1 ? (roomInView - core) / CGFloat(count - 1) : rowHeight
+            let pitch = min(max(rowHeight, fill), rowHeight * 1.9)
             view.page = ScoreView.Page(
                 rows: from..<to,
-                top: modelMargin + (page == 0 ? header / scale : 0))
+                top: modelMargin + (page == 0 ? header / scale : 0),
+                pitch: pitch)
 
             ctx.beginPDFPage(nil)
             ctx.saveGState()

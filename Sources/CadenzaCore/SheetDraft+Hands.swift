@@ -48,32 +48,6 @@ extension SheetDraft {
         return (top, bottom)
     }
 
-    /// Where one instant's notes divide between the hands, as an index into
-    /// the pitches sorted low to high, or nil when they are one chord.
-    ///
-    /// A performance holds many things at once: a bass note under a chord, a
-    /// melody over an accompaniment. Printed as a single chord those reach
-    /// past two octaves, hang five ledger lines off the staff and grow a stem
-    /// through both staves. An engraver reads the widest leap in the group as
-    /// the seam between the hands — a chord of a tenth has no such leap, a
-    /// fistful of bass plus chord always does.
-    public static func handSeam(_ sortedPitches: [Int]) -> Int? {
-        guard sortedPitches.count >= 2,
-              let low = sortedPitches.first, let high = sortedPitches.last,
-              high - low > 14 else { return nil }
-        var seam = 0
-        var widest = 0
-        for index in 1..<sortedPitches.count {
-            let leap = sortedPitches[index] - sortedPitches[index - 1]
-            if leap > widest {
-                widest = leap
-                seam = index
-            }
-        }
-        guard widest >= 5 else { return nil }
-        return seam
-    }
-
     /// The highest and lowest pitch overlapping the note's lifetime, with
     /// the window cut one measure past the note's start.
     static func extremesOverlap(_ notes: [RunningNote], from startIndex: Int,
@@ -152,10 +126,15 @@ extension SheetDraft {
     /// A chord is one grip. Slicing it note by note at middle C prints half of
     /// an ordinary C major triad on each staff and hangs the rest on ledger
     /// lines, which is what makes a transcription look invented. So the unit
-    /// here is the whole grip: it goes to the staff its own centre asks for,
-    /// and only a grip that clearly spans two hands — a bass note under a
-    /// melody note, a tenth or more apart with a real gap between them — is
-    /// divided, and then at the gap the hands left.
+    /// here is the whole grip, and the staff is decided in one pass:
+    ///
+    /// 1. A grip that reads whole on one staff is not divided at all. This is
+    ///    the common case, and it is why a triad never ends up as two chords.
+    /// 2. Otherwise the hands divide it at the widest gap that both halves can
+    ///    read across: no note hangs more than two ledger lines off its own
+    ///    staff, which is A3 below the treble and D4 above the bass.
+    /// 3. A grip with no such gap stays whole, on the staff its centre asks
+    ///    for; one unreadable note is better than two unreadable chords.
     ///
     /// The indices come back, not the pitches: a chord may strike one pitch
     /// twice and each note still goes its own way.
@@ -163,23 +142,57 @@ extension SheetDraft {
         guard !pitches.isEmpty else { return ([], []) }
         let order = pitches.indices.sorted { pitches[$0] < pitches[$1] }
         let sorted = order.map { pitches[$0] }
-        if sorted.count > 1, let low = sorted.first, let high = sorted.last,
-           high - low >= 19, let gap = widestGap(in: sorted), gap.span >= 7 {
+        let mean = Double(sorted.reduce(0, +)) / Double(sorted.count)
+        let home: Clef = mean >= 60 ? .treble : .bass
+        // 1. the whole grip, on the staff it reads on
+        if sorted.allSatisfy({ reads($0, on: home) }) {
+            return home == .treble ? (Array(pitches.indices), []) : ([], Array(pitches.indices))
+        }
+        // 2. a seam the hands left, both halves reading on their own staff
+        if let seam = seam(in: sorted) {
+            return (Array(order[seam...]), Array(order[..<seam]))
+        }
+        // 3. a wide gap with no readable split: the hands still left it there,
+        //    and a ledger line on the right staff reads better than five on
+        //    the wrong one
+        if let gap = widestGap(in: sorted), gap.span >= 5 {
             return (Array(order[gap.at...]), Array(order[..<gap.at]))
         }
-        // The middle line is the line: a grip whose centre sits at or above
-        // middle C is the right hand's, the way a pianist reads it.
-        let mean = Double(sorted.reduce(0, +)) / Double(sorted.count)
-        return mean >= 60 ? (Array(pitches.indices), []) : ([], Array(pitches.indices))
+        // 4. no gap: the centre decides
+        return home == .treble ? (Array(pitches.indices), []) : ([], Array(pitches.indices))
     }
 
-    /// The widest jump between neighbouring pitches, and where it sits.
-    private static func widestGap(in sorted: [Int]) -> (at: Int, span: Int)? {
+    /// Where a grip divides between the hands, if anywhere: the widest gap
+    /// that both halves read across.
+    public static func seam(in sorted: [Int]) -> Int? {
+        guard sorted.count > 1 else { return nil }
         var best: (at: Int, span: Int)?
         for index in 1..<sorted.count {
             let span = sorted[index] - sorted[index - 1]
-            if span > (best?.span ?? 0) { best = (index, span) }
+            guard span >= 3 else { continue }
+            guard sorted[..<index].allSatisfy({ reads($0, on: .bass) }),
+                  sorted[index...].allSatisfy({ reads($0, on: .treble) }) else { continue }
+            if best == nil || span > best!.span { best = (index, span) }
+        }
+        return best?.at
+    }
+
+    /// The widest jump between neighbouring pitches, and where it sits.
+    static func widestGap(in sorted: [Int]) -> (at: Int, span: Int)? {
+        var best: (at: Int, span: Int)?
+        for index in 1..<sorted.count {
+            let span = sorted[index] - sorted[index - 1]
+            if best == nil || span > best!.span { best = (index, span) }
         }
         return best
     }
+
+    /// A note reads on a staff when it stands no more than two ledger lines
+    /// outside it. Past that the other staff is right there, and stacking
+    /// ledger lines under the wrong staff is what a transcription looks like.
+    static func reads(_ pitch: Int, on clef: Clef) -> Bool {
+        let position = clef.position(ofPitch: pitch)
+        return position >= -4 && position <= 12
+    }
+
 }

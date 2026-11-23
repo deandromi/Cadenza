@@ -997,14 +997,28 @@ do {
 
 do {
     // Two hands hit one instant: a bass note under a chord reaching past two
-    // octaves is not one chord. The widest leap is the seam, and both sides
-    // then print on the staff they belong to.
-    expect(SheetDraft.handSeam([40, 60, 64, 67]) == 1,
-           "a bass note under a chord splits at the octave leap")
-    expect(SheetDraft.handSeam([60, 64, 67]) == nil,
-           "a triad has no seam")
-    expect(SheetDraft.handSeam([55, 59, 62, 65, 69]) == nil,
-           "a tenth is still one chord")
+    // octaves is not one chord. One rule decides the staff — the grip goes
+    // whole to the staff it reads on, and only a grip that reads on neither is
+    // divided, at a gap both halves read across.
+    func sides(_ pitches: [Int]) -> ([Int], [Int]) {
+        let grip = SheetDraft.divideGrip(pitches)
+        return (grip.top.map { pitches[$0] }, grip.bottom.map { pitches[$0] })
+    }
+    let split = sides([40, 60, 64, 67])
+    expect(split.0.sorted() == [60, 64, 67] && split.1 == [40],
+           "a bass note under a chord is read as two hands: \(split)")
+    let triad = sides([60, 64, 67])
+    expect(triad.0.sorted() == [60, 64, 67] && triad.1.isEmpty,
+           "a triad reads whole on one staff and is never torn")
+    let wide = sides([43, 67, 71, 74])
+    expect(wide.1 == [43] && wide.0.sorted() == [67, 71, 74],
+           "a grip that hangs off the bass staff is divided where it reads: \(wide)")
+    let reading = sides([57, 60, 64, 67])
+    expect(reading.0.sorted() == [57, 60, 64, 67] && reading.1.isEmpty,
+           "a chord that reads whole on the treble staff is never split")
+    let hanging = sides([55, 59, 62, 65])
+    expect(hanging.1 == [55] && hanging.0.sorted() == [59, 62, 65],
+           "a chord whose lowest note hangs off the staff is divided there: \(hanging)")
     let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
     let grip = [40, 60, 64, 67].map { pitch in
         NoteEvent(pitch: pitch, velocity: 80, onset: 0, duration: 2.0)
