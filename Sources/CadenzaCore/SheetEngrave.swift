@@ -388,9 +388,11 @@ public enum SheetEngraver {
             if ticks >= Int(4 * quarter) { return 3.4 }
             if ticks >= Int(2 * quarter) { return 2.8 }
             if ticks >= Int(quarter) { return 2.15 }
-            if ticks >= Int(quarter / 2) { return 1.6 }
-            if ticks >= Int(quarter / 4) { return 1.35 }
-            return 1.2
+            if ticks >= Int(quarter / 2) { return 1.75 }
+            // A sixteenth needs room for a head, a stem and the space between
+            // two of them: at 1.35 a bar of them reads as one grey smear.
+            if ticks >= Int(quarter / 4) { return 1.5 }
+            return 1.3
         }
 
         /// The moment and symbol of a bar's columns, both hands together.
@@ -485,7 +487,7 @@ public enum SheetEngraver {
             // touching heads looks like. Only a single bar too dense for the
             // paper is allowed to give up some air, because it has no other
             // line to go to.
-            let floor = chosen.count > 1 ? 0.9 : 0.55
+            let floor = chosen.count > 1 ? 0.9 : 0.8
             // The ceiling is high enough that a line of quiet bars still
             // reaches the margin: a short line that stops in the middle of the
             // paper is the one thing no edition prints.
@@ -586,8 +588,12 @@ public enum SheetEngraver {
         let lead = first.left + 0.35
         let trail = last.right + 0.35
         let air = columns.dropLast().map(\.gap).reduce(0, +)
+        // A bar too dense for the room it was given may give up a fifth of its
+        // air, never half of it: squeezed further, the sixteenths pile into a
+        // diagonal smear of heads that reads as a glissando. The sheet grows
+        // instead, and the page scale takes the difference.
         let scale = air > 0.001
-            ? max(0.55, (measureWidth - lead - trail) / air) : 1
+            ? max(0.8, (measureWidth - lead - trail) / air) : 1
         var map: [Int: Double] = [:]
         var cursor = x + lead
         for (offset, column) in columns.enumerated() {
