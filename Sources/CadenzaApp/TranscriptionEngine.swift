@@ -39,6 +39,10 @@ final class TranscriptionEngine: ObservableObject {
     /// Room floor for the silence skip: about -56 dBFS, under a piano's
     /// quietest note and above a quiet room's noise.
     static let silencePeak: Float = 0.0016
+    /// The room floor for background listening, louder than a take's: a
+    /// played piano is far above it, a fan, a fridge and a laptop's own
+    /// microphone hiss are below it, and everything below it costs nothing.
+    static let ambientPeak: Float = 0.008
     /// A study switch: CADENZA_NO_SILENCE_SKIP=1 decodes silence too.
     static let skipsSilence = ProcessInfo.processInfo.environment["CADENZA_NO_SILENCE_SKIP"] == nil
 
@@ -58,6 +62,8 @@ final class TranscriptionEngine: ObservableObject {
     private var plan: WindowPlan = .standard
     private var tickTimer: Timer?
     private var levelTimer: Timer?
+    /// whether capture writes a wav for a take, or only holds the minute
+    private var recordsSession = true
     /// decodes performed this session, for logging only
     private var windowIndex = 0
     /// content seconds at which the next window's trailing edge sits
@@ -91,14 +97,21 @@ final class TranscriptionEngine: ObservableObject {
 
     /// Asks for microphone access, then begins capture and inference.
     /// A start while already running is a no-op: the transport toggles.
-    func start(tensorsDir: URL, modelURL: URL) {
+    ///
+    /// `recordSession` is what separates listening from taking: with the
+    /// rolling minute on, the app listens from launch without writing a
+    /// wav, so an hour of sitting at the piano does not become an hour-long
+    /// file. A session starts its wav when the player asks for one.
+    func start(tensorsDir: URL, modelURL: URL, recordSession: Bool = true) {
         guard !isRunning else { return }
+        recordsSession = recordSession
         // @Sendable: the answer arrives on a queue of Apple's choosing, and a
         // closure that inherited this type's main-actor isolation would trap
         // there instead of hopping back
         AVAudioApplication.requestRecordPermission { @Sendable [weak self] granted in
             Task { @MainActor in
                 guard let self else { return }
+                print("[engine] microphone granted: \(granted)")
                 if granted {
                     self.beginCapture(tensorsDir: tensorsDir, modelURL: modelURL)
                 } else {
@@ -124,6 +137,7 @@ final class TranscriptionEngine: ObservableObject {
     }
 
     private func beginCapture(tensorsDir: URL, modelURL: URL) {
+        print("[engine] begin capture: \(tensorsDir.path)")
         do {
             let modelURL = modelURL
             plan = .standard
@@ -140,8 +154,11 @@ final class TranscriptionEngine: ObservableObject {
             print("[engine] capture: \(format.sampleRate) Hz, \(format.channelCount) channels, \(decoders.count) pipelined decoders, \(plan.segmentSeconds) s windows")
             tapState.reset(
                 rate: format.sampleRate, plan: plan,
-                tuningA4: SettingsKeys.tuningA4, gain: SettingsKeys.inputGain)
-            tapState.startRecording(url: Self.recordingTempURL())
+                tuningA4: SettingsKeys.tuningA4, gain: SettingsKeys.inputGain,
+                retroSeconds: SettingsKeys.keepRecentMinute ? SettingsKeys.retroWindow + 2 : 0)
+            if recordsSession {
+                tapState.startRecording(url: Self.recordingTempURL())
+            }
             windowIndex = 0
             nextEdge = plan.streamingWarmup
             pacer = DecodePacer(floorStep: plan.streamingStep, ceilingStep: WindowGeometry.stepCeiling)
@@ -186,7 +203,15 @@ final class TranscriptionEngine: ObservableObject {
         } catch {
             isRunning = false
             lastError = error.localizedDescription
+            print("[engine] capture failed: \(error.localizedDescription)")
         }
+    }
+
+    /// The raw last `seconds` of microphone, with the content second it
+    /// starts at. What a kept minute is made of: the notes come from the
+    /// engine, the audio from here, and the two are cut to each other.
+    func retroAudio(seconds: Double) -> (samples: [Float], rate: Double, startSeconds: Double)? {
+        tapState.retroAudio(seconds: seconds)
     }
 
     /// The streaming wav the session that just stopped recorded into, at
@@ -243,6 +268,19 @@ final class TranscriptionEngine: ObservableObject {
     private func tick() {
         guard isRunning else { return }
         let received = tapState.receivedSeconds()
+        // Background listening has to be cheap enough to leave running all
+        // day. It reads the last two seconds rather than the whole window
+        // (a take counts a note's tail as sound, the minute does not) and it
+        // decodes every other step, so an idle room costs no decode and a
+        // busy one costs half of what a take costs.
+        if !recordsSession {
+            if tapState.recentPeak(seconds: 2.0) < Self.ambientPeak {
+                if received - nextEdge > 30 { nextEdge = received }
+                while received >= nextEdge { nextEdge += currentStep }
+                return
+            }
+        }
+        let step = recordsSession ? currentStep : currentStep * 2
         if received < 1.0, Date().timeIntervalSince(captureStarted) > 15 {
             stop()
             lastError = "Not hearing any input, check the microphone settings"
@@ -262,7 +300,7 @@ final class TranscriptionEngine: ObservableObject {
                 // only when nothing is still sounding: the merge carries note
                 // state from window to window, so cutting a decode out of the
                 // middle of sounding music invented thousands of repeats.
-                nextEdge = edge + currentStep
+                nextEdge = edge + step
                 skippedWindows += 1
                 continue
             }
@@ -272,7 +310,7 @@ final class TranscriptionEngine: ObservableObject {
             decoderBusy[slot] = true
             submitWindow(index: windowIndex, edge: edge, slot: slot)
             windowIndex += 1
-            nextEdge = edge + currentStep
+            nextEdge = edge + step
             guardCount += 1
             if guardCount > 64 { break }
         }

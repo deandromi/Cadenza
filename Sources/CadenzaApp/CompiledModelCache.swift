@@ -13,9 +13,16 @@ import Foundation
 /// the leftovers earlier versions of the app wrote.
 enum CompiledModelCache {
     private static let folderName = "CompiledModels"
+    /// Two decoders are built in parallel at launch, and both ask for the
+    /// model at the same moment: without this lock they compile the same
+    /// model twice and one of them loses the race to the same folder name,
+    /// which is how a cold cache failed the first capture.
+    nonisolated(unsafe) private static let lock = NSLock()
 
     /// The compiled model for this package, compiling it once if needed.
     static func prepare(_ package: URL) throws -> URL {
+        lock.lock()
+        defer { lock.unlock() }
         let stamp = (try? FileManager.default.attributesOfItem(atPath: package.path)[.modificationDate] as? Date)
             .map { Int($0.timeIntervalSince1970) } ?? 0
         let name = package.deletingPathExtension().lastPathComponent
@@ -34,9 +41,16 @@ enum CompiledModelCache {
         do {
             try FileManager.default.moveItem(at: fresh, to: folder)
         } catch {
-            // a cache on another volume cannot be moved onto; copy instead
-            try FileManager.default.copyItem(at: fresh, to: folder)
-            try? FileManager.default.removeItem(at: fresh)
+            // a cache on another volume cannot be moved onto; copy instead,
+            // and if even that fails the compiled model we already have is
+            // good enough: loading it from the temp folder works either way
+            do {
+                try FileManager.default.copyItem(at: fresh, to: folder)
+                try? FileManager.default.removeItem(at: fresh)
+            } catch {
+                print("[model] cache unavailable, loading the compiled copy in place: \(error.localizedDescription)")
+                return fresh
+            }
         }
         sweepTemporaryCopies(keeping: folder)
         return folder

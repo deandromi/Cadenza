@@ -42,9 +42,15 @@ enum SettingsKeys {
         UInt32(UserDefaults.standard.integer(forKey: inputDeviceIDKey))
     }
 
+    /// How far back "Keep last minute" reaches. One minute, in the one place
+    /// both the note buffer and the audio ring read it.
+    static let retroWindow: TimeInterval = 60
+
     /// Whether the rolling last minute is kept at all. On by default: it is
     /// what makes "Keep last minute" possible, and it costs one array of
-    /// small values. Off means nothing is buffered and the button goes away.
+    /// small values plus the raw audio of the same minute. Off means nothing
+    /// is buffered, nothing is captured in the background, and the button
+    /// goes away.
     static var keepRecentMinute: Bool {
         UserDefaults.standard.object(forKey: keepRecentMinuteKey) == nil
             ? true

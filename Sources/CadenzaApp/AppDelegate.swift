@@ -22,7 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// The rolling minute: every note the engine strikes, with when it
     /// arrived, so the best thing you played can be kept after the fact.
     private var recentNotes: [(note: NoteEvent, at: Date)] = []
-    private static let retroWindow: TimeInterval = 60
+    /// true while the app is listening for the rolling minute with no take
+    /// running: capture on, wav off, nothing published
+    private var ambient = false
     /// true between pressing New session with a click and the first note.
     private var countingIn = false
     private let store = SessionStore(directory: SettingsKeys.sessionDirectory)
@@ -59,12 +61,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             switch kind {
             case .struck:
                 self.rememberRecent(event)
-                self.publisher.noteStruck(event)
+                // a session is what plays out as MIDI; listening to the room
+                // in the background must never look like playing to another
+                // app, so publishing is tied to the take, not to capture
+                if self.sessionStartedAt != nil { self.publisher.noteStruck(event) }
                 self.screen?.noteStruck(event)
             case .extended:
                 break
             case .released:
-                self.publisher.noteReleased(event)
+                if self.sessionStartedAt != nil { self.publisher.noteReleased(event) }
                 self.screen?.noteReleased(event)
             }
             self.sheetController?.sync(notes: self.engine.notes)
@@ -94,6 +99,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         self.window = window
+        // the rolling minute has to exist before the player asks for it
+        startAmbientIfEnabled()
 
         engine.$lastError
             .receive(on: RunLoop.main)
@@ -154,6 +161,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             self?.sheetController?.sessionEnded()
             self?.sessionStartedAt = nil
         }
+        playback.ambientCapture = { [weak self] in self?.ambient ?? false }
+        playback.stopAmbientCapture = { [weak self] in
+            guard let self, self.ambient else { return }
+            self.engine.stop()
+            self.engine.discardRecording()
+            self.ambient = false
+            self.screen?.syncTransport()
+        }
+        playback.resumeAmbientCapture = { [weak self] in self?.startAmbientIfEnabled() }
     }
 
     // MARK: menu and shortcuts
@@ -199,8 +215,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         playPause.target = self
         sessionMenu.addItem(playPause)
         let keepMinute = NSMenuItem(title: "Keep last minute",
-                                    action: #selector(menuKeepLastMinute), keyEquivalent: "k")
-        keepMinute.keyEquivalentModifierMask = [.command, .shift]
+                                    action: #selector(menuKeepLastMinute), keyEquivalent: " ")
+        keepMinute.keyEquivalentModifierMask = [.command]
         keepMinute.target = self
         sessionMenu.addItem(keepMinute)
         let refresh = NSMenuItem(title: "Refresh MIDI port",
@@ -238,21 +254,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApplication.shared.windowsMenu = windowMenu
     }
 
-    /// Space toggles play and pause while the practice window is frontmost.
-    /// Everything else is a menu key equivalent, so it also works while a
-    /// section card has focus. Typing in a text field keeps its keys.
+    /// Space starts and stops a session, Command-Space keeps the last
+    /// minute. Everything else is a menu key equivalent, so it also works
+    /// while a section card has focus. Typing in a text field keeps its keys.
+    ///
+    /// Command-Space is macOS' own Spotlight shortcut: a local monitor only
+    /// sees what the app receives, so if Spotlight wins the key, turn it off
+    /// in System Settings, keyboard shortcuts. Command-Shift-K stays as the
+    /// alias that always works.
     private func installShortcuts() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.window else { return event }
-            guard event.keyCode == 49,
-                  event.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty
-            else { return event }
             // a field editor is typing: space is a character, not transport
             if let responder = self.window?.firstResponder,
                responder is NSTextView || responder is NSTextField { return event }
             guard NSApplication.shared.modalWindow == nil else { return event }
-            self.playback.togglePlayPause()
-            return nil
+            let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            if event.keyCode == 49 {
+                if modifiers == .command {
+                    self.keepLastMinute()
+                    return nil
+                }
+                guard modifiers.isEmpty else { return event }
+                self.toggleListening()
+                return nil
+            }
+            if modifiers == [.command, .shift],
+               event.charactersIgnoringModifiers?.lowercased() == "k" {
+                self.keepLastMinute()
+                return nil
+            }
+            return event
         }
     }
 
@@ -272,7 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// (its own empty state explains itself).
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(menuNewSession) {
-            item.title = engine.isRunning ? "Stop session" : "New session"
+            item.title = sessionStartedAt != nil ? "Stop session" : "New session"
         }
         if item.action == #selector(menuPlayPause) {
             return playback.playing != nil || !store.sessions.isEmpty || !engine.notes.isEmpty
@@ -314,7 +346,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             controller.onRefreshMIDI = { [weak self] in self?.republishMIDIPort() }
             controller.onRetroSettingChanged = { [weak self] in
                 guard let self else { return }
-                if !SettingsKeys.keepRecentMinute { self.recentNotes.removeAll() }
+                if SettingsKeys.keepRecentMinute {
+                    self.startAmbientIfEnabled()
+                } else {
+                    self.recentNotes.removeAll()
+                    if self.ambient {
+                        self.engine.stop()
+                        self.engine.discardRecording()
+                        self.ambient = false
+                    }
+                }
                 self.screen?.syncTransport()
             }
             controller.onMetronomeSettingsChanged = { [weak self] in
@@ -484,7 +525,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if recentNotes.count > 4096 {
             recentNotes.removeFirst(recentNotes.count - 4096)
         }
-        recentNotes.removeAll { now.timeIntervalSince($0.at) > Self.retroWindow + 10 }
+        recentNotes.removeAll { now.timeIntervalSince($0.at) > SettingsKeys.retroWindow + 10 }
     }
 
     /// Keeps the last minute of playing as its own session without touching
@@ -492,7 +533,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// button, and carry on.
     func keepLastMinute() {
         let now = Date()
-        let window = recentNotes.filter { now.timeIntervalSince($0.at) <= Self.retroWindow }
+        let window = recentNotes.filter { now.timeIntervalSince($0.at) <= SettingsKeys.retroWindow }
         guard window.count >= 2 else {
             present(error: "Nothing played in the last minute yet")
             return
@@ -505,9 +546,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         let span = notes.map(\.offset).max() ?? 0
         let began = Date().addingTimeInterval(-span)
+        let audio = keptMinuteAudio(from: first, length: span)
         if let record = store.saveSession(notes: notes, startedAt: began,
-                                          durationSeconds: span, audio: nil,
-                                          keepAudio: false) {
+                                          durationSeconds: span, audio: audio,
+                                          keepAudio: SettingsKeys.keepRecordedAudio) {
             refreshSessions()
             let described = TakeAnalysis.describe(notes: notes)
             screen?.setStatus(described.map { "Kept the last minute · \($0.summary)" }
@@ -515,6 +557,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         } else {
             present(error: "Couldn't keep that minute")
         }
+    }
+
+    /// The raw audio of a kept minute, cut to the same span as the notes
+    /// that were kept and written where the store can move it into the
+    /// session folder. nil when audio is switched off, or when capture has
+    /// not been running long enough to cover the notes.
+    private func keptMinuteAudio(from first: Double, length: Double) -> (url: URL, rate: Double)? {
+        guard SettingsKeys.keepRecordedAudio,
+              let captured = engine.retroAudio(seconds: SettingsKeys.retroWindow + 2),
+              captured.rate > 0 else { return nil }
+        let start = max(0, Int(((first - captured.startSeconds) * captured.rate).rounded()))
+        let end = min(captured.samples.count,
+                      Int(((first + length - captured.startSeconds) * captured.rate).rounded()))
+        guard end > start + 1 else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Cadenza kept minute.wav")
+        do {
+            try WavWriter.write(Array(captured.samples[start..<end]), rate: captured.rate, to: url)
+            return (url, captured.rate)
+        } catch {
+            print("[keep] audio: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// With the rolling minute on, the app listens from launch: the minute
+    /// has to exist before the player asks for it. Ambient capture writes no
+    /// wav and publishes no MIDI; it is the app hearing the room, and a
+    /// silent room costs no decode at all.
+    private func startAmbientIfEnabled() {
+        guard SettingsKeys.keepRecentMinute, !engine.isRunning, !countingIn,
+              sessionStartedAt == nil else { return }
+        guard let assets = Self.locateAssets() else { return }
+        engine.start(tensorsDir: assets.tensors, modelURL: assets.model, recordSession: false)
+        ambient = true
+        screen?.syncTransport()
+        print("[ambient] listening for the last minute")
     }
 
     // MARK: metronome
@@ -547,7 +626,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// One action: it starts the session that listens, plays out as MIDI,
     /// and is what export hands over, and it stops that session again.
     func toggleListening() {
-        if engine.isRunning || countingIn {
+        if sessionStartedAt != nil || countingIn {
             countingIn = false
             countInToken += 1
             engine.stop()
@@ -586,15 +665,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             }
             sessionStartedAt = nil
             refreshSessions()
+            // a finished take goes back to listening, so the next minute is
+            // already there when the player wants it
+            startAmbientIfEnabled()
         } else {
             playback.stop()
             guard let assets = Self.locateAssets() else {
                 present(error: "Model files not found next to the app")
                 return
             }
+            // ambient capture has no wav and a timeline of its own: a take
+            // starts from a clean one rather than inheriting background time
+            if ambient {
+                engine.stop()
+                engine.discardRecording()
+                ambient = false
+            }
             let begin = { [weak self] in
                 guard let self else { return }
-                self.engine.start(tensorsDir: assets.tensors, modelURL: assets.model)
+                self.engine.start(tensorsDir: assets.tensors, modelURL: assets.model,
+                                  recordSession: true)
                 self.sessionStartedAt = Date()
                 self.screen?.sessionStarted()
                 self.screen?.syncTransport()
@@ -742,7 +832,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 /// read is state, every write is an action, and the ones that already have a
 /// home here (listening, the click, the archive's exports) are simply exposed.
 extension AppDelegate {
-    var isListening: Bool { engine.isRunning }
+    var isListening: Bool { sessionStartedAt != nil }
 
     var exportEnabled: Bool { !engine.notes.isEmpty }
 
@@ -831,7 +921,7 @@ extension AppDelegate {
     // MARK: the click and retroactive capture
 
     var canKeepLastMinute: Bool {
-        recentNotes.contains { Date().timeIntervalSince($0.at) <= Self.retroWindow }
+        recentNotes.contains { Date().timeIntervalSince($0.at) <= SettingsKeys.retroWindow }
     }
 
     var keepMinuteEnabled: Bool { SettingsKeys.keepRecentMinute }

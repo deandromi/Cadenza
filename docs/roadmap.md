@@ -133,11 +133,24 @@ below is a separate door.
 
 ### Catch it
 
-- **Retroactive capture** — built: a rolling minute of struck notes is kept
-  with wall-clock stamps, and "Keep last minute" (Shift-Command-K, or the
-  panel) writes that window out as its own session without stopping the one
-  that is running. Audio is not part of the kept minute yet: that needs the
-  recording ring trimmed, not copied.
+- **Retroactive capture** — built and complete: a rolling minute of struck
+  notes is kept with wall-clock stamps, and "Keep last minute" (Command-Space
+  or the panel) writes that window out as its own session without stopping
+  the one that is running. The minute carries its **raw audio** as well: the
+  tap holds the last sixty seconds of the microphone (twelve megabytes, no
+  file), and the kept take is cut to exactly the span its notes cover, so it
+  plays back and exports like any other session.
+- **Listening in the background** — built: while the rolling minute is on in
+  settings, the app captures from launch instead of only during a take. That
+  capture is ambient: no wav is written, nothing is published to the virtual
+  MIDI port, and a silent room costs no decode at all (silent windows are
+  skipped), so an idle Cadenza is quiet and cheap. Starting a take switches
+  capture to session mode with a fresh timeline; stopping it returns to
+  listening.
+- **One key for the session** — Space starts or stops a session, the way a
+  transport key should; play and pause stay on Command-P. Command-Space keeps
+  the last minute, with Command-Shift-K as the alias that always works
+  because macOS gives Command-Space to Spotlight.
 - **Time machine** — the transport scrub is built: dragging the scrub hand in
   the panel jumps playback to that point and the keybed and endless measure
   follow. Scrubbing only: the export flow stays the session export, so there is

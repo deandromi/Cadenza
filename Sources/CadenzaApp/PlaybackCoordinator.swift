@@ -28,6 +28,12 @@ final class PlaybackCoordinator {
     var locateAssets: () -> (tensors: URL, model: URL)? = { nil }
     var playAlongBegan: () -> Void = {}
     var playAlongEnded: () -> Void = {}
+    /// Ambient capture is the rolling minute, not a take, so playback may
+    /// borrow the microphone from it: the app says whether the running
+    /// capture is ambient, stops it, and starts it again afterwards.
+    var ambientCapture: () -> Bool = { false }
+    var stopAmbientCapture: () -> Void = {}
+    var resumeAmbientCapture: () -> Void = {}
 
     private var task: Task<Void, Never>?
     private(set) var playing: SessionRecord?
@@ -82,11 +88,12 @@ final class PlaybackCoordinator {
             refresh()
             return
         }
-        guard !engine.isRunning else {
+        guard !engine.isRunning || ambientCapture() else {
             presentError("Stop listening before playing a session")
             return
         }
-        stop()
+        if engine.isRunning { stopAmbientCapture() }
+        stop(resumingListen: false)
         guard store.notes(for: record) != nil else {
             presentError("Couldn't read the session file")
             return
@@ -109,11 +116,12 @@ final class PlaybackCoordinator {
             refresh()
             return
         }
-        guard !engine.isRunning else {
+        guard !engine.isRunning || ambientCapture() else {
             presentError("Stop listening before playing along")
             return
         }
-        stop()
+        if engine.isRunning { stopAmbientCapture() }
+        stop(resumingListen: false)
         guard store.notes(for: record) != nil else {
             presentError("Couldn't read the session file")
             return
@@ -157,8 +165,17 @@ final class PlaybackCoordinator {
         refresh()
     }
 
-    /// Stops playback outright: pause, play-along or a running take.
-    func stop() {
+    /// Stops playback outright: pause, play-along or a running take. The
+    /// rolling minute starts again, because the player is back to playing
+    /// rather than listening to a recording.
+    func stop(resumingListen: Bool = true) {
+        let hadSomething = playing != nil || playAlong != nil
+        clearPlayback()
+        if hadSomething, resumingListen { resumeAmbientCapture() }
+    }
+
+    /// Puts the transport down without touching capture.
+    private func clearPlayback() {
         task?.cancel()
         task = nil
         paused = false

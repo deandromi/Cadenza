@@ -258,7 +258,9 @@ extension SmokeMain {
         try? FileManager.default.removeItem(at: url)
         let rate = 48000.0
         let tapState = AudioTapState()
-        tapState.reset(rate: rate)
+        // two seconds of rolling minute, so the one second fed below has to
+        // come back whole: this is what "keep last minute" writes to disk
+        tapState.reset(rate: rate, retroSeconds: 2)
         tapState.startRecording(url: url)
         var phase = 0.0
         var fed = 0
@@ -293,7 +295,23 @@ extension SmokeMain {
         let expected = Int(rate)
         print(String(format: "record-probe: %d frames of %d expected, peak %d of ~16384 at %@",
                      frames, expected, Int(peak), written.lastPathComponent))
-        let passed = abs(frames - expected) <= 4096 && peak > 8000
+
+        // the rolling minute: raw, with the content second it starts at, so a
+        // kept take can be cut to the notes that belong to it
+        var retroPassed = false
+        if let retro = tapState.retroAudio(seconds: 2) {
+            let peakRetro = retro.samples.map { abs($0) }.max() ?? 0
+            print(String(format: "record-probe: rolling minute %d frames at %.0f Hz from %.2f s, peak %.2f",
+                         retro.samples.count, retro.rate, retro.startSeconds, peakRetro))
+            retroPassed = abs(retro.samples.count - expected) <= 8192
+                && abs(retro.rate - rate) < 1
+                && retro.startSeconds < 0.1
+                && peakRetro > 0.4
+        } else {
+            print("record-probe: rolling minute came back empty")
+        }
+
+        let passed = abs(frames - expected) <= 4096 && peak > 8000 && retroPassed
         print(passed ? "record-probe PASSED" : "record-probe FAILED")
     }
 }

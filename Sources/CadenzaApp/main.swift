@@ -206,6 +206,11 @@ if CommandLine.arguments.contains("--capture") {
 StorageHygiene.rotateLogIfNeeded()
 freopen(StorageHygiene.logPath, "a", stdout)
 freopen(StorageHygiene.logPath, "a", stderr)
+// a file stream is block-buffered: a line written a moment ago would sit in
+// the buffer until the app quits, which is exactly when a diagnostic about a
+// hang is worthless
+setvbuf(stdout, nil, _IOLBF, 0)
+setvbuf(stderr, nil, _IOLBF, 0)
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

@@ -34,11 +34,23 @@ final class AudioTapState: @unchecked Sendable {
     /// total raw samples the correction has seen, so the read head can
     /// address the global raw stream rather than one chunk
     private var rawConsumed = 0
+    /// The raw last minute, kept while "keep the last minute" is on. Raw is
+    /// what the kept take should sound like: no gain, no tuning stretch, the
+    /// piano as the microphone heard it. Sixty seconds of mono float is
+    /// twelve megabytes, and nothing here ever grows past the cap.
+    private var retro: [Float] = []
+    private var retroCap = 0
+    private var rawRate: Double = 44100
 
-    func reset(rate: Double, plan: WindowPlan = .standard, tuningA4: Double = 440, gain: Float = 1.0) {
+    func reset(rate: Double, plan: WindowPlan = .standard, tuningA4: Double = 440,
+               gain: Float = 1.0, retroSeconds: Double = 0) {
         lock.lock()
         defer { lock.unlock() }
         ring = []
+        rawRate = rate
+        retroCap = retroSeconds > 0 ? Int(retroSeconds * rate) : 0
+        retro = []
+        retro.reserveCapacity(min(retroCap, Int(rate * 65)))
         ring.reserveCapacity(Int(plan.ringHistorySeconds * rate) + Self.trimSlack(rate: rate))
         ringStart = 0
         // correcting a4 to 440 stretches the stream; content therefore
@@ -143,6 +155,12 @@ final class AudioTapState: @unchecked Sendable {
             modelPath = out
         }
         rawConsumed += samples.count
+        if retroCap > 0 {
+            retro.append(contentsOf: samples)
+            if retro.count > retroCap + Int(rawRate) {
+                retro.removeFirst(retro.count - retroCap)
+            }
+        }
         if let modelPath {
             ring.append(contentsOf: modelPath)
         } else {
@@ -223,6 +241,20 @@ final class AudioTapState: @unchecked Sendable {
         }
         lock.unlock()
         return peak
+    }
+
+    /// The raw last `seconds` of capture, oldest first, with the content
+    /// second the slice starts at: a kept take is cut to its notes by that
+    /// number. nil while the setting is off or nothing has arrived.
+    func retroAudio(seconds: Double) -> (samples: [Float], rate: Double, startSeconds: Double)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard retroCap > 0, !retro.isEmpty else { return nil }
+        let span = min(retro.count, Int(seconds * rawRate))
+        guard span > 0 else { return nil }
+        let from = retro.count - span
+        let startSample = rawConsumed - retro.count + from
+        return (Array(retro[from...]), rawRate, Double(max(startSample, 0)) / rawRate)
     }
 
     func receivedSeconds() -> Double {
