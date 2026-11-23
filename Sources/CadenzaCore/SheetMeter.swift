@@ -51,6 +51,16 @@ extension SheetDraft {
             max(1, (measureTicks + beatTicks - 1) / beatTicks)
         }
 
+        /// The most columns a bar can hold on a given grid: one for every step
+        /// the meter has room for. A 4/4 bar at a sixteenth grid holds
+        /// sixteen, a 3/4 bar twelve, a 2/4 bar eight; nothing a player does
+        /// puts a seventeenth in it, and a bar that appears to is two attacks
+        /// landing in the same slot, which is one chord.
+        public func capacity(grid: Int) -> Int {
+            guard grid > 0 else { return numerator }
+            return max(1, measureTicks / grid)
+        }
+
         /// The values one symbol may carry, longest first, in ticks. The ladder
         /// is the classic one: whole, dotted half, half, dotted quarter,
         /// quarter, dotted eighth, eighth, dotted sixteenth, sixteenth,

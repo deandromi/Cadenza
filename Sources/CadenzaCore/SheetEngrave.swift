@@ -166,7 +166,16 @@ public enum SheetEngraver {
             // take whose bars grew by a sixteenth would leave every voice a
             // sixteenth short and print an empty tail in bar after bar. So the
             // column is re-homed into the bar's own fixed room.
-            let moment = bar * measureTicks + local
+            //
+            // Inside that room the columns stand on the bar's own grid, not on
+            // a grid measured from the first note: a drifting barline would
+            // otherwise leave every column of the bar a little off the metre,
+            // and a bar could print more columns than its meter has room for.
+            // Two attacks in one slot are one chord.
+            let step = quantizer.grid
+            let slot = min(meter.capacity(grid: step) - 1,
+                           max(0, Int((Double(local) / Double(step)).rounded())))
+            let moment = bar * measureTicks + slot * step
             let divided = SheetDraft.divideGrip(cluster.map(\.pitch))
             // No note hangs more than three ledger lines off its staff. A note
             // read four lines down is unreadable and the other staff is right
@@ -367,9 +376,16 @@ public enum SheetEngraver {
         func extents(_ symbol: SheetDraft.Symbol) -> (left: Double, right: Double) {
             switch symbol {
             case .chord(let chord):
-                let accidental = chord.notes.contains { $0.accidental != .none } ? 0.95 : 0
+                // A chord's accidentals stand in columns left of its heads, so
+                // the room they take is the stack's own width: pricing them as
+                // "one accidental" packed the next chord onto the sharps.
+                let marks = chord.notes.compactMap { note -> (position: Int, kind: AccidentalInk.Kind)? in
+                    guard let kind = note.accidental.ink else { return nil }
+                    return (note.staffPosition, kind)
+                }
+                let stack = AccidentalInk.width(marks)
                 let dots = (chord.notes.map(\.dots).max() ?? 0) > 0 ? 0.72 : 0
-                return (0.6 + accidental, 0.6 + dots)
+                return (0.6 + stack, 0.6 + dots)
             case .rest(_, let kind), .restVoiced(_, let kind, _):
                 // an eighth rest has a hook that reaches, a whole rest is a
                 // small block sitting under the fourth line
@@ -482,17 +498,13 @@ public enum SheetEngraver {
             // it. A single bar too dense for the page is squeezed rather than
             // allowed to overflow.
             let naturalTotal = naturals.reduce(0, +)
-            // A line of bars is stretched to the margin, never compressed
-            // below its own rhythm — a squeezed system is what a page of
-            // touching heads looks like. Only a single bar too dense for the
-            // paper is allowed to give up some air, because it has no other
-            // line to go to.
-            let floor = chosen.count > 1 ? 0.9 : 0.8
-            // The ceiling is high enough that a line of quiet bars still
-            // reaches the margin: a short line that stops in the middle of the
-            // paper is the one thing no edition prints.
+            // A line is stretched to the margin and never compressed: a
+            // squeezed system is what a page of touching heads looks like. A
+            // bar that will not fit is given the next line instead, and a bar
+            // too dense for the paper widens the page rather than printing its
+            // heads on top of each other.
             let stretch = naturalTotal > 0
-                ? min(max(usable / naturalTotal, floor), 6.0) : 1.0
+                ? min(max(usable / naturalTotal, 1.0), 6.0) : 1.0
             let widths = naturals.map { $0 * stretch }
 
             var topPlaced: [SheetDraft.Placed] = []

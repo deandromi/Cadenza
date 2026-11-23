@@ -1369,6 +1369,79 @@ do {
     expect(abs(kept[0].offset - 2.4) < 1e-9, "a plausible length is left alone")
 }
 
+// MARK: a bar holds what its meter holds
+
+do {
+    // The meter's capacity: one column for every grid step the bar has room
+    // for. A 4/4 bar holds sixteen sixteenths, a 3/4 bar twelve, a 2/4 bar
+    // eight — and a 3/4 bar at an eighth grid holds six.
+    let four = SheetDraft.Meter(numerator: 4, denominator: 4)
+    let three = SheetDraft.Meter(numerator: 3, denominator: 4)
+    let two = SheetDraft.Meter(numerator: 2, denominator: 4)
+    expect(four.capacity(grid: 120) == 16, "4/4 holds sixteen sixteenths")
+    expect(three.capacity(grid: 120) == 12, "3/4 holds twelve sixteenths")
+    expect(three.capacity(grid: 240) == 6, "3/4 holds six eighths")
+    expect(two.capacity(grid: 120) == 8, "2/4 holds eight sixteenths")
+    expect(two.capacity(grid: 120) == two.capacity(grid: 120),
+           "capacity is the meter's own number, not a running guess")
+}
+
+do {
+    // A bar can be handed more attacks than its meter can print — a roll, a
+    // fast run read at a fine grid, two hands landing in one slot. What comes
+    // out is still a bar: never more columns than the meter has room for, and
+    // every column a column the bar can write.
+    let options = SheetDraft.Options(bpm: 120, numerator: 2, denominator: 4)
+    let capacity = SheetDraft.Meter(options).capacity(grid: 120)
+    var events: [NoteEvent] = []
+    // twenty attacks inside one 2/4 bar: more than its eight slots
+    for index in 0..<20 {
+        events.append(NoteEvent(pitch: 60 + index % 5, velocity: 80,
+                                onset: Double(index) * 0.012, duration: 0.1))
+    }
+    let crowded = SheetDraft.draft(notes: events, options: options)
+    var columnsInFirstBar = 0
+    for placed in crowded.rows[0].top {
+        guard case .chord(let chord) = placed.symbol else { continue }
+        if chord.startTicks < options.measureTicks { columnsInFirstBar += 1 }
+    }
+    for placed in crowded.rows[0].bottom {
+        guard case .chord(let chord) = placed.symbol else { continue }
+        if chord.startTicks < options.measureTicks { columnsInFirstBar += 1 }
+    }
+    expect(columnsInFirstBar <= 2 * capacity,
+           "a bar prints no more columns than its meter holds: \(columnsInFirstBar)")
+}
+
+do {
+    // The room an accidental takes is the stack's own width, so a chord that
+    // needs two sharps is priced wider than the same chord in a key that
+    // already carries them. The proof the reader sees: fewer bars fit on the
+    // first line when every chord has to spell its accidentals.
+    let inKey = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
+    var events: [NoteEvent] = []
+    for bar in 0..<12 {
+        let start = Double(bar) * 2.0
+        for beat in 0..<4 {
+            let onset = start + Double(beat) * 0.5
+            events.append(NoteEvent(pitch: 61, velocity: 80, onset: onset, duration: 0.4))
+            events.append(NoteEvent(pitch: 66, velocity: 80, onset: onset, duration: 0.4))
+        }
+    }
+    let spelled = SheetDraft.draft(notes: events, options: inKey, declaredFifths: 0)
+    let carried = SheetDraft.draft(notes: events, options: inKey, declaredFifths: 3)
+    func bars(_ result: SheetDraft.Result) -> Int {
+        result.rows[0].top.filter { if case .bar = $0.symbol { return true }; return false }.count
+    }
+    expect(bars(spelled) < bars(carried),
+           "sharps that the key does not carry cost their own room: \(bars(spelled)) vs \(bars(carried))")
+    let stack = AccidentalInk.width([(0, .sharp), (2, .sharp)])
+    let single = AccidentalInk.width([(0, .sharp)])
+    expect(stack > single, "two sharps stand in two columns and take more room than one")
+    expect(AccidentalInk.columns([(0, .sharp), (2, .sharp), (9, .sharp)]) == [0, 1, 0],
+           "sharps a second apart take different columns, far ones share")
+}
+
 // MARK: the MIDI reader's refusals
 
 do {

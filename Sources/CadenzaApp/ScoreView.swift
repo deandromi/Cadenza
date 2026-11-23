@@ -533,17 +533,19 @@ final class ScoreView: NSView {
 
         // Accidentals stand in columns to the left of the chord, never on top
         // of a head: two of them a second apart would otherwise print as one
-        // smudged mark over the note it does not belong to.
+        // smudged mark over the note it does not belong to. Which column each
+        // one takes, and how wide that stack is, is the engraver's own
+        // question too — it reserves the room — so both read one table.
+        let accidentalMarks = byPosition.compactMap { index -> (position: Int, kind: AccidentalInk.Kind)? in
+            guard let kind = chord.notes[index].accidental.ink else { return nil }
+            return (chord.notes[index].staffPosition, kind)
+        }
+        let accidentalColumns = AccidentalInk.columns(accidentalMarks)
         var accidentalColumn = [Int](repeating: 0, count: chord.notes.count)
-        var accidentalColumns: [(position: Int, column: Int)] = []
-        for index in byPosition where chord.notes[index].accidental != .none {
-            let position = chord.notes[index].staffPosition
-            var column = 0
-            while accidentalColumns.contains(where: { $0.column == column && abs($0.position - position) < 3 }) {
-                column += 1
-            }
-            accidentalColumn[index] = column
-            accidentalColumns.append((position, column))
+        var mark = 0
+        for index in byPosition where chord.notes[index].accidental.ink != nil {
+            accidentalColumn[index] = accidentalColumns[mark]
+            mark += 1
         }
 
         // heads, their ledger lines, accidentals and dots
@@ -567,7 +569,10 @@ final class ScoreView: NSView {
                 // centring the box drops its bowl a space below the line.
                 // The bowl is the part that must sit on the note's line.
                 let accY = note.accidental == .flat ? cy - 0.9 * gap : cy
-                let columnX = chordLeft - 0.85 * gap - CGFloat(accidentalColumn[index]) * 0.72 * gap - accWidth / 2
+                let columnX = chordLeft
+                    - CGFloat(AccidentalInk.glyphGap) * gap
+                    - CGFloat(accidentalColumn[index]) * CGFloat(AccidentalInk.columnStep) * gap
+                    - accWidth / 2
                 inkGlyph(cp, centerX: columnX, centerY: accY, gap: gap, ink: ink)
             }
             let headGlyph = note.head == .whole ? Glyph.noteheadWhole
