@@ -86,7 +86,13 @@ cp -R "${repo_root}/Models" "${app_dir}/Contents/Resources/Models"
 # it the app draws the page itself, which is the fallback rather than the goal.
 if [ ! -x "${repo_root}/build/engraver/run.sh" ]; then
 	echo "Staging the bundled engraver (LilyPond)"
-	bash "${repo_root}/Tools/bundle_lilypond.sh"
+	# A machine that has never installed LilyPond still assembles an app: the
+	# staged copy is what ships, and only a checkout that also stages it can
+	# build one. Without the stage the sheet falls back to the built-in drawer
+	# rather than failing the build.
+	if ! bash "${repo_root}/Tools/bundle_lilypond.sh"; then
+		echo "warning: could not stage LilyPond; the sheet falls back to the built-in drawer" >&2
+	fi
 fi
 if [ -x "${repo_root}/build/engraver/run.sh" ]; then
 	cp -R "${repo_root}/build/engraver" "${app_dir}/Contents/Resources/engraver"

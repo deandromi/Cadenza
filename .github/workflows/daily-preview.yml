@@ -43,6 +43,15 @@ jobs:
           swift --version
           sw_vers
 
+      - name: Install the engraver the app bundles
+        # The app ships a trimmed LilyPond (Tools/bundle_lilypond.sh) so the
+        # sheet is set by a real engraver. The runner has to have one to trim;
+        # a brew hiccup must not cost the day's build, so it only warns.
+        run: |
+          set -euo pipefail
+          brew install lilypond || echo "::warning::lilypond did not install; the sheet will use the built-in drawer"
+          brew --prefix lilypond || true
+
       - name: Build every target
         # The DMG build below only builds the app product. Building the package
         # here keeps CadenzaCore and CadenzaCoreChecks compiling too, before
