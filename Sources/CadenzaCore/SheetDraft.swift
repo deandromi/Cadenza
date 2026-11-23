@@ -420,35 +420,82 @@ public enum SheetDraft {
         return Set([0, 2, 4, 5, 7, 9, 11].map { (tonic + $0) % 12 })
     }
 
-    /// The guessed key: the one needing the fewest accidentals for the
-    /// played pitch classes, scanning G flat major through B major.
+    /// The guessed key.
+    ///
+    /// Counting the notes that fall outside each scale picks the smallest
+    /// signature, and that is exactly how a waltz in D major came out in C
+    /// major: it holds a C natural on every dominant seventh, so C scored as
+    /// well as D and the plain signature won. The page then wore a sharp on
+    /// every F and every C, which is what a reader sees as "wrong" long before
+    /// they can name the key.
+    ///
+    /// A key is not the absence of accidentals, it is a *weighting* of the
+    /// twelve pitch classes, and the classic Krumhansl–Kessler profiles are
+    /// that weighting measured from listeners. So: correlate the played
+    /// distribution against every key's profile, take the best match, and use
+    /// the size of the signature only to settle a near tie. A note's weight is
+    /// the time it sounds, so a held chord outvotes a passing sixteenth.
     public static func guessedFifths(pitches: [Int]) -> Int {
-        var histogram = [Int](repeating: 0, count: 12)
-        for pitch in pitches {
-            histogram[((pitch % 12) + 12) % 12] += 1
+        guessedFifths(weights: pitches.map { (pitch: $0, weight: 1) })
+    }
+
+    /// The same guess, with each note weighted by how long it sounds.
+    public static func guessedFifths(weights: [(pitch: Int, weight: Int)]) -> Int {
+        var histogram = [Double](repeating: 0, count: 12)
+        for entry in weights {
+            histogram[((entry.pitch % 12) + 12) % 12] += Double(max(1, entry.weight))
         }
-        // A key signature is a guess, and a wrong guess with five accidentals is
-        // worse than a plain signature with one passing note outside it. So: score
-        // every key by the time spent outside it, then prefer the key with the
-        // fewest accidentals among those within a note or so of the best score.
-        var scored: [(fifths: Int, outside: Int)] = []
-        for fifths in -4...4 {
-            let scale = majorScalePitchClasses(fifths)
-            var outside = 0
-            for pitchClass in 0..<12 where !scale.contains(pitchClass) {
-                outside += histogram[pitchClass]
+        guard histogram.contains(where: { $0 > 0 }) else { return 0 }
+        // Krumhansl–Kessler key profiles, starting on the tonic.
+        let major = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
+        let minor = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
+        var scored: [(fifths: Int, correlation: Double)] = []
+        for tonic in 0..<12 {
+            for (profile, isMinor) in [(major, false), (minor, true)] {
+                let rotated = (0..<12).map { profile[((($0 - tonic) % 12) + 12) % 12] }
+                scored.append((fifths: fifths(tonic: tonic, isMinor: isMinor),
+                               correlation: correlation(histogram, rotated)))
             }
-            scored.append((fifths, outside))
         }
-        guard let best = scored.map(\.outside).min() else { return 0 }
-        let tolerance = max(1, pitches.count / 40)
-        let near = scored.filter { $0.outside <= best + tolerance }
+        guard let best = scored.map(\.correlation).max() else { return 0 }
+        // Two keys equally close to the ear: the smaller signature is the one a
+        // player wants to read, so it settles the tie.
+        let near = scored.filter { $0.correlation >= best - 0.02 }
         let chosen = near.sorted { a, b in
-            if a.outside != b.outside { return a.outside < b.outside }
             if abs(a.fifths) != abs(b.fifths) { return abs(a.fifths) < abs(b.fifths) }
-            return a.fifths < b.fifths
+            return a.correlation > b.correlation
         }.first
         return chosen?.fifths ?? 0
+    }
+
+    /// How many sharps (positive) or flats (negative) a key is written with.
+    /// A minor key borrows the signature of its relative major, three
+    /// semitones up.
+    static func fifths(tonic: Int, isMinor: Bool) -> Int {
+        let majorTonic = isMinor ? (tonic + 3) % 12 : tonic
+        let wheel = [0: 0, 7: 1, 2: 2, 9: 3, 4: 4, 11: 5, 6: 6,
+                     1: -5, 8: -4, 3: -3, 10: -2, 5: -1]
+        return wheel[majorTonic] ?? 0
+    }
+
+    /// Pearson correlation of two twelve-bin profiles.
+    private static func correlation(_ a: [Double], _ b: [Double]) -> Double {
+        let count = Double(min(a.count, b.count))
+        guard count > 0 else { return 0 }
+        let meanA = a.reduce(0, +) / count
+        let meanB = b.reduce(0, +) / count
+        var covariance = 0.0
+        var varianceA = 0.0
+        var varianceB = 0.0
+        for index in 0..<Int(count) {
+            let da = a[index] - meanA
+            let db = b[index] - meanB
+            covariance += da * db
+            varianceA += da * da
+            varianceB += db * db
+        }
+        guard varianceA > 0, varianceB > 0 else { return 0 }
+        return covariance / (varianceA * varianceB).squareRoot()
     }
 
     /// The accidental a played pitch class needs in a key signature.

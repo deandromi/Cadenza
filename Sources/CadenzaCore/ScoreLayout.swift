@@ -165,8 +165,12 @@ public enum ScoreLayout {
         //   bass lines   G2 B2 D3 F3 A3 (steps 0 2 4 6 8)
         let trebleSharps = [8, 5, 9, 6, 3, 7, 4]
         let bassSharps = [6, 3, 7, 4, 8, 5, 2]
-        let trebleFlats = [4, 7, 3, 6, 2, 5, 8]
-        let bassFlats = [2, 5, 1, 4, 0, 3, 6]
+        // The flat ladder, in the order the signature adds them: B, E, A, D,
+        // G, C, F. In the bass the A flat stands on the top line and the G flat
+        // in the space under it — a signature that dropped them a fifth read as
+        // a scale running downhill instead of a key.
+        let trebleFlats = [4, 7, 3, 6, 2, 5, 1]
+        let bassFlats = [2, 5, 8, 4, 7, 3, 6]
         if fifths > 0 {
             return (0..<fifths).map { KeyGlyph(
                 treblePosition: trebleSharps[$0],

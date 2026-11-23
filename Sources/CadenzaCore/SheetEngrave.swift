@@ -254,7 +254,10 @@ public enum SheetEngraver {
 
         // 5. key: the file's own signature when it declares one — a published
         //    MIDI states its key, and guessing over it prints flats as sharps.
-        let fifths = declaredFifths ?? SheetDraft.guessedFifths(pitches: raw.map(\.pitch))
+        // A key is what the piece spends its time on, so the guess weighs each
+        // note by the time it sounds.
+        let fifths = declaredFifths
+            ?? SheetDraft.guessedFifths(weights: raw.map { (pitch: $0.pitch, weight: $0.length) })
 
         // 6. Each staff writes its voices; then the systems.
         var groups: [SheetDraft.BeamGroup] = []

@@ -215,7 +215,9 @@ final class ScoreView: NSView {
             // happens to begin, which printed it against the last accidental
             // of the key.
             if row.showsFraming {
-                let sigX = keyX + 0.45 * gap + 0.75 * gap
+                // The meter stands clear of the signature: the digits used to
+                // land on the last flat, which reads as one smudged mark.
+                let sigX = keyX + 1.25 * gap
                 func digit(_ number: Int, baselineY: CGFloat) {
                     let codepoint = Glyph.timeSignatureDigit(number)
                     guard let info = MusicFont.info(codepoint) else { return }
@@ -530,8 +532,8 @@ final class ScoreView: NSView {
                     let x = clear(pedalX(item), width: width)
                     drawGlyph(Glyph.pedalDownMark, baselineAt: NSPoint(x: x, y: lineY),
                               font: mark.font, color: ink)
-                    openX = x + width * 0.85
-                    cursor = x + width
+                    openX = x + width + 0.25 * gap
+                    cursor = x + width + 0.25 * gap
                 }
             case .pedalUp:
                 if let info = MusicFont.info(Glyph.pedalUpMark) {
