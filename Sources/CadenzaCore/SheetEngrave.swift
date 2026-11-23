@@ -257,12 +257,13 @@ public enum SheetEngraver {
         // need more room than the page has, the sheet widens a little rather
         // than losing the notes off the edge.
         let widest = rows.map(\.width).max() ?? pageWidth
+        let pitch = rowHeight(for: reach(top: top, bottom: bottom, hasPedal: !pedalMarks.isEmpty))
 
         return SheetDraft.Result(options: options, fifths: fifths,
                                  topTrack: top.symbols, bottomTrack: bottom.symbols,
                                  rows: rows, beamGroups: groups, ties: ties, slurs: slurs,
-                                 width: max(pageWidth, widest), rowHeight: rowHeight,
-                                 totalHeight: totalHeight(forRows: rows.count),
+                                 width: max(pageWidth, widest), rowHeight: pitch,
+                                 totalHeight: totalHeight(forRows: rows.count, rowHeight: pitch),
                                  rowsPerPage: systemsPerPage)
     }
 
@@ -313,9 +314,51 @@ public enum SheetEngraver {
     private static let pageGap = 10.0
     private static let topSpace = 6.0
 
+    /// The default pitch of a system, for a draft with no ink to measure.
     private static var rowHeight: Double { systemHeight + systemGap }
 
-    private static func totalHeight(forRows rows: Int) -> Double {
+    /// How far a draft's ink reaches past its own staves, in staff spaces,
+    /// above the treble and below the bass.
+    struct Reach {
+        var above: Double = 1.4
+        var below: Double = 1.4
+    }
+
+    /// The room a draft really needs outside its staves.
+    ///
+    /// Every system used to reserve the same five spaces each way, so a chord
+    /// standing six ledger lines over the treble printed its lines in the
+    /// staff of the system above it: the collision that makes a dense page
+    /// read as one smudge. The numbers are read off the symbols the page will
+    /// draw, so a draft of low left-hand chords and a draft of high right-hand
+    /// chords get the pitch they each need.
+    private static func reach(top: Staff, bottom: Staff, hasPedal: Bool) -> Reach {
+        func positions(_ staff: Staff) -> [Int] {
+            staff.symbols.flatMap { symbol -> [Int] in
+                guard case .chord(let chord) = symbol else { return [] }
+                return chord.notes.map(\.staffPosition)
+            }
+        }
+        // A head is about one space tall and a ledger line stands past it, so
+        // the ink of the highest note reaches half a space more than the note.
+        let highest = positions(top).max() ?? 8
+        let lowest = positions(bottom).min() ?? 0
+        var result = Reach()
+        result.above = max(result.above, Double(max(0, highest - 8)) / 2 + 1.2)
+        result.below = max(result.below, Double(max(0, -lowest)) / 2 + 1.2)
+        // A pedal line hangs under everything the bass staff prints, and the
+        // renderer keeps it at most eight spaces below the staff.
+        if hasPedal { result.below = max(result.below, 9.6) }
+        return result
+    }
+
+    /// The pitch of one system: its two staves, the ink that reaches past
+    /// them, and the air between one system and the next.
+    private static func rowHeight(for reach: Reach) -> Double {
+        systemHeight + max(systemGap, reach.above + reach.below + 2)
+    }
+
+    private static func totalHeight(forRows rows: Int, rowHeight: Double) -> Double {
         guard rows > 0 else { return topSpace + rowHeight }
         let pages = (rows + systemsPerPage - 1) / systemsPerPage
         return topSpace + Double(rows) * rowHeight + Double(max(0, pages - 1)) * pageGap
@@ -733,7 +776,7 @@ public enum SheetEngraver {
                                  topTrack: [], bottomTrack: [],
                                  rows: [row], beamGroups: [],
                                  width: pageWidth, rowHeight: rowHeight,
-                                 totalHeight: totalHeight(forRows: 1),
+                                 totalHeight: totalHeight(forRows: 1, rowHeight: rowHeight),
                                  rowsPerPage: systemsPerPage)
     }
 }

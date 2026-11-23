@@ -1442,6 +1442,35 @@ do {
            "sharps a second apart take different columns, far ones share")
 }
 
+// MARK: a system stands clear of the one above it
+
+do {
+    // The pitch between two systems is measured from the ink, not assumed: a
+    // draft that climbs six ledger lines over the treble needs more room than
+    // one that stays on the staff, or its ledger lines print in the bass staff
+    // of the system above.
+    let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
+    func draft(_ pitches: [Int]) -> SheetDraft.Result {
+        var events: [NoteEvent] = []
+        for bar in 0..<3 {
+            for pitch in pitches {
+                events.append(NoteEvent(pitch: pitch, velocity: 80,
+                                        onset: Double(bar) * 2.0, duration: 1.5))
+            }
+        }
+        return SheetDraft.draft(notes: events, options: options)
+    }
+    // a chord around the middle of the staff, then the same piece played with
+    // a left hand on the bottom of the keyboard and a right hand at the top
+    let plain = draft([60, 64, 67])
+    let wide = draft([26, 60, 64, 67, 100])
+    expect(plain.rowHeight > 26, "a system keeps the air of an engraved page: \(plain.rowHeight)")
+    expect(wide.rowHeight > plain.rowHeight,
+           "a system whose hands reach both ends of the keyboard stands wider: \(wide.rowHeight) vs \(plain.rowHeight)")
+    expect(wide.totalHeight > plain.totalHeight,
+           "and the page grows with it")
+}
+
 // MARK: the MIDI reader's refusals
 
 do {
