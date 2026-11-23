@@ -976,9 +976,11 @@ declaredKey: do {
 }
 
 do {
-    // A grip handed to the left hand still prints where it reads: a chord whose
-    // centre sits below middle C belongs on the bass staff, ledger lines and
-    // all, instead of hanging three lines under the treble.
+    // The staves divide at middle C, the way an edition divides them. A wide
+    // grip is both hands: everything below middle C is the lower staff's, the
+    // rest is the upper staff's. Nothing below middle C may be printed under
+    // the treble staff — that is the ink that put a bass note six ledger lines
+    // below the staff it was hung from.
     let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
     let grip = [43, 53, 57, 62].map { pitch in
         NoteEvent(pitch: pitch, velocity: 80, onset: 0, duration: 2.0)
@@ -991,8 +993,11 @@ do {
         }.flatMap { $0 }
     }
     let bass = pitches(result.rows[0].bottom)
-    expect(bass.contains(62), "D4 under a low G2 prints on the bass staff, not the treble")
-    expect(!pitches(result.rows[0].top).contains(53), "F3 never floats below the treble staff")
+    let treble = pitches(result.rows[0].top)
+    expect(bass.sorted() == [43, 53, 57], "the left hand's notes stay on the bass staff: \(bass.sorted())")
+    expect(treble.sorted() == [62], "the note at middle C is the right hand's: \(treble.sorted())")
+    expect(!treble.contains { $0 < SheetDraft.middleC },
+           "no note below middle C is printed on the treble staff")
 }
 
 do {
@@ -1017,8 +1022,11 @@ do {
     expect(reading.0.sorted() == [57, 60, 64, 67] && reading.1.isEmpty,
            "a chord that reads whole on the treble staff is never split")
     let hanging = sides([55, 59, 62, 65])
-    expect(hanging.1 == [55] && hanging.0.sorted() == [59, 62, 65],
-           "a chord whose lowest note hangs off the staff is divided there: \(hanging)")
+    expect(hanging.1.isEmpty && hanging.0.sorted() == [55, 59, 62, 65],
+           "a grip inside an octave is one hand's shape and prints whole: \(hanging)")
+    let lowBroken = sides([31, 43])
+    expect(lowBroken.0.isEmpty && lowBroken.1.sorted() == [31, 43],
+           "two low notes both belong to the lower staff: \(lowBroken)")
     let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
     let grip = [40, 60, 64, 67].map { pitch in
         NoteEvent(pitch: pitch, velocity: 80, onset: 0, duration: 2.0)

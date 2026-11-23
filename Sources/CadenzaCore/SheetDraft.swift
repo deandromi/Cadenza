@@ -332,6 +332,41 @@ public enum SheetDraft {
         public let showsFraming: Bool
         /// The row's right edge, in staff spaces.
         public let width: Double
+        /// Where the row writes an octave higher or lower than it sounds.
+        public let octaves: [OctaveMark]
+
+        public init(clefTop: Clef, clefBottom: Clef, top: [Placed], bottom: [Placed],
+                    firstMeasure: Int, showsFraming: Bool, width: Double,
+                    octaves: [OctaveMark] = []) {
+            self.clefTop = clefTop
+            self.clefBottom = clefBottom
+            self.top = top
+            self.bottom = bottom
+            self.firstMeasure = firstMeasure
+            self.showsFraming = showsFraming
+            self.width = width
+            self.octaves = octaves
+        }
+    }
+
+    /// A stretch of bars written an octave away from its sounding pitch: a
+    /// high passage is set an octave lower under an "8va", a low one an octave
+    /// higher under an "8vb". The reading is a courtesy to the eye; the music
+    /// is untouched, and the mark is what tells the player so.
+    public struct OctaveMark: Sendable, Equatable {
+        /// 0 for the treble staff, 1 for the bass staff.
+        public let staff: Int
+        public let from: Double
+        public let to: Double
+        /// True for 8va over the staff, false for 8vb under it.
+        public let up: Bool
+
+        public init(staff: Int, from: Double, to: Double, up: Bool) {
+            self.staff = staff
+            self.from = from
+            self.to = to
+            self.up = up
+        }
     }
 
     public struct Result: Sendable, Equatable {

@@ -92,10 +92,17 @@ public enum SheetEngraver {
 
         // 2. Chordify: a rolled chord is one chord.
         //
-        // Chaining any two onsets closer than the combine window folds a roll
-        // back into the chord it is, while a genuine sixteenth line — a whole
-        // grid step apart — stays separate.
-        let window = max(1, SheetDraft.ticks(ms: options.combineMillis, options: options))
+        // A performance rolls: the notes of one chord arrive a few tens of
+        // milliseconds apart, so the combine window folds them back into the
+        // chord the hand played. A file does not roll — its ticks *are* the
+        // notation, and two sixteenths at a brisk tempo sit closer together
+        // than that same window. Chaining them is how a running line became a
+        // six-note chord and the page filled with chords nobody played: the
+        // window is only for a take, and a file merges on the tick alone,
+        // after quantization has already put a humanized chord on one tick.
+        let window = timeMap == nil
+            ? max(1, SheetDraft.ticks(ms: options.combineMillis, options: options))
+            : 0
         var clusters: [[Note]] = []
         var anchors: [Int] = []
         for note in raw {
@@ -146,6 +153,16 @@ public enum SheetEngraver {
             }
         }
 
+        // A take that starts with a minute of silence is not a page of empty
+        // bars: an edition begins where the music does. The bars in front of
+        // the first attack are dropped, and because every written bar is
+        // exactly one measure long, what is left still starts on bar one.
+        let skipBars = max(0, ((raw.map { $0.start }.min() ?? root) - root) / measureTicks)
+        if skipBars > 0, skipBars < barStarts.count {
+            barStarts = (0..<(barStarts.count - skipBars)).map { $0 * measureTicks }
+        }
+        let shift = (barStarts.isEmpty ? 0 : skipBars) * measureTicks
+
         // 4. Columns: the notes struck at one moment, per bar and per staff.
         var topBars: [[Column]] = Array(repeating: [], count: barStarts.count)
         var bottomBars: [[Column]] = Array(repeating: [], count: barStarts.count)
@@ -153,7 +170,7 @@ public enum SheetEngraver {
         // torn across the grand staff.
         for cluster in clusters {
             let start = cluster.map(\.start).min() ?? 0
-            let absolute = start - root
+            let absolute = start - root - shift
             guard absolute >= 0 else { continue }
             var bar = 0
             for (index, barStart) in barStarts.enumerated() where barStart <= absolute {
@@ -203,6 +220,38 @@ public enum SheetEngraver {
             }
         }
 
+        // 4b. An octave mark is a reading aid, not a fact. A bar whose every
+        // note stands three ledger lines above its staff is written an octave
+        // lower under an 8va, the way every edition sets a high passage, and a
+        // bar buried under the bass staff an octave higher under an 8vb. The
+        // music is untouched; only the ink moves, which is why the mark is
+        // there to say so. A ladder of six ledger lines is not a score, it is
+        // a diagram of the keyboard.
+        func octaveShifts(_ bars: [[Column]], clef: SheetDraft.Clef,
+                          upward: Bool) -> [Int: Int] {
+            var shifts: [Int: Int] = [:]
+            for (bar, columns) in bars.enumerated() {
+                let positions = columns.flatMap(\.pitches).map { clef.position(ofPitch: $0) }
+                guard let low = positions.min(), let high = positions.max() else { continue }
+                if upward ? low >= 6 : high <= -6 { shifts[bar] = upward ? 1 : -1 }
+            }
+            return shifts
+        }
+        let topOctave = octaveShifts(topBars, clef: .treble, upward: true)
+        let bottomOctave = octaveShifts(bottomBars, clef: .bass, upward: false)
+        func written(_ bars: [[Column]], shifts: [Int: Int], shift: Int) -> [[Column]] {
+            bars.enumerated().map { bar, columns in
+                guard shifts[bar] != nil else { return columns }
+                return columns.map { column in
+                    var moved = column
+                    moved.pitches = column.pitches.map { min(127, max(0, $0 + shift)) }
+                    return moved
+                }
+            }
+        }
+        topBars = written(topBars, shifts: topOctave, shift: -12)
+        bottomBars = written(bottomBars, shifts: bottomOctave, shift: 12)
+
         // 5. key: the file's own signature when it declares one — a published
         //    MIDI states its key, and guessing over it prints flats as sharps.
         let fifths = declaredFifths ?? SheetDraft.guessedFifths(pitches: raw.map(\.pitch))
@@ -237,7 +286,8 @@ public enum SheetEngraver {
         }
         pedalMarks.sort { $0.tick < $1.tick }
         let rows = layout(top: top, bottom: bottom, options: options, fifths: fifths,
-                          pageWidth: pageWidth, pedals: pedalMarks)
+                          pageWidth: pageWidth, pedals: pedalMarks,
+                          topOctave: topOctave, bottomOctave: bottomOctave)
 
         // A system never spills past the paper: if one bar is dense enough to
         // need more room than the page has, the sheet widens a little rather
@@ -403,7 +453,9 @@ public enum SheetEngraver {
     private static func layout(top: Staff, bottom: Staff, options: SheetDraft.Options,
                                fifths: Int,
                                pageWidth: Double,
-                               pedals: [(tick: Int, down: Bool)]) -> [SheetDraft.Row] {
+                               pedals: [(tick: Int, down: Bool)],
+                               topOctave: [Int: Int] = [:],
+                               bottomOctave: [Int: Int] = [:]) -> [SheetDraft.Row] {
         let measureTicks = options.measureTicks
         let count = max(top.measures.count, bottom.measures.count)
         // The room a system keeps before its first barline: clef, key and, on
@@ -570,6 +622,8 @@ public enum SheetEngraver {
 
             var topPlaced: [SheetDraft.Placed] = []
             var bottomPlaced: [SheetDraft.Placed] = []
+            var topMarks: [(from: Double, to: Double)] = []
+            var bottomMarks: [(from: Double, to: Double)] = []
             var x = framing
             for (offset, index) in chosen.enumerated() {
                 let start = index * measureTicks
@@ -589,6 +643,14 @@ public enum SheetEngraver {
                 // the bar's first column starts right after it.
                 let musicX = x
                 let musicWidth = max(3.0, widths[offset])
+                // A mark opens where a shifted bar starts and closes on the
+                // bar before the next unshifted one.
+                if topOctave[index] != nil, topMarks.last?.to ?? -1 < musicX {
+                    topMarks.append((musicX, musicX + musicWidth))
+                }
+                if bottomOctave[index] != nil, bottomMarks.last?.to ?? -1 < musicX {
+                    bottomMarks.append((musicX, musicX + musicWidth))
+                }
                 let columns = columnMap(columnsOf(index), x: musicX,
                                         measureWidth: musicWidth)
                 // A moment both staves strike must print on one column: the
@@ -602,6 +664,14 @@ public enum SheetEngraver {
                 place(staff: bottom, measure: index, start: start, x: musicX,
                       measureWidth: musicWidth, measureTicks: measureTicks,
                       columns: columns, otherStaffTicks: topTicks, into: &bottomPlaced)
+                // The octave mark runs from the first bar of a high passage
+                // to the last, drawn as one mark and not one per bar.
+                if topOctave[index] != nil {
+                    topMarks[topMarks.count - 1].to = musicX + musicWidth
+                }
+                if bottomOctave[index] != nil {
+                    bottomMarks[bottomMarks.count - 1].to = musicX + musicWidth
+                }
                 x += widths[offset]
             }
             // The pedal is drawn where it was pressed, inside the bar that
@@ -625,11 +695,13 @@ public enum SheetEngraver {
             topPlaced.append(SheetDraft.Placed(x: x, trackIndex: -1, symbol: closing))
             bottomPlaced.append(SheetDraft.Placed(x: x, trackIndex: -1, symbol: closing))
 
+            let octaves = topMarks.map { SheetDraft.OctaveMark(staff: 0, from: $0.from, to: $0.to, up: true) }
+                + bottomMarks.map { SheetDraft.OctaveMark(staff: 1, from: $0.from, to: $0.to, up: false) }
             rows.append(SheetDraft.Row(clefTop: .treble, clefBottom: .bass,
                                        top: topPlaced, bottom: bottomPlaced,
                                        firstMeasure: firstMeasure,
                                        showsFraming: rows.isEmpty,
-                                       width: x))
+                                       width: x, octaves: octaves))
             measure += chosen.count
             firstMeasure += chosen.count
         }

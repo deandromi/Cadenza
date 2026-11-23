@@ -370,9 +370,14 @@ extension SheetEngraver {
                 // positions draws a rule through both staves — the long lines
                 // that made a waltz look like a bramble. Split at the widest
                 // gap: the lower note stems down, the chord above stems up.
+                // Six staff positions is the widest a single stem should have
+                // to carry. Past that the chord is two shapes that happen to
+                // share a column, and one stem across both draws a rule from
+                // the melody down through the accompaniment — the long lines
+                // that made a waltz read as a bramble.
                 if value.flags == 0, glyphs.count > 1,
                    let low = positions.first, let high = positions.last,
-                   high - low >= 8,
+                   high - low >= 6,
                    let split = widestGap(in: positions) {
                     stems = [
                         SheetDraft.Stem(noteRange: 0..<split, up: false,

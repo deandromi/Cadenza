@@ -269,9 +269,41 @@ final class ScoreView: NSView {
             drawSlurs(row: row, track: 0, yOn: yOnTreble, gap: gap, ink: ink)
             drawSlurs(row: row, track: 1, yOn: yOnBass, gap: gap, ink: ink)
 
+            // where the page reads an octave away from the keyboard
+            drawOctaves(row.octaves, top: top, bassBottom: bassBottom, gap: gap, ink: ink)
+
             // the sustain pedal, written where the score puts it
             drawPedals(row.bottom, bassBottom: bassBottom, rightX: rightX, gap: gap, ink: ink)
             NSGraphicsContext.restoreGraphicsState()
+        }
+    }
+
+    /// "8va" over a high passage and "8vb" under a low one: the label an
+    /// edition sets in italic, joined by a hairline to the end of the passage
+    /// it saves the reader from counting ledger lines.
+    private func drawOctaves(_ marks: [SheetDraft.OctaveMark], top: CGFloat,
+                             bassBottom: CGFloat, gap: CGFloat, ink: NSColor) {
+        guard !marks.isEmpty else { return }
+        let roman = PaperTheme.displaySerif(10.5, weight: .regular)
+        let italic = NSFontManager.shared.convert(roman, toHaveTrait: .italicFontMask)
+        for mark in marks {
+            let x = marginX + CGFloat(mark.from) * gap
+            let end = marginX + CGFloat(mark.to) * gap
+            let text = mark.up ? "8va" : "8vb"
+            let size = (text as NSString).size(withAttributes: [.font: italic])
+            // above the staff the label hangs from its own top edge, below it
+            // stands clear of the lowest ledger line
+            let y = mark.up ? top - 2.0 * gap - size.height : bassBottom + 1.7 * gap
+            drawText(text, at: NSPoint(x: x, y: y), font: italic, color: ink)
+            let lineY = y + size.height / 2
+            guard end - (x + size.width) > 1.0 * gap else { continue }
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: x + size.width + 0.35 * gap, y: lineY))
+            path.line(to: NSPoint(x: end, y: lineY))
+            path.lineWidth = 0.6
+            path.setLineDash([2.4, 2.2], count: 2, phase: 0)
+            ink.withAlphaComponent(0.65).setStroke()
+            path.stroke()
         }
     }
 
@@ -322,7 +354,17 @@ final class ScoreView: NSView {
             // chord. The arc keeps one height; the notes move under it.
             _ = (fromLow, toLow)
             let above = true
-            let startEdge = max(fromHigh, toHigh)
+            // …and it clears everything it passes over. A slur that crosses a
+            // note struck between its ends reads as a staff line through a
+            // chord; an engraver lifts the arc over the highest head in the
+            // span, and so does this one.
+            var spanHigh = max(fromHigh, toHigh)
+            for item in placed {
+                let itemX = marginX + CGFloat(item.x) * gap
+                guard itemX > fromX, itemX < toX, case .chord(let inner) = item.symbol else { continue }
+                spanHigh = max(spanHigh, inner.notes.map(\.staffPosition).max() ?? spanHigh)
+            }
+            let startEdge = spanHigh
             let lift = 1.05 * gap
             // A slur leaves the edge of a head, not its centre: an arc drawn
             // from the middle of a notehead reads as a stem through the note.
@@ -468,22 +510,35 @@ final class ScoreView: NSView {
         func pedalX(_ item: SheetDraft.Placed) -> CGFloat {
             marginX + CGFloat(item.x) * gap
         }
+        // Two pedal marks a beat apart would print on top of each other: the
+        // release star landed inside the word "Ped." and the pair read as one
+        // smudged mark. A cursor of the ink already drawn keeps every mark
+        // clear of the one before it, the way a pedal line is set by hand.
+        var cursor: CGFloat = -1e9
+        func clear(_ x: CGFloat, width: CGFloat) -> CGFloat {
+            let px = max(x, cursor + 0.7 * gap)
+            cursor = px + width
+            return px
+        }
         var openX: CGFloat?
         for item in placed {
             switch item.symbol {
             case .pedalDown:
                 if let info = MusicFont.info(Glyph.pedalDownMark) {
                     let mark = markFont(Glyph.pedalDownMark)
-                    let x = pedalX(item)
+                    let width = info.width * mark.size
+                    let x = clear(pedalX(item), width: width)
                     drawGlyph(Glyph.pedalDownMark, baselineAt: NSPoint(x: x, y: lineY),
                               font: mark.font, color: ink)
-                    openX = x + info.width * mark.size * 0.85
+                    openX = x + width * 0.85
+                    cursor = x + width
                 }
             case .pedalUp:
                 if let info = MusicFont.info(Glyph.pedalUpMark) {
                     let mark = markFont(Glyph.pedalUpMark)
-                    let x = pedalX(item)
-                    if let start = openX, x > start {
+                    let width = info.width * mark.size
+                    let x = clear(pedalX(item), width: width)
+                    if let start = openX, x - start > 1.2 * gap {
                         ink.withAlphaComponent(0.75).setStroke()
                         strokeLine(from: NSPoint(x: start, y: lineY), to: NSPoint(x: x, y: lineY), width: 0.9)
                     }
@@ -497,9 +552,10 @@ final class ScoreView: NSView {
                 break
             }
         }
-        if let start = openX {
+        if let start = openX, rightX - start > 1.2 * gap {
             ink.withAlphaComponent(0.75).setStroke()
-            strokeLine(from: NSPoint(x: start, y: lineY), to: NSPoint(x: rightX, y: lineY), width: 0.9)
+            strokeLine(from: NSPoint(x: start, y: lineY), to: NSPoint(x: rightX - 0.4 * gap, y: lineY),
+                       width: 0.9)
         }
     }
 

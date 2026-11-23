@@ -123,18 +123,22 @@ extension SheetDraft {
 
     /// One struck chord, divided between the staves.
     ///
-    /// A chord is one grip. Slicing it note by note at middle C prints half of
-    /// an ordinary C major triad on each staff and hangs the rest on ledger
-    /// lines, which is what makes a transcription look invented. So the unit
-    /// here is the whole grip, and the staff is decided in one pass:
+    /// A chord is one grip, so the staff is decided for the grip and not note
+    /// by note. The old rule read every note's distance to *both* staves and
+    /// split at the widest gap with no readable side — which put a bass note
+    /// of G2 on the treble staff, six ledger lines under it, because the note
+    /// above it happened to sit an octave higher. That is the ink that makes a
+    /// transcription look invented: a hand's chord torn in two and the low
+    /// half hung off the wrong staff.
     ///
-    /// 1. A grip that reads whole on one staff is not divided at all. This is
-    ///    the common case, and it is why a triad never ends up as two chords.
-    /// 2. Otherwise the hands divide it at the widest gap that both halves can
-    ///    read across: no note hangs more than two ledger lines off its own
-    ///    staff, which is A3 below the treble and D4 above the bass.
-    /// 3. A grip with no such gap stays whole, on the staff its centre asks
-    ///    for; one unreadable note is better than two unreadable chords.
+    /// Two rules decide it, and they are the ones an edition follows:
+    ///
+    /// 1. A grip inside an octave is one hand's shape. It prints whole, on the
+    ///    staff its centre asks for (middle C is the hinge), the way a right
+    ///    hand's chord with its thumb below the treble staff is still the right
+    ///    hand's.
+    /// 2. A wider grip is both hands. It divides at middle C: everything from
+    ///    C4 up is the upper staff, everything below is the lower one.
     ///
     /// The indices come back, not the pitches: a chord may strike one pitch
     /// twice and each note still goes its own way.
@@ -142,40 +146,22 @@ extension SheetDraft {
         guard !pitches.isEmpty else { return ([], []) }
         let order = pitches.indices.sorted { pitches[$0] < pitches[$1] }
         let sorted = order.map { pitches[$0] }
-        let mean = Double(sorted.reduce(0, +)) / Double(sorted.count)
-        let home: Clef = mean >= 60 ? .treble : .bass
-        // 1. the whole grip, on the staff it reads on
-        if sorted.allSatisfy({ reads($0, on: home) }) {
-            return home == .treble ? (Array(pitches.indices), []) : ([], Array(pitches.indices))
+        guard let low = sorted.first, let high = sorted.last else { return ([], []) }
+        // 1. one hand's shape: the staff its centre asks for
+        if high - low <= 12 {
+            let mean = Double(sorted.reduce(0, +)) / Double(sorted.count)
+            return mean >= Double(middleC) ? (Array(pitches.indices), [])
+                                           : ([], Array(pitches.indices))
         }
-        // 2. a seam the hands left, both halves reading on their own staff
-        if let seam = seam(in: sorted) {
-            return (Array(order[seam...]), Array(order[..<seam]))
+        // 2. both hands: the seam is middle C, never a gap picked by shape
+        if let first = sorted.firstIndex(where: { $0 >= middleC }) {
+            return (Array(order[first...]), Array(order[..<first]))
         }
-        // 3. a wide gap with no readable split: the hands still left it there,
-        //    and a ledger line on the right staff reads better than five on
-        //    the wrong one
-        if let gap = widestGap(in: sorted), gap.span >= 5 {
-            return (Array(order[gap.at...]), Array(order[..<gap.at]))
-        }
-        // 4. no gap: the centre decides
-        return home == .treble ? (Array(pitches.indices), []) : ([], Array(pitches.indices))
+        return ([], Array(pitches.indices))
     }
 
-    /// Where a grip divides between the hands, if anywhere: the widest gap
-    /// that both halves read across.
-    public static func seam(in sorted: [Int]) -> Int? {
-        guard sorted.count > 1 else { return nil }
-        var best: (at: Int, span: Int)?
-        for index in 1..<sorted.count {
-            let span = sorted[index] - sorted[index - 1]
-            guard span >= 3 else { continue }
-            guard sorted[..<index].allSatisfy({ reads($0, on: .bass) }),
-                  sorted[index...].allSatisfy({ reads($0, on: .treble) }) else { continue }
-            if best == nil || span > best!.span { best = (index, span) }
-        }
-        return best?.at
-    }
+    /// The pitch the staves are divided at: middle C.
+    public static let middleC = 60
 
     /// The widest jump between neighbouring pitches, and where it sits.
     static func widestGap(in sorted: [Int]) -> (at: Int, span: Int)? {
@@ -185,14 +171,6 @@ extension SheetDraft {
             if best == nil || span > best!.span { best = (index, span) }
         }
         return best
-    }
-
-    /// A note reads on a staff when it stands no more than two ledger lines
-    /// outside it. Past that the other staff is right there, and stacking
-    /// ledger lines under the wrong staff is what a transcription looks like.
-    static func reads(_ pitch: Int, on clef: Clef) -> Bool {
-        let position = clef.position(ofPitch: pitch)
-        return position >= -4 && position <= 12
     }
 
 }
