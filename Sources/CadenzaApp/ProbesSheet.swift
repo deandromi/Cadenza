@@ -271,7 +271,7 @@ extension SmokeMain {
                         endTick: SheetDraft.ticks(seconds: span.end, options: options))
                 }
                 : []
-            let result = SheetDraft.draft(notes: file.heldNotes, options: options, pageWidth: SheetEngraver.pageWidth,
+            let result = SheetDraft.draft(notes: file.heldNotes, options: options, pageWidth: SheetEngraver.printPageWidth,
                                           pedals: pedalSpans, originTicks: 0,
                                           timeMap: file.sheetTimeMap,
                                           declaredFifths: file.keySignatures.first?.key.fifths)
@@ -299,7 +299,7 @@ extension SmokeMain {
                 + "\(inferred.bpm) bpm \(inferred.numerator)/\(inferred.denominator)")
             let draft = SheetDraft.draft(
                 notes: file.heldNotes, options: inferred,
-                pageWidth: SheetEngraver.pageWidth)
+                pageWidth: SheetEngraver.printPageWidth)
             let issues = SheetDraft.rhythmAudit(draft)
             print("session sheet: fifths \(draft.fifths), \(draft.rows.count) systems, \(draft.ties.count) ties, "
                 + "\(draft.slurs.count) slurs, \(issues.count) rhythm issues")
@@ -385,7 +385,7 @@ extension SmokeMain {
                 SheetDraft.PedalSpan(startTick: SheetDraft.ticks(seconds: span.start, options: options),
                                      endTick: SheetDraft.ticks(seconds: span.end, options: options))
             }
-            let result = SheetDraft.draft(notes: file.heldNotes, options: options, pageWidth: SheetEngraver.pageWidth,
+            let result = SheetDraft.draft(notes: file.heldNotes, options: options, pageWidth: SheetEngraver.printPageWidth,
                                           pedals: pedals, originTicks: 0,
                                           timeMap: file.sheetTimeMap,
                                           declaredFifths: file.keySignatures.first?.key.fifths)
@@ -524,7 +524,7 @@ extension SmokeMain {
                                          numerator: meter?.beatsPerMeasure ?? 4,
                                          denominator: meter?.beatUnit ?? 4)
         let result = SheetDraft.draft(notes: file.heldNotes, options: options,
-                                      pageWidth: SheetEngraver.pageWidth,
+                                      pageWidth: SheetEngraver.printPageWidth,
                                       originTicks: 0, timeMap: file.sheetTimeMap,
                                       declaredFifths: file.keySignatures.first?.key.fifths)
         let measureTicks = max(1, options.measureTicks)

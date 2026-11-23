@@ -164,8 +164,20 @@ extension SmokeMain {
                             flag(.stemMissing, "t\(track) m\(number + 1) t\(chord.startTicks)")
                         } else {
                             let wantUp = Double(positions.reduce(0, +)) / Double(max(1, positions.count)) < 4
+                            // A chord that carries two stems is two voices in
+                            // one column — a bass note under a chord, which an
+                            // engraver sets with the bass note stemming down.
+                            // The classic average decides a single stem only.
+                            let twoVoices = chord.stems.count > 1
+                            if twoVoices {
+                                let down = chord.stems.contains { !$0.up }
+                                let up = chord.stems.contains { $0.up }
+                                if !(down && up) {
+                                    flag(.stemDirection, "t\(track) m\(number + 1) t\(chord.startTicks) both stems the same way")
+                                }
+                            }
                             for stem in chord.stems {
-                                if !polyphonic, stem.up != wantUp {
+                                if !polyphonic, !twoVoices, stem.up != wantUp {
                                     flag(.stemDirection, "t\(track) m\(number + 1) t\(chord.startTicks) up=\(stem.up)")
                                 }
                                 // a note that lasts a beat or longer never

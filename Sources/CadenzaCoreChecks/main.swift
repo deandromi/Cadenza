@@ -1478,7 +1478,12 @@ do {
     // a left hand on the bottom of the keyboard and a right hand at the top
     let plain = draft([60, 64, 67])
     let wide = draft([26, 60, 64, 67, 100])
-    expect(plain.rowHeight > 26, "a system keeps the air of an engraved page: \(plain.rowHeight)")
+    // Two staves and the air an edition keeps between systems: the five
+    // spaces of the grand staff's own gap, eight lines of staff, and eight
+    // spaces of air. Fifteen spaces of air printed a page of lines floating
+    // in blank paper; the reference editions keep about eight.
+    expect(plain.rowHeight >= 21,
+           "a system keeps the air of an engraved page: \(plain.rowHeight)")
     expect(wide.rowHeight > plain.rowHeight,
            "a system whose hands reach both ends of the keyboard stands wider: \(wide.rowHeight) vs \(plain.rowHeight)")
     expect(wide.totalHeight > plain.totalHeight,

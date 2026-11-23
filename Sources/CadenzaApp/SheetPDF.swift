@@ -23,7 +23,7 @@ enum SheetPDF {
                       to url: URL) throws {
         let result = SheetDraft.draft(
             notes: notes, options: options ?? SheetDraft.inferredOptions(notes: notes),
-            pageWidth: SheetEngraver.pageWidth, pedals: pedals, originTicks: originTicks,
+            pageWidth: SheetEngraver.printPageWidth, pedals: pedals, originTicks: originTicks,
             timeMap: timeMap, declaredFifths: declaredFifths)
         // A performance has no title page of its own beyond its name: build
         // the block from that, never from the PDF's file name.
@@ -65,6 +65,12 @@ enum SheetPDF {
         // page ended with a band of empty paper under the music.
         let perPageFirst = max(1, Int(((pageHeight - 2 * margin - header) / rowPitch).rounded(.down)))
         let perPage = max(1, Int(((pageHeight - 2 * margin) / rowPitch).rounded(.down)))
+        // An edition does not stretch its systems to the paper's edge. It
+        // keeps one distance for the whole part — the reader's eye follows a
+        // grid — and lets the page end where the music does. Sharing the
+        // page's leftover air between the systems is what printed lines that
+        // floated a hand's width apart with a band of nothing under them.
+        let pitch = rowHeight
         let modelMargin = margin / scale
         let modelWidth = drawnWidth + 2 * modelMargin
         let modelHeight = pageHeight / scale
@@ -94,22 +100,6 @@ enum SheetPDF {
             let from = starts[page]
             let to = min(result.rows.count, page + 1 < starts.count ? starts[page + 1] : result.rows.count)
             guard from < to else { continue }
-            // The folio stands under the last system: a page that prints its
-            // number inside the music is not a page anyone has seen.
-            let folio: CGFloat = pageCount > 1 ? 20 : 0
-            let room = pageHeight - 2 * margin - (page == 0 ? header : 0) - folio
-            let count = to - from
-            // An edition fills the page: the air left over is shared out
-            // between the systems, so the last one stands on the bottom
-            // margin instead of leaving a band of nothing under it.
-            // The staves themselves take this much of a system; the rest of
-            // the pitch is the air the page shares out. The view draws in its
-            // own points, so the page's room is converted the way the margin
-            // above it is.
-            let core = (8 + CGFloat(ScoreLayout.staffGap)) * gap
-            let roomInView = room / scale
-            let fill = count > 1 ? (roomInView - core) / CGFloat(count - 1) : rowHeight
-            let pitch = min(max(rowHeight, fill), rowHeight * 1.9)
             view.page = ScoreView.Page(
                 rows: from..<to,
                 top: modelMargin + (page == 0 ? header / scale : 0),

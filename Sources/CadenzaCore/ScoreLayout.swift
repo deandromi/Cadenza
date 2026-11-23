@@ -156,10 +156,17 @@ public enum ScoreLayout {
 
     /// The key signature glyphs for a fifths value, in order.
     public static func keyGlyphs(_ fifths: Int) -> [KeyGlyph] {
-        let trebleSharps = [8, 5, 9, 7, 3, 6, 4]
-        let bassSharps = [6, 3, 7, 5, 1, 4, 2]
-        let trebleFlats = [4, 6, 3, 7, 2, -2, -1]
-        let bassFlats = [2, 4, 1, 5, 0, 3, -1]
+        // The key signature's own ladder, on the lines and spaces an edition
+        // uses. A signature is read as a shape as much as a set of accidents,
+        // and two of these used to stand a step away from where every edition
+        // prints them: E flat on the D line, D flat on the E line, and the
+        // seventh flat of C flat major under the staff.
+        //   treble lines E4 G4 B4 D5 F5 (steps 0 2 4 6 8)
+        //   bass lines   G2 B2 D3 F3 A3 (steps 0 2 4 6 8)
+        let trebleSharps = [8, 5, 9, 6, 3, 7, 4]
+        let bassSharps = [6, 3, 7, 4, 8, 5, 2]
+        let trebleFlats = [4, 7, 3, 6, 2, 5, 8]
+        let bassFlats = [2, 5, 1, 4, 0, 3, 6]
         if fifths > 0 {
             return (0..<fifths).map { KeyGlyph(
                 treblePosition: trebleSharps[$0],

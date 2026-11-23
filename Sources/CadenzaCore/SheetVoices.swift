@@ -365,11 +365,41 @@ extension SheetEngraver {
                 let up = polyphonic
                     ? voice == 0
                     : positions.reduce(0, +) / max(1, positions.count) < 4
-                stems = [SheetDraft.Stem(noteRange: 0..<pitches.count, up: up,
-                                         flags: value.flags, beamGroupId: nil)]
+                // A chord that reaches past an octave is a bass note under a
+                // chord, not one gesture. One stem across eleven staff
+                // positions draws a rule through both staves — the long lines
+                // that made a waltz look like a bramble. Split at the widest
+                // gap: the lower note stems down, the chord above stems up.
+                if value.flags == 0, glyphs.count > 1,
+                   let low = positions.first, let high = positions.last,
+                   high - low >= 8,
+                   let split = widestGap(in: positions) {
+                    stems = [
+                        SheetDraft.Stem(noteRange: 0..<split, up: false,
+                                        flags: 0, beamGroupId: nil),
+                        SheetDraft.Stem(noteRange: split..<glyphs.count, up: true,
+                                        flags: 0, beamGroupId: nil),
+                    ]
+                } else {
+                    stems = [SheetDraft.Stem(noteRange: 0..<pitches.count, up: up,
+                                             flags: value.flags, beamGroupId: nil)]
+                }
             }
             return SheetDraft.Chord(startTicks: start, endTicks: start + length,
                                     notes: glyphs, stems: stems, voice: voice)
+        }
+
+        /// The index of the widest step between two heads of a chord: where a
+        /// chord that spans a hand change splits into its two voices.
+        private func widestGap(in positions: [Int]) -> Int? {
+            guard positions.count > 1 else { return nil }
+            var widest = 0
+            var at = 1
+            for index in 1..<positions.count {
+                let step = positions[index] - positions[index - 1]
+                if step > widest { widest = step; at = index }
+            }
+            return at
         }
 
         // MARK: beams

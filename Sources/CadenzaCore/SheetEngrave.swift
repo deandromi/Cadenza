@@ -288,6 +288,14 @@ public enum SheetEngraver {
     /// page with nothing on it.
     public static let measuresPerSystem = 16
     public static let systemsPerPage = 4
+
+    /// The paper an edition is set on. A4 keeps about eighty staff spaces
+    /// across the music's width at an engraved staff size — that is what
+    /// decides how many bars share a line. The screen gets the wider sheet
+    /// because it can scroll; a page engraved at the screen's width and then
+    /// shrunk to A4 prints staves half the size of an edition's, with twice
+    /// the music squeezed onto every line.
+    public static let printPageWidth = 80.0
     /// How wide a system is, in staff spaces: the paper the sheet is laid
     /// out for, and the width the renderer and the PDF agree on.
     public static let pageWidth = 106.0
@@ -295,10 +303,11 @@ public enum SheetEngraver {
     /// Two staves with air between them, then the gap that separates one
     /// system from the next.
     private static let systemHeight = 4.0 + ScoreLayout.staffGap + 4.0
-    // A system carries ledger lines six spaces above the treble and a pedal
-    // line below the bass on a dense page: twelve spaces of air let the tall
-    // ones collide with the line under them.
-    private static let systemGap = 15.0
+    // The air between one system and the next. An edition keeps about eight
+    // spaces: wide enough for the stems and the pedal line of the system
+    // above, close enough that the page reads as one piece of music. Fifteen
+    // printed a page of lines floating in blank paper.
+    private static let systemGap = 8.0
     private static let pageGap = 10.0
     private static let topSpace = 6.0
 
@@ -334,9 +343,11 @@ public enum SheetEngraver {
         var result = Reach()
         result.above = max(result.above, Double(max(0, highest - 8)) / 2 + 1.2)
         result.below = max(result.below, Double(max(0, -lowest)) / 2 + 1.2)
-        // A pedal line hangs under everything the bass staff prints, and the
-        // renderer keeps it at most eight spaces below the staff.
-        if hasPedal { result.below = max(result.below, 9.6) }
+        // A pedal line hangs under everything the bass staff prints, two and
+        // a half spaces below the staff at its closest and six at its
+        // furthest. Reserving eight was air charged to every system on the
+        // page: enough to push a line onto the next sheet.
+        if hasPedal { result.below = max(result.below, 6.5) }
         return result
     }
 
@@ -370,6 +381,25 @@ public enum SheetEngraver {
         let right: Double
     }
 
+    /// The widths a line's bars really take.
+    ///
+    /// Justifying each bar by the air its own rhythm asks for lets one dense
+    /// bar stand twice as wide as the quiet bar beside it, and a page of such
+    /// lines reads as a rumour of a measure rather than a measure. An edition
+    /// shares the line out equally — the paper a line has left over is given
+    /// to every bar in equal measure, not in proportion to how busy it is.
+    /// The air is only ever added: squeezing a bar to reach the margin prints
+    /// its heads on top of each other, which is the one thing a page may not
+    /// do. A line too dense for its paper overflows it instead, and the page
+    /// scale takes the difference.
+    static func evened(_ widths: [Double], to total: Double) -> [Double] {
+        guard !widths.isEmpty, total > 0 else { return widths }
+        let natural = widths.reduce(0, +)
+        guard natural < total else { return widths }
+        let lift = (total - natural) / Double(widths.count)
+        return widths.map { $0 + lift }
+    }
+
     private static func layout(top: Staff, bottom: Staff, options: SheetDraft.Options,
                                fifths: Int,
                                pageWidth: Double,
@@ -380,7 +410,7 @@ public enum SheetEngraver {
         // the opening system, the meter. Nine spaces of it was a page of dead
         // air at the head of every line — a clef reaches three and a half
         // spaces, so the barline follows right behind it.
-        let keyWidth = Double(ScoreLayout.keyGlyphs(fifths).count) * 0.95
+        let keyWidth = Double(ScoreLayout.keyGlyphs(fifths).count) * 1.02
         let firstFraming = 6.6 + keyWidth
         let laterFraming = 5.1 + keyWidth
         let framing = max(firstFraming, laterFraming)
@@ -531,15 +561,12 @@ public enum SheetEngraver {
             // ceiling is high enough that a line of quiet bars still reaches
             // it. A single bar too dense for the page is squeezed rather than
             // allowed to overflow.
-            let naturalTotal = naturals.reduce(0, +)
             // A line is stretched to the margin and never compressed: a
             // squeezed system is what a page of touching heads looks like. A
             // bar that will not fit is given the next line instead, and a bar
             // too dense for the paper widens the page rather than printing its
             // heads on top of each other.
-            let stretch = naturalTotal > 0
-                ? min(max(usable / naturalTotal, 1.0), 6.0) : 1.0
-            let widths = naturals.map { $0 * stretch }
+            let widths = evened(naturals, to: usable)
 
             var topPlaced: [SheetDraft.Placed] = []
             var bottomPlaced: [SheetDraft.Placed] = []
@@ -661,12 +688,29 @@ public enum SheetEngraver {
         return ticks
     }
 
+    /// One staff's symbols of one bar, laid on the bar's columns.
+    ///
+    /// A staff prints one stream of marks per staff, not one per voice: a rest
+    /// belongs to a silence the reader can see, so it prints only where the
+    /// staff is silent — a voice's rest running under another voice's chord is
+    /// the seam of the transcription, not notation, and printing it beside the
+    /// note that already says the beat is the double image that makes a
+    /// transcription look guessed.
     private static func place(staff: Staff, measure: Int, start: Int, x: Double,
                               measureWidth: Double, measureTicks: Int,
                               columns: [Int: Double], otherStaffTicks: Set<Int>,
                               into placed: inout [SheetDraft.Placed]) {
         guard measure < staff.measures.count else { return }
-        for index in staff.measures[measure] {
+        let bar = staff.measures[measure]
+        // What this staff actually sounds, in ticks.
+        let sounding: [(from: Int, to: Int)] = bar.compactMap { index in
+            guard case .chord(let chord) = staff.symbols[index] else { return nil }
+            return (chord.startTicks, max(chord.startTicks + 1, chord.endTicks))
+        }
+        let struck = Set(sounding.map(\.from))
+        var taken: [Double] = []
+
+        for index in bar {
             let symbol = staff.symbols[index]
             switch symbol {
             case .chord(let chord):
@@ -676,81 +720,67 @@ public enum SheetEngraver {
                 // Two voices striking at once print as two chords, never as
                 // one thicket of heads on the same column: the lower voice
                 // steps left, the way an engraver sets a second voice.
-                let shared = staff.measures[measure].contains { other in
+                let shared = bar.contains { other in
                     guard case .chord(let mate) = staff.symbols[other] else { return false }
                     return mate.startTicks == chord.startTicks && mate.voice != chord.voice
                 }
                 if shared, chord.voice == 1, !otherStaffTicks.contains(chord.startTicks) {
                     px = max(x + 0.4, px - 0.95)
                 }
+                // A column both staves strike stays on one x: moving one
+                // staff's chord aside printed the two hands' shared beats as
+                // two different rhythms. The second voice's step aside is
+                // decided above, where both staves can see it.
+                taken.append(px)
                 placed.append(SheetDraft.Placed(x: px, trackIndex: index, symbol: symbol))
             case .rest(let restStart, _):
-                let wholeMeasure = staff.measures[measure].count == 1
-                let px: Double
-                if wholeMeasure {
-                    px = x + measureWidth / 2
-                } else {
-                    let moment = max(0, restStart - start)
-                    px = columns[moment] ?? x + 1.1
-                }
+                let wholeMeasure = bar.count == 1
+                let px: Double = wholeMeasure
+                    ? x + measureWidth / 2
+                    : columns[max(0, restStart - start)] ?? x + 1.1
+                if !wholeMeasure, covered(restStart, sounding: sounding, struck: struck) { continue }
+                if taken.contains(where: { abs($0 - px) < 0.4 }) { continue }
+                taken.append(px)
                 placed.append(SheetDraft.Placed(x: px, trackIndex: -1, symbol: symbol))
             case .restVoiced(let restStart, let kind, let voice):
-                let wholeMeasure = staff.measures[measure].count == 1
-                let moment = max(0, restStart - start)
-                let px = wholeMeasure ? x + measureWidth / 2 : (columns[moment] ?? x + 1.1)
-                // A rest takes the middle of the staff, the way an engraver
-                // sets one: only when the other voice's chord is in the way
-                // does it step out, above for the upper voice and below for
-                // the lower one. A rest is never printed through a stem, and
-                // it never floats to the edge of the staff for no reason.
+                let wholeMeasure = bar.count == 1
+                if !wholeMeasure, covered(restStart, sounding: sounding, struck: struck) { continue }
+                let px: Double = wholeMeasure
+                    ? x + measureWidth / 2
+                    : columns[max(0, restStart - start)] ?? x + 1.1
+                // A rest takes the middle of the staff. Only when another
+                // voice's chord stands where it belongs does it step aside,
+                // and one step is all it takes: a rest that has to walk out of
+                // the staff to find air is a rest nobody prints, because the
+                // note that displaced it already says the beat.
                 let canonical: Int = kind == .whole ? 6 : 4
-                var target = canonical
-                var blocked = true
-                while blocked {
-                    blocked = false
-                    for index in staff.measures[measure] {
-                        guard case .chord(let chord) = staff.symbols[index],
-                              chord.startTicks == restStart else { continue }
-                        for note in chord.notes where abs(note.staffPosition - target) <= 1 {
-                            blocked = true
-                        }
+                var target: Int?
+                for step in 0...2 {
+                    let candidate = canonical + (voice == 0 ? 2 : -2) * step
+                    let blocked = bar.contains { other in
+                        guard case .chord(let chord) = staff.symbols[other],
+                              chord.startTicks == restStart else { return false }
+                        return chord.notes.contains { abs($0.staffPosition - candidate) <= 1 }
                     }
-                    if blocked {
-                        target += voice == 0 ? 2 : -2
-                        if target > 12 || target < -4 { blocked = false }
-                    }
+                    if !blocked { target = candidate; break }
                 }
-                // the chord keeps the column; the rest moves clear of its stem
-                let sharesColumn = staff.measures[measure].contains { index in
-                    if case .chord(let chord) = staff.symbols[index] {
-                        return chord.startTicks == restStart
-                    }
-                    return false
-                }
-                // A rest the other voice is playing through is not printed:
-                // the note is the beat, and a rest drawn beside it only
-                // repeats what the note already says. The symbol stays in the
-                // rhythm, so the bar still tiles; the page omits the mark.
-                // Also covered: the other voice strikes a chord on this very
-                // moment. The bar still needs the rest for its arithmetic, but
-                // the page does not: a rest printed beside the note that
-                // already says the beat is the double image that makes a
-                // transcription look guessed.
-                let covered = staff.measures[measure].contains { index in
-                    guard case .chord(let chord) = staff.symbols[index],
-                          chord.voice != voice else { return false }
-                    return chord.startTicks < restStart && chord.endTicks > restStart
-                        || chord.startTicks == restStart
-                }
-                if covered, !wholeMeasure { return }
-                let across = (sharesColumn && !wholeMeasure) ? (voice == 0 ? -1.55 : 1.55) : 0
+                guard let target else { continue }
+                if taken.contains(where: { abs($0 - px) < 0.4 }) { continue }
+                taken.append(px)
                 placed.append(SheetDraft.Placed(x: px, trackIndex: -1, symbol: symbol,
-                                                yOffset: Double(target - canonical) / 2,
-                                                xOffset: across))
+                                                yOffset: Double(target - canonical) / 2))
             default:
                 break
             }
         }
+    }
+
+    /// A rest prints only where its staff is silent: a chord sounding through
+    /// that moment, or struck on it, is the beat the rest would repeat.
+    private static func covered(_ moment: Int, sounding: [(from: Int, to: Int)],
+                                struck: Set<Int>) -> Bool {
+        if struck.contains(moment) { return true }
+        return sounding.contains { $0.from < moment && $0.to > moment }
     }
 
     // MARK: empty

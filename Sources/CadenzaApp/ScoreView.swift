@@ -191,27 +191,42 @@ final class ScoreView: NSView {
             let bassClefGlyph = row.clefBottom == .treble ? Glyph.gClef : Glyph.fClef
             drawGlyph(bassClefGlyph, baselineAt: NSPoint(x: clefX, y: yOnBass(6)), font: musicFont, color: ink)
 
-            // key signature
-            var keyX = clefX + 3.7 * gap
+            // key signature: each accidental centred on its own line
+            var keyX = clefX + 3.9 * gap
             for glyph in ScoreLayout.keyGlyphs(result.fifths) {
                 let codepoint = glyph.accidental == .sharp ? Glyph.accidentalSharp
                     : glyph.accidental == .flat ? Glyph.accidentalFlat : Glyph.accidentalNatural
-                drawGlyph(codepoint, baselineAt: NSPoint(x: keyX, y: yOnTreble(glyph.treblePosition)), font: musicFont, color: ink)
-                drawGlyph(codepoint, baselineAt: NSPoint(x: keyX, y: yOnBass(glyph.bassPosition)), font: musicFont, color: ink)
-                keyX += 0.95 * gap
+                // A signature is read as a shape, so its marks stand on their
+                // lines: set by the glyph's baseline instead, a flat's bowl
+                // dropped a space and the whole signature floated above the
+                // staff it belongs to.
+                inkSignature(codepoint, leftX: keyX, centerY: yOnTreble(glyph.treblePosition), gap: gap, ink: ink)
+                inkSignature(codepoint, leftX: keyX, centerY: yOnBass(glyph.bassPosition), gap: gap, ink: ink)
+                // Space the signature by the ink each mark actually covers:
+                // an advance measured in ems is twice the width a flat prints
+                // at, and the time signature landed on the last of them.
+                let advance = MusicFont.info(codepoint)
+                    .map { CGFloat($0.x1 - $0.x0) * fontSize } ?? 0.9 * gap
+                keyX += advance + 0.22 * gap
             }
 
-            // time signature, once at the piece's start
+            // time signature, once at the piece's start, in a column of its
+            // own: a digit set by its baseline starts wherever its glyph
+            // happens to begin, which printed it against the last accidental
+            // of the key.
             if row.showsFraming {
-                let sigX = keyX + 0.6 * gap
-                drawGlyph(Glyph.timeSignatureDigit(result.options.numerator),
-                          baselineAt: NSPoint(x: sigX, y: trebleBottom - 3 * gap), font: musicFont, color: ink)
-                drawGlyph(Glyph.timeSignatureDigit(result.options.denominator),
-                          baselineAt: NSPoint(x: sigX, y: trebleBottom - gap), font: musicFont, color: ink)
-                drawGlyph(Glyph.timeSignatureDigit(result.options.numerator),
-                          baselineAt: NSPoint(x: sigX, y: bassBottom - 3 * gap), font: musicFont, color: ink)
-                drawGlyph(Glyph.timeSignatureDigit(result.options.denominator),
-                          baselineAt: NSPoint(x: sigX, y: bassBottom - gap), font: musicFont, color: ink)
+                let sigX = keyX + 0.45 * gap + 0.75 * gap
+                func digit(_ number: Int, baselineY: CGFloat) {
+                    let codepoint = Glyph.timeSignatureDigit(number)
+                    guard let info = MusicFont.info(codepoint) else { return }
+                    let dx = (CGFloat(info.x0) + CGFloat(info.x1)) / 2 * fontSize
+                    drawGlyph(codepoint, baselineAt: NSPoint(x: sigX - dx, y: baselineY),
+                              font: musicFont, color: ink)
+                }
+                digit(result.options.numerator, baselineY: trebleBottom - 3 * gap)
+                digit(result.options.denominator, baselineY: trebleBottom - gap)
+                digit(result.options.numerator, baselineY: bassBottom - 3 * gap)
+                digit(result.options.denominator, baselineY: bassBottom - gap)
             }
 
             // the metronome mark, over the piece's first system
@@ -294,26 +309,34 @@ final class ScoreView: NSView {
             let toPositions = toChord.notes.map(\.staffPosition)
             guard let fromHigh = fromPositions.max(), let toHigh = toPositions.max(),
                   let fromLow = fromPositions.min(), let toLow = toPositions.min() else { continue }
-            // The slur follows the melody, which is the top of each end: a
-            // wide left-hand chord under it must not drag the arc down.
-            // Follow the melody: the top of each end, with the arc above it.
-            // A wide accompaniment chord in the same column must not drag the
-            // phrase mark down to its bass note.
+            // A phrase mark joins notes a player joined. A curve that has to
+            // climb two octaves to reach its other end is not a phrase: it is
+            // the transcription tying a low accompaniment chord to a melody
+            // note, and drawn it reads as a stray line across the staff.
+            guard abs(fromHigh - toHigh) <= 6 else { continue }
+            // A phrase mark follows the melody, so it hangs from the higher of
+            // the two ends and not from each end separately. A curve that
+            // leaves one head high and arrives at the next one low prints as a
+            // rule drawn across the staff, which is what a slur looks like
+            // when the transcription joins a melody note to an accompaniment
+            // chord. The arc keeps one height; the notes move under it.
             _ = (fromLow, toLow)
             let above = true
-            let startEdge = fromHigh
-            let endEdge = toHigh
+            let startEdge = max(fromHigh, toHigh)
             let lift = 1.05 * gap
             // A slur leaves the edge of a head, not its centre: an arc drawn
             // from the middle of a notehead reads as a stem through the note.
             let start = NSPoint(x: fromX + 0.58 * gap, y: yOn(startEdge) - lift)
-            let end = NSPoint(x: toX - 0.58 * gap, y: yOn(endEdge) - lift)
+            let end = NSPoint(x: toX - 0.58 * gap, y: yOn(startEdge) - lift)
             guard end.x - start.x > 0.8 * gap else { continue }
             // A long phrase bows a little more than a two-note flick, but a
-            // phrase mark is not a rainbow: past a space it starts to read as
-            // a second staff line.
+            // phrase mark is not a rainbow: past a space and a half it starts
+            // to read as a second staff line. The bow never falls to nothing,
+            // because a slack curve between two distant heads prints as a
+            // diagonal rule — the mark has to stay a curve to read as a slur.
             let length = end.x - start.x
-            let bow = (above ? -1 : 1) * gap * min(0.9, 0.35 + length / (14 * gap))
+            guard length <= 18 * gap else { continue }
+            let bow = (above ? -1 : 1) * gap * min(1.5, 0.55 + length / (11 * gap))
             tie(from: start, to: end, bow: bow, gap: gap, ink: ink)
         }
     }
@@ -428,8 +451,18 @@ final class ScoreView: NSView {
         // so a low chord or a ledger line never crosses "Ped.".
         let deepest = lowestPrintedPosition(placed)
         let inkBottom = bassBottom - CGFloat(deepest) * gap / 2
-        let lineY = min(max(bassBottom + 3.1 * gap, inkBottom + 1.5 * gap),
-                         bassBottom + 8.0 * gap)
+        let lineY = min(max(bassBottom + 2.4 * gap, inkBottom + 1.4 * gap),
+                         bassBottom + 6.0 * gap)
+        // Bravura draws "Ped." and its release star at the size of a clef.
+        // Set at the staff's own size they stand as tall as the staff itself
+        // and shout across the page; a pedal mark is a footnote under the
+        // staff, about a space and a half tall, the way an edition sets it.
+        func markFont(_ codepoint: UInt32) -> (font: CTFont, size: CGFloat) {
+            guard let info = MusicFont.info(codepoint) else { return (musicFont, fontSize) }
+            let height = max(0.2, CGFloat(info.y1 - info.y0))
+            let size = 1.5 * gap / height
+            return (MusicFont.ctFont(size: size), size)
+        }
         // placed.x is in staff spaces from the row start; convert like the
         // symbol loop does
         func pedalX(_ item: SheetDraft.Placed) -> CGFloat {
@@ -440,12 +473,15 @@ final class ScoreView: NSView {
             switch item.symbol {
             case .pedalDown:
                 if let info = MusicFont.info(Glyph.pedalDownMark) {
+                    let mark = markFont(Glyph.pedalDownMark)
                     let x = pedalX(item)
-                    drawGlyph(Glyph.pedalDownMark, baselineAt: NSPoint(x: x, y: lineY), font: musicFont, color: ink)
-                    openX = x + info.width * fontSize * 0.85
+                    drawGlyph(Glyph.pedalDownMark, baselineAt: NSPoint(x: x, y: lineY),
+                              font: mark.font, color: ink)
+                    openX = x + info.width * mark.size * 0.85
                 }
             case .pedalUp:
                 if let info = MusicFont.info(Glyph.pedalUpMark) {
+                    let mark = markFont(Glyph.pedalUpMark)
                     let x = pedalX(item)
                     if let start = openX, x > start {
                         ink.withAlphaComponent(0.75).setStroke()
@@ -453,8 +489,8 @@ final class ScoreView: NSView {
                     }
                     // the star hangs centered on the line
                     drawGlyph(Glyph.pedalUpMark,
-                              baselineAt: NSPoint(x: x, y: lineY + info.centerY * fontSize),
-                              font: musicFont, color: ink)
+                              baselineAt: NSPoint(x: x, y: lineY + info.centerY * mark.size),
+                              font: mark.font, color: ink)
                 }
                 openX = nil
             default:
@@ -645,11 +681,13 @@ final class ScoreView: NSView {
         let bottomMap = placedMap(row.bottom)
 
         for group in result.beamGroups {
-            // The beam belongs to the staff its chords were placed on, not to
-            // a track id that a two-stem chord can move: a bass group drawn
-            // against the treble staff's rows hangs its stems below the wrong
-            // staff entirely.
-            let onTop = group.chordIndices.first.map { topMap[$0] != nil } ?? (group.track == 0)
+            // The beam belongs to the staff its chords were written on. The
+            // group carries that as its track, and it must be believed: symbol
+            // indices are numbered per staff, so every bass index also exists
+            // in the treble's own list, and a lookup that guesses from the
+            // index alone beams the left hand against the right hand's staff —
+            // a bar's stems shooting from the bass up through the treble.
+            let onTop = group.track == 0
             let map = onTop ? topMap : bottomMap
             let yOn = onTop ? topY : bottomY
             var members: [(x: CGFloat, attach: CGFloat)] = []
@@ -726,6 +764,24 @@ final class ScoreView: NSView {
     /// point, upright inside the flipped view. CoreText draws the glyph
     /// with its origin on the baseline, which NSString drawing does not
     /// guarantee for fonts with unusual metrics like Bravura.
+    /// One accidental of a key signature, left edge at `leftX` and standing on
+    /// the line it belongs to. A flat's bowl is the part that must sit on the
+    /// line — its box also covers the stem that rises above it — so the flat
+    /// is lifted by the height of that stem and centred by the box.
+    private func inkSignature(_ codepoint: UInt32, leftX: CGFloat, centerY: CGFloat,
+                              gap: CGFloat, ink: NSColor) {
+        guard let info = MusicFont.info(codepoint) else { return }
+        // The glyph's own ink starts at its bearing, so the baseline that puts
+        // that ink on `leftX` is `leftX` less the bearing. Centring the box on
+        // `leftX` instead slid every mark half a glyph to the left, which is
+        // what printed the signature into the clef.
+        let lift: CGFloat = codepoint == Glyph.accidentalFlat ? 0.9 * gap : 0
+        drawGlyph(codepoint,
+                  baselineAt: NSPoint(x: leftX - CGFloat(info.x0) * fontSize,
+                                      y: centerY - lift + CGFloat(info.centerY) * fontSize),
+                  font: musicFont, color: ink)
+    }
+
     /// Inks a glyph so that its bounding box is centred on a staff line or
     /// space. Baselines drift from glyph to glyph; the box never lies.
     private func inkGlyph(_ codepoint: UInt32, centerX: CGFloat, centerY: CGFloat,
