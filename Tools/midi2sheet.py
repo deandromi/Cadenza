@@ -288,6 +288,10 @@ def build(events, signature_text, bpm, split, tonic, title):
     # simultaneous voices fills the page with whole rests and stray ties, so
     # the length is capped instead. This is the difference between a piano
     # staff and a page of counterpoint nobody played.
+    # makeNotation runs last if it is allowed to: it decides voices again and
+    # undoes the tidying below. It goes first, and the parts are then finished
+    # by hand.
+    score.makeNotation(inPlace=True)
     for part in (right, left):
         part.makeMeasures(inPlace=True)
         part.makeVoices(inPlace=True)
@@ -295,7 +299,6 @@ def build(events, signature_text, bpm, split, tonic, title):
         flatten_single_voice_measures(part)
         part.makeTies(inPlace=True)
         part.makeBeams(inPlace=True)
-    score.makeNotation(inPlace=True)
 
     group = layout.StaffGroup([right, left], symbol="brace", barTogether=True)
     score.insert(0, group)
