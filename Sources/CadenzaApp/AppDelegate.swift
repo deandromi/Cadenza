@@ -216,7 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         sessionMenu.addItem(playPause)
         let keepMinute = NSMenuItem(title: "Keep last minute",
                                     action: #selector(menuKeepLastMinute), keyEquivalent: " ")
-        keepMinute.keyEquivalentModifierMask = [.command]
+        keepMinute.keyEquivalentModifierMask = [.option]
         keepMinute.target = self
         sessionMenu.addItem(keepMinute)
         let refresh = NSMenuItem(title: "Refresh MIDI port",
@@ -254,14 +254,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApplication.shared.windowsMenu = windowMenu
     }
 
-    /// Space starts and stops a session, Command-Space keeps the last
+    /// Space starts and stops a session, Option-Space keeps the last
     /// minute. Everything else is a menu key equivalent, so it also works
-    /// while a section card has focus. Typing in a text field keeps its keys.
+    /// while a section card has focus. Typing in a text field keeps its keys,
+    /// which is where Option-Space would otherwise type a hard space.
     ///
-    /// Command-Space is macOS' own Spotlight shortcut: a local monitor only
-    /// sees what the app receives, so if Spotlight wins the key, turn it off
-    /// in System Settings, keyboard shortcuts. Command-Shift-K stays as the
-    /// alias that always works.
+    /// Command-Shift-K stays as the alias that reaches the same action from
+    /// any keyboard layout.
     private func installShortcuts() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.window else { return event }
@@ -271,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             guard NSApplication.shared.modalWindow == nil else { return event }
             let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
             if event.keyCode == 49 {
-                if modifiers == .command {
+                if modifiers == .option || modifiers == [.option, .shift] {
                     self.keepLastMinute()
                     return nil
                 }
