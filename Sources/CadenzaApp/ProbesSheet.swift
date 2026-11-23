@@ -648,3 +648,59 @@ extension SmokeMain {
         }
     }
 }
+
+extension SmokeMain {
+    /// `--lily <file.mid> <out.pdf>`: the same route a stopped session takes —
+    /// the notes become a score, the score becomes LilyPond source, and the
+    /// bundled engraver writes the page.
+    static func runLily(path: String, out: String) {
+        guard let file = try? MidiReader.read(url: URL(fileURLWithPath: path)) else {
+            print("lily: cannot read \(path)")
+            exit(1)
+        }
+        guard LilyPondEngraver.isAvailable else {
+            print("lily: no staged engraver (run Tools/bundle_lilypond.sh)")
+            exit(1)
+        }
+        let meter = file.timeSignatures.first?.signature
+        let options = SheetDraft.Options(
+            bpm: file.initialTempo > 0 ? file.initialTempo : 120,
+            numerator: meter?.beatsPerMeasure ?? 4,
+            denominator: meter?.beatUnit ?? 4)
+        // A .ly destination writes the source instead of a page: the fastest
+        // way to see what the engraver was told.
+        if out.hasSuffix(".ly") {
+            guard let score = Engraver.engrave(
+                notes: file.notes,
+                framing: ScoreFraming(beatsPerMinute: options.bpm,
+                                      timeSignature: TimeSignature(beatsPerMeasure: options.numerator,
+                                                                   beatUnit: options.denominator),
+                                      key: Engraver.inferKey(file.notes))) else {
+                print("lily: nothing to engrave")
+                exit(1)
+            }
+            if ProcessInfo.processInfo.environment["CDZ_LILY_DEBUG"] != nil {
+                print("bars: \(score.measures.count), meter \(score.framing.timeSignature.beatsPerMeasure)/\(score.framing.timeSignature.beatUnit), first start \(score.measures.first?.startTick ?? -1)")
+                for measure in score.measures.prefix(10) {
+                    print("  bar \(measure.index) start \(measure.startTick): \(measure.notes.count) notes, onsets \(measure.notes.prefix(6).map(\.onsetTick))")
+                }
+            }
+            let text = LilyPondScore.text(score, metadata: LilyPondScore.Metadata(title: "probe"))
+            try? text.write(toFile: out, atomically: true, encoding: .utf8)
+            print("lily: wrote \(out), \(score.measures.count) measures")
+            return
+        }
+        let began = Date()
+        do {
+            try LilyPondEngraver.write(notes: file.notes, options: options,
+                                       title: ((path as NSString).lastPathComponent as NSString)
+                                           .deletingPathExtension,
+                                       composer: nil,
+                                       to: URL(fileURLWithPath: out))
+            print(String(format: "lily: %@ in %.0f ms", out, Date().timeIntervalSince(began) * 1000))
+        } catch {
+            print("lily: \(error.localizedDescription)")
+            exit(1)
+        }
+    }
+}

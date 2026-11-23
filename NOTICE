@@ -10,3 +10,18 @@ licensed under the MIT License:
 
 Licensed under the MIT License. If this repository is distributed, a copy of
 the MIT license text must accompany it, including the above copyright notice.
+
+The app bundles two third-party works for the sheet music it prints.
+
+  Bravura — https://github.com/steinbergmedia/bravura
+  Copyright (c) 2015-2023 Steinberg Media Technologies GmbH
+  SIL Open Font License 1.1, with the Reserved Font Name "Bravura".
+  The license text travels in Resources/Bravura-OFL.txt and in the app bundle.
+
+  LilyPond — https://lilypond.org
+  Copyright (c) 1996-2025 Han-Wen Nienhuys, Jan Nieuwenhuizen and contributors
+  GNU General Public License version 3 (or later).
+  Cadenza runs a trimmed copy of LilyPond, bundled inside the app, to engrave
+  the sheet music. The full license text travels in Resources/LilyPond-GPL.txt
+  and in the app bundle, and the corresponding source is the upstream release
+  named in Tools/bundle_lilypond.sh.

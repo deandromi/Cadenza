@@ -326,6 +326,16 @@ final class SettingsController: NSObject, NSApplicationDelegate {
             font: .systemFont(ofSize: 11, weight: .regular), color: PaperTheme.secondaryInk))
         refreshMIDIState()
 
+        // which engraver turns a session into a printed page. The bundled
+        // LilyPond is the one that ships; a checkout without it falls back to
+        // the drawer in SheetPDF, and settings says so rather than pretending.
+        let engraverText = LilyPondEngraver.versionText.map { "\($0), included" } ?? "Built in"
+        rows.addArrangedSubview(settingRow(
+            caption("Sheet engraver"),
+            makeInkLabel(engraverText,
+                         font: .systemFont(ofSize: 13, weight: .regular),
+                         color: PaperTheme.ink)))
+
         // the build's version, straight from the bundle so it can never
         // drift from the release it shipped in
         let versionText = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"

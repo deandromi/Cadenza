@@ -1521,6 +1521,191 @@ do {
     expect(empty != nil, "a well formed header still reads")
 }
 
+// MARK: the LilyPond page
+
+lilyPondPage: do {
+    func score(_ measures: [[ScoreNote]], bpm: Double = 96,
+               beats: Int = 4, unit: Int = 4,
+               tonic: Int = 0, minor: Bool = false) -> Score {
+        let framing = ScoreFraming(beatsPerMinute: bpm,
+                                   timeSignature: TimeSignature(beatsPerMeasure: beats, beatUnit: unit),
+                                   key: KeySignature(tonic: tonic, isMinor: minor))
+        let ticks = framing.timeSignature.ticksPerMeasure
+        let built = measures.enumerated().map { index, notes in
+            ScoreMeasure(index: index, startTick: index * ticks, notes: notes)
+        }
+        return Score(framing: framing, measures: built, chords: [])
+    }
+
+    func note(_ pitch: Int, _ onset: Int, _ duration: Int) -> ScoreNote {
+        ScoreNote(pitch: pitch, onsetTick: onset, durationTicks: duration, velocity: 80)
+    }
+
+    /// One staff's lines out of the file, without the framing commands.
+    func staff(_ source: String, clef: String) -> [String] {
+        let lines = source.components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: { $0.contains("\\clef \(clef)") }) else { return [] }
+        var body: [String] = []
+        for line in lines[(start + 1)...] {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed == "}" { break }
+            if !trimmed.isEmpty { body.append(trimmed) }
+        }
+        return body
+    }
+
+    func bars(_ source: String, clef: String) -> [String] {
+        staff(source, clef: clef).filter { $0.contains("|") }
+    }
+
+    let lengths: [(suffix: String, ticks: Int)] = [
+        ("\\breve.", 5760), ("\\breve", 3840),
+        ("64", 30), ("32.", 90), ("32", 60), ("16.", 180), ("16", 120),
+        ("8.", 360), ("8", 240), ("4.", 720), ("4", 480),
+        ("2.", 1440), ("2", 960), ("1.", 2880), ("1", 1920),
+    ]
+
+    /// A token's length: a note carries it as a suffix, a rest behind its r.
+    func ticks(_ token: String) -> Int? {
+        for length in lengths where token.hasSuffix(length.suffix) {
+            return length.ticks
+        }
+        return nil
+    }
+
+    /// The tokens of one bar, keeping a chord in angle brackets together.
+    func tokens(_ line: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        var depth = 0
+        for character in line {
+            if character == "<" { depth += 1 }
+            if character == ">" { depth -= 1 }
+            if character == " ", depth == 0 {
+                if !current.isEmpty { result.append(current); current = "" }
+            } else {
+                current.append(character)
+            }
+        }
+        if !current.isEmpty { result.append(current) }
+        return result
+    }
+
+    /// What one bar of the file actually adds up to.
+    func barTicks(_ line: String) -> Int {
+        var total = 0
+        for token in tokens(line) {
+            if token.hasPrefix("\\") || token.hasPrefix("\"") || token.hasPrefix("|") { continue }
+            total += ticks(token) ?? -100_000
+        }
+        return total
+    }
+
+    // A four bar line, one note to the beat: the page has to name the version,
+    // the key, the meter and the tempo before the first bar, and the right
+    // hand has to read as the notes that were played.
+    let line = score([[note(60, 0, 480), note(62, 480, 480), note(64, 960, 480), note(65, 1440, 480)]])
+    let text = LilyPondScore.text(line, metadata: LilyPondScore.Metadata(title: "Je te veux", composer: "Satie"))
+    expect(text.contains("\\version \"2.26.0\""), "the page names the engraver's version")
+    expect(text.contains("\\header {"), "the page carries a heading")
+    expect(text.contains("title = \"Je te veux\""), "the title travels into the heading")
+    expect(text.contains("\\key c \\major"), "C major is written as LilyPond writes it")
+    expect(text.contains("\\time 4/4 \\tempo 4 = 96"), "the meter and tempo stand on one line")
+    expect(text.contains("\\new PianoStaff <<"), "a piano page is one staff pair")
+    expect(staff(text, clef: "treble") == ["\\key c \\major", "\\time 4/4 \\tempo 4 = 96",
+                                           "c'4 d'4 e'4 f'4 | \\bar \"|.\""],
+           "the right hand reads as its notes: \(staff(text, clef: "treble"))")
+    expect(bars(text, clef: "bass") == ["r1 | \\bar \"|.\""],
+           "the hand that played nothing rests the bar: \(bars(text, clef: "bass"))")
+
+    // Middle C is the divide: a line played either side of it belongs to two
+    // staves, and the octave marks count away from it.
+    let split = LilyPondScore.text(score([[note(60, 0, 960), note(59, 0, 960)]]))
+    expect(staff(split, clef: "treble").last?.hasPrefix("c'2") == true,
+           "middle C is the right hand's")
+    expect(staff(split, clef: "bass").last?.hasPrefix("b2") == true,
+           "the note below it is the left hand's")
+
+    // Pitches struck together are one attack, and a flam — two hands landing a
+    // few ticks apart — is one attack too, not a roll of sixteenths.
+    let chord = LilyPondScore.text(score([[note(60, 0, 480), note(64, 0, 480),
+                                           note(67, 10, 400), note(71, 30, 400)]]))
+    expect(staff(chord, clef: "treble").last?.hasPrefix("<c' e' g' b'>4") == true,
+           "a chord prints as one chord: \(staff(chord, clef: "treble"))")
+    expect(barTicks(bars(chord, clef: "treble")[0]) == 1920,
+           "and the bar it sits in still counts four beats")
+
+    // Every bar of the page has to count its meter, whatever was played: the
+    // gaps become rests, a note that runs into the barline is cut there, and a
+    // note a hair before the barline still belongs to the bar it was played in.
+    let messy = score([
+        [note(67, 0, 300), note(69, 90, 110), note(72, 700, 500), note(74, 1700, 120)],
+        [note(60, 1910, 100), note(62, 1920, 240), note(65, 2500, 900)],
+        [note(67, 3900, 60)],
+    ])
+    let messyText = LilyPondScore.text(messy)
+    for clef in ["treble", "bass"] {
+        for (index, bar) in bars(messyText, clef: clef).enumerated() {
+            expect(barTicks(bar) == 1920,
+                   "bar \(index + 1) of the \(clef) counts its meter: \(barTicks(bar)) — \(bar)")
+        }
+    }
+    expect(barTicks(bars(messyText, clef: "treble")[1]) == 1920,
+           "a note held over the barline is cut at the bar")
+
+    // A meter that is not 4/4 counts its own way, and the page still totals it.
+    var metered = true
+    for (beats, unit) in [(3, 4), (6, 8), (2, 2), (5, 4)] {
+        let page = LilyPondScore.text(score([[note(60, 0, 200), note(64, 260, 500)],
+                                             [note(67, 900, 480)]],
+                                            beats: beats, unit: unit))
+        let rule = TimeSignature(beatsPerMeasure: beats, beatUnit: unit).ticksPerMeasure
+        for bar in bars(page, clef: "treble") {
+            if barTicks(bar) != rule { metered = false }
+        }
+    }
+    expect(metered, "a page in any meter fills every bar exactly")
+
+    // The key signature decides the spelling: the black key above C is a C
+    // sharp in a sharp key and a D flat in a flat key.
+    func spelling(_ pitch: Int, tonic: Int, minor: Bool = false) -> String {
+        let page = LilyPondScore.text(score([[note(pitch, 0, 480)]], tonic: tonic, minor: minor))
+        return staff(page, clef: "treble").last ?? ""
+    }
+    expect(spelling(61, tonic: 2).hasPrefix("cis'4"), "a sharp key spells 61 as C sharp")
+    expect(spelling(61, tonic: 5).hasPrefix("des'4"), "a flat key spells the same key as D flat")
+    expect(spelling(66, tonic: 10).hasPrefix("fis'4") || spelling(66, tonic: 10).hasPrefix("ges'4"),
+           "a raised fourth is spelled, not dropped: \(spelling(66, tonic: 10))")
+
+    // The key names the circle of fifths knows, and a minor key is its own.
+    func keyLine(_ tonic: Int, minor: Bool) -> String {
+        LilyPondScore.text(score([], tonic: tonic, minor: minor))
+            .components(separatedBy: "\n")
+            .first { $0.contains("\\key ") }?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+    }
+    expect(keyLine(0, minor: false) == "\\key c \\major", "C major is c major")
+    expect(keyLine(5, minor: false) == "\\key f \\major", "F major is f major")
+    expect(keyLine(10, minor: false) == "\\key bes \\major", "B flat major is bes major")
+    expect(keyLine(6, minor: false) == "\\key fis \\major", "F sharp major is fis major")
+    expect(keyLine(9, minor: true) == "\\key a \\minor", "A minor is a minor")
+    expect(keyLine(1, minor: true) == "\\key cis \\minor", "D flat minor is cis minor, its enharmonic name")
+
+    // The page ends with a full barline and only the last one.
+    let three = LilyPondScore.text(score([[note(60, 0, 480)], [note(62, 0, 480)], [note(64, 0, 480)]]))
+    let threeBars = bars(three, clef: "treble")
+    expect(threeBars.count == 3, "three measures print three bars: \(threeBars.count)")
+    expect(!threeBars[0].contains("\\bar") && threeBars[2].contains("\\bar \"|.\""),
+           "only the last bar closes the page")
+
+    // A title with a quote or a backslash must not break the file LilyPond has
+    // to parse: they are Scheme strings.
+    let tricky = LilyPondScore.text(line, metadata: LilyPondScore.Metadata(title: "L'après \"midi\"", composer: "C:\\temp"))
+    expect(tricky.contains("title = \"L'après \\\"midi\\\"\""), "a quote in the title is escaped")
+    expect(tricky.contains("composer = \"C:\\\\temp\""), "a backslash in the heading is escaped")
+    expect(tricky.contains("\n}\n"), "the heading closes whatever it holds")
+}
+
 if failures == 0 {
     print("all \(checks) checks passed")
 } else {

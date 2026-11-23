@@ -10,7 +10,7 @@ set -euo pipefail
 
 # Single place to bump the bundle version. Both version keys in the Info.plist
 # template carry the ${CADENZA_VERSION} placeholder.
-version="1.4.0"
+version="1.4.1"
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 build_dir="${repo_root}/build"
@@ -73,11 +73,26 @@ mkdir -p "${app_dir}/Contents/Resources"
 cp "${repo_root}/Resources/Bravura.otf" "${app_dir}/Contents/Resources/Bravura.otf"
 cp "${repo_root}/Resources/Bravura-OFL.txt" "${app_dir}/Contents/Resources/Bravura-OFL.txt"
 cp "${repo_root}/Resources/AppIcon.icns" "${app_dir}/Contents/Resources/AppIcon.icns"
+# The engraver is GPL-3.0; its license text rides next to it in the bundle.
+cp "${repo_root}/Resources/LilyPond-GPL.txt" "${app_dir}/Contents/Resources/LilyPond-GPL.txt"
 cp -R "${repo_root}/Resources/Piano" "${app_dir}/Contents/Resources/Piano"
 
 # The Transkun model and its tensors ship inside the bundle so the app is
 # self-contained when installed from the DMG (no repo checkout needed).
 cp -R "${repo_root}/Models" "${app_dir}/Contents/Resources/Models"
+
+# LilyPond, cut down to the binary, its libraries and the data it reads
+# (Tools/bundle_lilypond.sh). It is what engraves a session's sheet; without
+# it the app draws the page itself, which is the fallback rather than the goal.
+if [ ! -x "${repo_root}/build/engraver/run.sh" ]; then
+	echo "Staging the bundled engraver (LilyPond)"
+	bash "${repo_root}/Tools/bundle_lilypond.sh"
+fi
+if [ -x "${repo_root}/build/engraver/run.sh" ]; then
+	cp -R "${repo_root}/build/engraver" "${app_dir}/Contents/Resources/engraver"
+else
+	echo "warning: no staged engraver, the sheet falls back to the built-in drawer" >&2
+fi
 
 echo "Signing build/Cadenza.app (ad-hoc)"
 codesign --force -s - "${app_dir}"

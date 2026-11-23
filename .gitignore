@@ -18,3 +18,6 @@ je-te-veux-satie.pdf
 
 # lab render output
 out/
+
+# Python bytecode from the reference tools
+__pycache__/

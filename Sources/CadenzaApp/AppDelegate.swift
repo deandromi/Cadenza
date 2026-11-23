@@ -713,20 +713,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     /// Engraves the session's notes to sheet PDF in its folder. A failing
     /// engraving leaves the session intact without it: nothing saved twice.
+    ///
+    /// The page comes from the bundled LilyPond, which is the engraver a
+    /// publisher would use. Only when that engraver is missing — a checkout
+    /// that never staged it — does the sheet fall back to the drawer in
+    /// SheetPDF, so a session always ends with a page of some kind.
     private func engraveSessionPDF(_ record: SessionRecord, notes: [NoteEvent]) {
         guard !notes.isEmpty else { return }
         let url = store.folderURL(for: record).appendingPathComponent(record.pdfFileName)
+        let name = record.name ?? record.folderName ?? "Cadenza session"
         // Engraving is the slowest thing a stop used to do, and the print
         // pipeline can stall behind the printing services: let the transport
         // answer first, then engrave on the next turn of the run loop.
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 120_000_000)
             let began = Date()
+            if LilyPondEngraver.isAvailable {
+                let options = SheetDraft.inferredOptions(notes: notes)
+                do {
+                    try await Task.detached(priority: .utility) {
+                        try LilyPondEngraver.write(notes: notes, options: options,
+                                                   title: name, composer: nil, to: url)
+                    }.value
+                    self.store.markHasPDF(record)
+                    print(String(format: "[pdf] engraved by LilyPond in %.0f ms",
+                                 Date().timeIntervalSince(began) * 1000))
+                    return
+                } catch {
+                    print("[pdf] lilypond: \(error.localizedDescription) — drawing the page here")
+                }
+            }
             do {
-                try SheetPDF.write(
-                    notes: notes,
-                    name: record.name ?? record.folderName ?? "Cadenza session",
-                    to: url)
+                try SheetPDF.write(notes: notes, name: name, to: url)
                 self.store.markHasPDF(record)
                 print(String(format: "[pdf] engraved in %.0f ms", Date().timeIntervalSince(began) * 1000))
             } catch {
