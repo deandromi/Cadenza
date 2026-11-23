@@ -116,6 +116,11 @@ enum SheetPDF {
             // less the margin the page keeps, puts every line on the same
             // left edge with the same air on both sides of the paper.
             ctx.translateBy(x: modelMargin - inkLeft, y: 0)
+            // The page prints the score's own ink and nothing else. Without
+            // this the system's last column can reach past the line it belongs
+            // to and the paper's edge cuts a head in half — a note printed
+            // outside the staff is the one thing a reader cannot forgive.
+            ctx.clip(to: CGRect(x: inkLeft, y: 0, width: drawnWidth, height: modelHeight))
             ctx.setFillColor(NSColor.white.cgColor)
             ctx.fill(CGRect(x: 0, y: 0, width: modelWidth, height: modelHeight))
 

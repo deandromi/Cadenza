@@ -734,7 +734,12 @@ public enum SheetEngraver {
                                   measureWidth: Double) -> [Int: Double] {
         guard let first = columns.first, let last = columns.last else { return [:] }
         let lead = first.left + 0.35
-        let trail = last.right + 0.35
+        // The closing barline of a line stands inside the margin, and the
+        // final one is a thin-and-thick pair a whole space wide. A head set
+        // three tenths of a space from the edge leaves the thick stroke
+        // touching it, so the last column keeps a space of air: that is the
+        // distance an edition leaves between its last note and the double bar.
+        let trail = last.right + 0.95
         let air = columns.dropLast().map(\.gap).reduce(0, +)
         // A bar too dense for the room it was given may give up a fifth of its
         // air, never half of it: squeezed further, the sixteenths pile into a

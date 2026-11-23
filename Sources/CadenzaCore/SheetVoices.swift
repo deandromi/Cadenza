@@ -143,8 +143,13 @@ extension SheetEngraver {
                     guard index + 1 < flat.count else { continue }
                     let next = flat[index + 1]
                     guard next.start == piece.start + piece.length,
-                          let pitches = piece.pitches else { continue }
-                    for pitch in pitches {
+                          let pitches = piece.pitches,
+                          let following = next.pitches else { continue }
+                    // A tie says the *same* pitch keeps sounding. An arc drawn
+                    // from a note to a chord that does not contain it is a
+                    // phrase mark pretending to be a tie, and a page of them is
+                    // what made the sheet look handwritten.
+                    for pitch in pitches where following.contains(pitch) {
                         let tie = SheetDraft.Tie(track: track, pitch: pitch,
                                                  fromTicks: piece.start,
                                                  toTicks: next.start)

@@ -45,7 +45,11 @@ final class ScoreView: NSView {
     /// barline is a thick stroke. A printer that framed the page on the nominal
     /// width instead of the ink set the music against the paper's edge.
     static let inkLeftInset: Double = 2.888 - 1.15
-    static let inkRightInset: Double = 0.9
+    /// Flags and beams hang off the right of the last stem, past the thick
+    /// closing stroke. Measured at the barline alone the page cut them in
+    /// half — a pair of flags printed outside the staff — so the box keeps
+    /// the room a flag needs.
+    static let inkRightInset: Double = 2.4
     /// The left edge of a system's ink, in points: the brace hangs outside the
     /// first barline, and `marginX` is where that barline stands. A system's
     /// staff runs from here to `inkRightX` and nowhere else, so every printed
@@ -157,7 +161,7 @@ final class ScoreView: NSView {
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: NSRect(x: leftX - 2.4 * gap,
                                       y: top - 7.5 * gap,
-                                      width: rightX - leftX + 4.2 * gap,
+                                      width: rightX - leftX + 2.4 * gap + 9.6 * gap,
                                       height: bassBottom - top + 15 * gap)).addClip()
 
             // staff lines
@@ -464,9 +468,13 @@ final class ScoreView: NSView {
             ink.withAlphaComponent(0.9).setStroke()
             strokeLine(from: NSPoint(x: x, y: systemTop), to: NSPoint(x: x, y: systemBottom), width: 1.0)
         case .finalBar:
+            // The double bar stands inside the system, its thick stroke
+            // ending where the staff lines end. Drawn centred on the margin
+            // the thick half hangs off the page and the last chord has to
+            // share the space it leaves.
             ink.setStroke()
-            strokeLine(from: NSPoint(x: x - 3, y: systemTop), to: NSPoint(x: x - 3, y: systemBottom), width: 1.0)
-            strokeLine(from: NSPoint(x: x, y: systemTop), to: NSPoint(x: x, y: systemBottom), width: 3.5)
+            strokeLine(from: NSPoint(x: x - 4.4, y: systemTop), to: NSPoint(x: x - 4.4, y: systemBottom), width: 1.0)
+            strokeLine(from: NSPoint(x: x - 1.8, y: systemTop), to: NSPoint(x: x - 1.8, y: systemBottom), width: 3.5)
         case .clefChange(let clef, _):
             return
         case .rest(_, let kind):
@@ -609,6 +617,7 @@ final class ScoreView: NSView {
     }
 
     private func drawChord(_ chord: SheetDraft.Chord, at x: CGFloat, yOn: (Int) -> CGFloat, gap: CGFloat, ink: NSColor) {
+
         // Two heads a second apart would sit on top of each other. Engraving
         // shifts the lower one left by a whole head so both stay round; a
         // nudge is what left a chord looking like a smudge of overlapping
@@ -673,7 +682,7 @@ final class ScoreView: NSView {
         // Dots belong to the chord, not to one head inside it: they line up
         // past the rightmost head and stagger only when two dots would land on
         // each other.
-        var drawnDotYs: [CGFloat] = []
+        var drawnDots: [(y: CGFloat, side: CGFloat)] = []
         for (index, note) in chord.notes.enumerated() where note.dots > 0 {
             for column in 0..<note.dots {
                 // A dot belongs to its own head: past the chord's rightmost
@@ -681,13 +690,18 @@ final class ScoreView: NSView {
                 // beside nothing at all.
                 let onLine = note.staffPosition % 2 == 0
                 var y = onLine ? yOn(note.staffPosition + 1) : yOn(note.staffPosition)
-                while drawnDotYs.contains(where: { abs($0 - y) < gap * 0.45 }) {
-                    y -= gap
+                // A dot names its own pitch, so it may never move off its line
+                // or space: two dots that would land on each other step to the
+                // right, the way an engraver stacks them, never up or down.
+                var side: CGFloat = 0
+                while drawnDots.contains(where: { abs($0.y - y) < gap * 0.4 && $0.side == side }) {
+                    side += 1
                 }
-                drawnDotYs.append(y)
+                drawnDots.append((y: y, side: side))
                 ink.setFill()
                 let centre = NSPoint(x: x + CGFloat(columns[index]) * shift + headGlyphWidth / 2
-                                        + 0.34 * gap + CGFloat(column) * 0.62 * gap, y: y)
+                                        + 0.2 * gap + CGFloat(column) * 0.62 * gap
+                                        + side * 0.62 * gap, y: y)
                 let radius = 0.145 * gap
                 NSBezierPath(ovalIn: CGRect(x: centre.x - radius, y: centre.y - radius,
                                             width: radius * 2, height: radius * 2)).fill()
