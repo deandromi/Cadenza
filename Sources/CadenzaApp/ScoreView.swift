@@ -216,21 +216,35 @@ final class ScoreView: NSView {
             chords[chord.startTicks] = chord
             xs[chord.startTicks] = marginX + CGFloat(item.x) * gap
         }
-        for slur in slurs {
+        for slur in slurs where slur.track == track {
             guard let fromX = xs[slur.fromTicks], let toX = xs[slur.toTicks],
-                  toX > fromX else { continue }
-            let notes = chords.filter { $0.key >= slur.fromTicks && $0.key <= slur.toTicks }
-                .flatMap { $0.value.notes }
-            guard !notes.isEmpty else { continue }
-            let positions = notes.map(\.staffPosition)
-            let highest = positions.max() ?? 4
-            let lowest = positions.min() ?? 4
-            let above = Double(highest + lowest) / 2 >= 4
-            let edge = above ? yOn(highest) : yOn(lowest)
-            let baseline = edge + (above ? -0.72 : 0.72) * gap
-            tie(from: NSPoint(x: fromX - 0.15 * gap, y: baseline),
-                to: NSPoint(x: toX + 0.15 * gap, y: baseline),
-                bow: (above ? -0.85 : 0.85) * gap, gap: gap, ink: ink)
+                  toX > fromX,
+                  let fromChord = chords[slur.fromTicks], let toChord = chords[slur.toTicks]
+            else { continue }
+            // A slur hangs opposite the stems, clear of the noteheads at both
+            // ends: 1.05 spaces outside the head is what keeps it legible on
+            // a staff this size, and it never cuts through an inner note.
+            let fromPositions = fromChord.notes.map(\.staffPosition)
+            let toPositions = toChord.notes.map(\.staffPosition)
+            guard let fromHigh = fromPositions.max(), let toHigh = toPositions.max(),
+                  let fromLow = fromPositions.min(), let toLow = toPositions.min() else { continue }
+            // The slur follows the melody, which is the top of each end: a
+            // wide left-hand chord under it must not drag the arc down.
+            // Follow the melody: the top of each end, with the arc above it.
+            // A wide accompaniment chord in the same column must not drag the
+            // phrase mark down to its bass note.
+            _ = (fromLow, toLow)
+            let above = true
+            let startEdge = fromHigh
+            let endEdge = toHigh
+            let lift = 1.05 * gap
+            let start = NSPoint(x: fromX, y: yOn(startEdge) - lift)
+            let end = NSPoint(x: toX, y: yOn(endEdge) - lift)
+            // A long phrase bows more than a two-note flick, the way a singer
+            // takes a longer breath.
+            let length = end.x - start.x
+            let bow = (above ? -1 : 1) * gap * min(0.95, 0.45 + length / (24 * gap))
+            tie(from: start, to: end, bow: bow, gap: gap, ink: ink)
         }
     }
 

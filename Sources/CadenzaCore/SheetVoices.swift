@@ -232,26 +232,39 @@ extension SheetEngraver {
                 }
             }
 
-            // 6. Phrase marks: runs of notes the player joined with a finger
-            //    still down, inside one bar and capped at four notes.
+            // 6. Phrase marks. A slur is a claim about how the music is
+            //    sung, so it needs evidence rather than every pair of
+            //    neighbours: either a finger that was still down when the
+            //    next note was struck, or a line that runs on without a break
+            //    (which is how a notation file writes legato), over a melody
+            //    that walks instead of jumping. Three notes at least, six at
+            //    most, never longer than two bars: a slur over the page says
+            //    nothing.
+            let legatoEpsilon = max(1, grid)
             for voice in 0..<2 {
-                let chords = written.flatMap { $0[voice] }
-                    .filter { $0.pitches != nil }
-                    .sorted { $0.start < $1.start }
-                var run: [Int] = []
+                var run: [Column] = []
                 func flush() {
                     defer { run = [] }
-                    guard run.count >= 3, let first = run.first, let last = run.last,
-                          first / measureTicks == last / measureTicks else { return }
+                    guard run.count >= 3,
+                          let first = run.first?.start, let last = run.last?.start,
+                          last > first, last - first <= 2 * measureTicks else { return }
                     slurs.append(SheetDraft.Slur(track: track, fromTicks: first, toTicks: last))
                 }
-                for (index, piece) in chords.enumerated() {
-                    let next = index + 1 < chords.count ? chords[index + 1] : nil
-                    let carries = joined.contains(piece.start)
-                        && next.map { $0.start == piece.start + piece.length } ?? false
-                    if !carries { flush(); continue }
-                    run.append(piece.start)
-                    if run.count == 4 { flush() }
+                for column in perVoice[voice] {
+                    guard let previous = run.last else {
+                        run = [column]
+                        continue
+                    }
+                    let heldByFinger = joined.contains(previous.start)
+                    let runsOn = column.start - (previous.start + previous.held) <= legatoEpsilon
+                    // a leap wider than a fifth ends the phrase
+                    let walks = abs((column.pitches.max() ?? 0) - (previous.pitches.max() ?? 0)) <= 7
+                    if (heldByFinger || runsOn), walks, run.count < 6 {
+                        run.append(column)
+                    } else {
+                        flush()
+                        run = [column]
+                    }
                 }
                 flush()
             }
