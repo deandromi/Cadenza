@@ -723,7 +723,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             try? await Task.sleep(nanoseconds: 120_000_000)
             let began = Date()
             do {
-                try SheetPDF.write(notes: notes, to: url)
+                try SheetPDF.write(
+                    notes: notes,
+                    name: record.name ?? record.folderName ?? "Cadenza session",
+                    to: url)
                 self.store.markHasPDF(record)
                 print(String(format: "[pdf] engraved in %.0f ms", Date().timeIntervalSince(began) * 1000))
             } catch {

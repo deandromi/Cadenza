@@ -318,7 +318,9 @@ extension SmokeMain {
             print("session sheet: \(chords) chords, \(rests.values.reduce(0, +)) rests (\(restSummary))")
             for issue in issues.prefix(6) { print("  \(issue)") }
             do {
-                try SheetPDF.write(notes: file.heldNotes, to: URL(fileURLWithPath: out))
+                try SheetPDF.write(notes: file.heldNotes,
+                                   name: URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent,
+                                   to: URL(fileURLWithPath: out))
                 print("session sheet: wrote \(out)")
             } catch {
                 print("session sheet: \(error.localizedDescription)")
@@ -347,17 +349,12 @@ extension SmokeMain {
                     startTick: SheetDraft.ticks(seconds: span.start, options: options),
                     endTick: SheetDraft.ticks(seconds: span.end, options: options))
             }
-            // A DAW names its track "Piano"; that is not a title. Only the
-            // score's own name beats the file's name.
-            let fallback = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
-                .replacingOccurrences(of: "-", with: " ")
-                .capitalized
-            let generic: Set<String> = ["piano", "piano 1", "piano 2", "track 1", "music", "untitled"]
-            let metaTitle = file.title?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let title = metaTitle.flatMap { generic.contains($0.lowercased()) ? nil : $0 } ?? fallback
+            // A DAW names its track "Piano", which is not a title: the file's
+            // name is the take's name and the block sorts out the rest.
+            let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
             do {
                 try SheetPDF.write(notes: file.heldNotes, options: options, originTicks: 0,
-                                   title: title, pedals: pedals,
+                                   fileTitle: file.title, name: name, pedals: pedals,
                                    timeMap: file.sheetTimeMap,
                                    declaredFifths: file.keySignatures.first?.key.fifths,
                                    to: URL(fileURLWithPath: out))

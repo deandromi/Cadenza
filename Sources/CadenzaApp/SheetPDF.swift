@@ -11,8 +11,12 @@ import CadenzaCore
 /// sheet breaks exactly where the scrolling sheet does.
 @MainActor
 enum SheetPDF {
+    /// `name` is what the take is called: the session's own name, or a MIDI
+    /// file's stem when a file is engraved. `fileTitle` is the title the MIDI
+    /// declares, when it declares one; the block decides what to print.
     static func write(notes: [NoteEvent], options: SheetDraft.Options? = nil,
-                      originTicks: Int? = nil, title: String? = nil,
+                      originTicks: Int? = nil, fileTitle: String? = nil,
+                      name: String,
                       composer: String? = nil, pedals: [SheetDraft.PedalSpan] = [],
                       timeMap: SheetDraft.TimeMap? = nil,
                       declaredFifths: Int? = nil,
@@ -21,21 +25,14 @@ enum SheetPDF {
             notes: notes, options: options ?? SheetDraft.inferredOptions(notes: notes),
             pageWidth: SheetEngraver.pageWidth, pedals: pedals, originTicks: originTicks,
             timeMap: timeMap, declaredFifths: declaredFifths)
-        // A file name is the only title page a performance has: build the
-        // block from it rather than printing the file name as a title.
+        // A performance has no title page of its own beyond its name: build
+        // the block from that, never from the PDF's file name.
         var block = SheetTitle.inferred(
-            fileTitle: nil,
-            fileName: url.deletingPathExtension().lastPathComponent,
+            fileTitle: fileTitle,
+            fileName: name,
             meter: (result.options.numerator, result.options.denominator),
             bpm: result.options.bpm,
             meterIsDeclared: false)
-        if let composer, !composer.isEmpty { block.composer = composer }
-        try write(result: result, block: block, to: url)
-    }
-
-    static func write(result: SheetDraft.Result, title: String? = nil,
-                      composer: String? = nil, to url: URL) throws {
-        var block = SheetTitle.inferred(fileTitle: title, fileName: title ?? "")
         if let composer, !composer.isEmpty { block.composer = composer }
         try write(result: result, block: block, to: url)
     }

@@ -57,7 +57,19 @@ public struct SheetTitle: Sendable, Equatable {
         let name = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
         let tokens = words(name)
         let declared = fileTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let specific = declared.flatMap { genericTitles.contains($0.lowercased()) ? nil : $0 }
+        var specific = declared.flatMap { genericTitles.contains($0.lowercased()) ? nil : $0 }
+        if let declaredTitle = specific {
+            // A file whose title is only the composer's name says nothing
+            // about the piece: printing "satie" over the staff puts the author
+            // where the work belongs, and the name again in the credit.
+            let declaredWords = words(declaredTitle)
+            if declaredWords.count == 1, Composer.named(declaredWords[0]) != nil {
+                specific = nil
+            } else if !declaredTitle.contains(where: { $0.isUppercase }) {
+                // a name typed in lower case is still a title, set as one
+                specific = phrase(declaredWords)
+            }
+        }
 
         var composer: Composer?
         var composerAt: Int?
@@ -95,15 +107,21 @@ public struct SheetTitle: Sendable, Equatable {
         if subtitle == nil, meterIsDeclared, let meter, let bpm {
             subtitle = character(beats: meter.beats, unit: meter.unit, bpm: bpm)
         }
-        // An edition does not print the same name twice: when the credit is
-        // simply the composer's own name, the right column keeps the dates
-        // alone and the name stands once, at the left.
+        // An edition prints the composer's name once. When the gazetteer knows
+        // the name an edition credits — "Erik Satie", not "Éric Alfred Leslie
+        // Satie" — that spelling stands at the right over the dates and the
+        // left column stays empty; otherwise the full name takes the left.
+        var composerName: String?
         var credit: String?
-        if let composer, !sameName(composer.credit, composer.fullName) {
-            credit = composer.credit
+        if let composer {
+            if sameName(composer.credit, composer.fullName) {
+                composerName = composer.fullName
+            } else {
+                credit = composer.credit
+            }
         }
         return SheetTitle(title: title, subtitle: subtitle,
-                          composer: composer?.fullName,
+                          composer: composerName,
                           credit: credit, dates: composer?.dates)
     }
 
