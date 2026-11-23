@@ -160,6 +160,7 @@ extension SmokeMain {
     @MainActor
     static func writeSheet(_ result: SheetDraft.Result, to path: String) {
         let view = ScoreView(result: result)
+        view.showsTempoMark = true
         let size = ScoreView.pointSize(of: result)
         view.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
         let scale: CGFloat = 1.6
@@ -272,7 +273,8 @@ extension SmokeMain {
                 : []
             let result = SheetDraft.draft(notes: file.heldNotes, options: options, pageWidth: SheetEngraver.pageWidth,
                                           pedals: pedalSpans, originTicks: 0,
-                                          timeMap: file.sheetTimeMap)
+                                          timeMap: file.sheetTimeMap,
+                                          declaredFifths: file.keySignatures.first?.key.fifths)
             print("sheet draft: \(result.rows.count) rows, fifths \(result.fifths), "
                 + "\(result.beamGroups.count) beams, options \(result.options.numerator)/\(result.options.denominator)")
 
@@ -357,6 +359,7 @@ extension SmokeMain {
                 try SheetPDF.write(notes: file.heldNotes, options: options, originTicks: 0,
                                    title: title, pedals: pedals,
                                    timeMap: file.sheetTimeMap,
+                                   declaredFifths: file.keySignatures.first?.key.fifths,
                                    to: URL(fileURLWithPath: out))
                 print("pdf: wrote \(out)")
             } catch {
@@ -387,7 +390,8 @@ extension SmokeMain {
             }
             let result = SheetDraft.draft(notes: file.heldNotes, options: options, pageWidth: SheetEngraver.pageWidth,
                                           pedals: pedals, originTicks: 0,
-                                          timeMap: file.sheetTimeMap)
+                                          timeMap: file.sheetTimeMap,
+                                          declaredFifths: file.keySignatures.first?.key.fifths)
             let guessed = SheetDraft.inferredOptions(notes: file.notes)
             print("report: inferred tempo \(Int(guessed.bpm)) meter \(guessed.numerator)/\(guessed.denominator)")
             print("report: notes \(file.notes.count), range \(file.notes.map(\.pitch).min() ?? 0)-\(file.notes.map(\.pitch).max() ?? 0), "
@@ -524,7 +528,8 @@ extension SmokeMain {
                                          denominator: meter?.beatUnit ?? 4)
         let result = SheetDraft.draft(notes: file.heldNotes, options: options,
                                       pageWidth: SheetEngraver.pageWidth,
-                                      originTicks: 0, timeMap: file.sheetTimeMap)
+                                      originTicks: 0, timeMap: file.sheetTimeMap,
+                                      declaredFifths: file.keySignatures.first?.key.fifths)
         let measureTicks = max(1, options.measureTicks)
         var overlaps = 0
         var pastBar = 0
@@ -591,6 +596,11 @@ extension SmokeMain {
         for group in result.beamGroups { beamSizes[group.chordIndices.count, default: 0] += 1 }
         print("audit: beams by size \(beamSizes.sorted { $0.key < $1.key })")
 
+        // the tail of every row: what a system prints against its own end
+        for (index, row) in result.rows.enumerated() {
+            let tail = row.top.suffix(4).map { describe($0) }.joined(separator: " | ")
+            print("audit: row \(index) width \(String(format: "%.1f", row.width)) tail \(tail)")
+        }
         // the first four measures, both staves, in reading order
         for (index, row) in result.rows.prefix(1).enumerated() {
             print("audit: row \(index) first m\(row.firstMeasure) top columns")

@@ -10,9 +10,11 @@ extension SheetDraft {
     /// Ped./release marks under the bass staff.
     public static func draft(notes: [NoteEvent] /* live stream */, options: Options, pageWidth: Double = 88,
                              pedals: [PedalSpan] = [], originTicks: Int? = nil,
-                             timeMap: TimeMap? = nil) -> Result {
+                             timeMap: TimeMap? = nil,
+                             declaredFifths: Int? = nil) -> Result {
         SheetEngraver.engrave(notes: notes, options: options, pageWidth: pageWidth,
-                              pedals: pedals, originTicks: originTicks, timeMap: timeMap)
+                              pedals: pedals, originTicks: originTicks, timeMap: timeMap,
+                              declaredFifths: declaredFifths)
     }
 
     /// The options a performance itself argues for: tempo from the pulse of

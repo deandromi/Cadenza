@@ -15,11 +15,12 @@ enum SheetPDF {
                       originTicks: Int? = nil, title: String? = nil,
                       composer: String? = nil, pedals: [SheetDraft.PedalSpan] = [],
                       timeMap: SheetDraft.TimeMap? = nil,
+                      declaredFifths: Int? = nil,
                       to url: URL) throws {
         let result = SheetDraft.draft(
             notes: notes, options: options ?? SheetDraft.inferredOptions(notes: notes),
             pageWidth: SheetEngraver.pageWidth, pedals: pedals, originTicks: originTicks,
-            timeMap: timeMap)
+            timeMap: timeMap, declaredFifths: declaredFifths)
         // A file name is the only title page a performance has: build the
         // block from it rather than printing the file name as a title.
         var block = SheetTitle.inferred(
@@ -49,13 +50,20 @@ enum SheetPDF {
         let margin: CGFloat = 36
         let pageWidth: CGFloat = 595
         let pageHeight: CGFloat = 842
-        let drawnWidth = CGFloat(result.width) * gap
+        // The sheet is measured by its ink, not by its nominal width: the
+        // brace hangs left of the first barline and the last head reaches a
+        // little past its column. Framing on the nominal width is what set the
+        // music against the paper's edge and off-centre.
+        let inkLeft = ScoreView.inkLeftX(gap: gap)
+        let inkRight = ScoreView.inkRightX(rowWidth: result.width, gap: gap)
+        let drawnWidth = inkRight - inkLeft
         let scale = min(1, (pageWidth - 2 * margin) / max(1, drawnWidth))
         // An edition opens with the title, the composer and the tempo; the
         // systems start below them. The space is kept on every page so the
         // page breaks stay identical, which is how a printed part reads.
         let header: CGFloat = block == nil ? 0 : 104
-        let perPage = max(1, Int(((pageHeight - 2 * margin - header) / (rowHeight * scale)).rounded(.down)))
+        let rowPitch = rowHeight * scale
+        let perPage = max(1, Int(((pageHeight - 2 * margin - header) / rowPitch).rounded(.down)))
         let modelMargin = margin / scale
         let modelWidth = drawnWidth + 2 * modelMargin
         let modelHeight = pageHeight / scale
@@ -69,8 +77,8 @@ enum SheetPDF {
         }
 
         let view = ScoreView(result: result)
+        view.showsTempoMark = true
         view.frame = NSRect(x: 0, y: 0, width: modelWidth, height: modelHeight)
-        view.topInset = modelMargin
 
         let rows = result.rows.count
         let pageCount = max(1, (rows + perPage - 1) / perPage)
@@ -78,9 +86,9 @@ enum SheetPDF {
             let from = page * perPage
             let to = min(rows, from + perPage)
             guard from < to else { continue }
-            view.visibleRows = from...(to - 1)
-
-            view.topInset = modelMargin + (page == 0 ? header / scale : 0)
+            view.page = ScoreView.Page(
+                rows: from..<to,
+                top: modelMargin + (page == 0 ? header / scale : 0))
 
             ctx.beginPDFPage(nil)
             ctx.saveGState()
@@ -88,6 +96,11 @@ enum SheetPDF {
             ctx.translateBy(x: 0, y: pageHeight)
             ctx.scaleBy(x: 1, y: -1)
             ctx.scaleBy(x: scale, y: scale)
+            // The view measures a system from its first barline; the paper
+            // measures it from the brace. Shifting by the ink's own origin,
+            // less the margin the page keeps, puts every line on the same
+            // left edge with the same air on both sides of the paper.
+            ctx.translateBy(x: modelMargin - inkLeft, y: 0)
             ctx.setFillColor(NSColor.white.cgColor)
             ctx.fill(CGRect(x: 0, y: 0, width: modelWidth, height: modelHeight))
 
@@ -104,12 +117,6 @@ enum SheetPDF {
             if page == 0, let block {
                 drawHeader(block, pageWidth: pageWidth,
                            pageHeight: pageHeight, margin: margin)
-                // above the first system, at the left of the music; the
-                // glyph's ink rises about 20 pt above its baseline, so the
-                // baseline hangs below the system's top edge by that much less
-                // the gap an edition leaves over the staff
-                drawTempo(result.options.bpm, x: margin + 2,
-                          baselineY: pageHeight - margin - header - 13)
             }
             if pageCount > 1 {
                 drawFolio(page + 1, pageWidth: pageWidth, margin: margin)
@@ -180,23 +187,6 @@ enum SheetPDF {
                                                  y: creditY - 13),
                                      withAttributes: datesAttributes)
         }
-    }
-
-    /// The metronome mark an edition sets at the left of the music, above the
-    /// first system: the one piece of the performance's arithmetic that a score
-    /// states outright.
-    private static func drawTempo(_ bpm: Double, x: CGFloat, baselineY: CGFloat) {
-        let ink = NSColor.black
-        // U+ECA5 is the pre-composed metronome mark for a quarter note
-        let quarter = String(UnicodeScalar(0xECA5)!)
-        let mark = NSMutableAttributedString(
-            string: quarter,
-            attributes: [.font: MusicFont.font(size: 12), .foregroundColor: ink])
-        mark.append(NSAttributedString(
-            string: " = \(Int(bpm.rounded()))",
-            attributes: [.font: NSFont.systemFont(ofSize: 9.5, weight: .regular),
-                         .foregroundColor: ink]))
-        mark.draw(at: NSPoint(x: x, y: baselineY))
     }
 
     private static func drawFolio(_ number: Int, pageWidth: CGFloat, margin: CGFloat) {

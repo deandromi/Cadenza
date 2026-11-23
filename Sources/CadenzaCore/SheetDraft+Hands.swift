@@ -48,6 +48,32 @@ extension SheetDraft {
         return (top, bottom)
     }
 
+    /// Where one instant's notes divide between the hands, as an index into
+    /// the pitches sorted low to high, or nil when they are one chord.
+    ///
+    /// A performance holds many things at once: a bass note under a chord, a
+    /// melody over an accompaniment. Printed as a single chord those reach
+    /// past two octaves, hang five ledger lines off the staff and grow a stem
+    /// through both staves. An engraver reads the widest leap in the group as
+    /// the seam between the hands — a chord of a tenth has no such leap, a
+    /// fistful of bass plus chord always does.
+    public static func handSeam(_ sortedPitches: [Int]) -> Int? {
+        guard sortedPitches.count >= 2,
+              let low = sortedPitches.first, let high = sortedPitches.last,
+              high - low > 14 else { return nil }
+        var seam = 0
+        var widest = 0
+        for index in 1..<sortedPitches.count {
+            let leap = sortedPitches[index] - sortedPitches[index - 1]
+            if leap > widest {
+                widest = leap
+                seam = index
+            }
+        }
+        guard widest >= 5 else { return nil }
+        return seam
+    }
+
     /// The highest and lowest pitch overlapping the note's lifetime, with
     /// the window cut one measure past the note's start.
     static func extremesOverlap(_ notes: [RunningNote], from startIndex: Int,

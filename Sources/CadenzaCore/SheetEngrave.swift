@@ -55,7 +55,8 @@ public enum SheetEngraver {
                                pageWidth: Double,
                                pedals: [SheetDraft.PedalSpan] = [],
                                originTicks: Int? = nil,
-                               timeMap: SheetDraft.TimeMap? = nil) -> SheetDraft.Result {
+                               timeMap: SheetDraft.TimeMap? = nil,
+                               declaredFifths: Int? = nil) -> SheetDraft.Result {
         let meter = SheetDraft.Meter(options)
         let measureTicks = meter.measureTicks
 
@@ -173,16 +174,32 @@ public enum SheetEngraver {
             // onto the bass staff instead of stacking lines under the treble.
             // The limits are the third ledger below the treble staff (F3) and
             // the third above the bass staff (G4).
+            // Which staff a group of notes reads on is a register question,
+            // not a hand question: a grip's upper part can still be the left
+            // hand's chord, and printing it on the treble staff hangs three
+            // ledger lines under every bar. So each group is placed by its own
+            // centre, and a group is never torn note by note — a chord split
+            // across the staves is the look of a transcription, not of music.
             var treble: [Note] = []
             var bass: [Note] = []
-            for index in divided.top {
-                let note = cluster[index]
-                if note.pitch < 53 { bass.append(note) } else { treble.append(note) }
+            func place(_ notes: [Note]) {
+                guard !notes.isEmpty else { return }
+                // A pair of hands striking together is not one chord. When the
+                // notes a single instant holds reach past an octave and open a
+                // wide leap, the leap is the seam between the hands: printing
+                // the whole group on one staff is what hangs a bass note five
+                // ledger lines under the treble and runs a stem through both.
+                let ordered = notes.sorted { $0.pitch < $1.pitch }
+                if let seam = SheetDraft.handSeam(ordered.map(\.pitch)) {
+                    bass.append(contentsOf: ordered[..<seam])
+                    treble.append(contentsOf: ordered[seam...])
+                    return
+                }
+                let mean = Double(notes.map(\.pitch).reduce(0, +)) / Double(notes.count)
+                if mean >= 60 { treble.append(contentsOf: notes) } else { bass.append(contentsOf: notes) }
             }
-            for index in divided.bottom {
-                let note = cluster[index]
-                if note.pitch > 67 { treble.append(note) } else { bass.append(note) }
-            }
+            place(divided.top.map { cluster[$0] })
+            place(divided.bottom.map { cluster[$0] })
             if !treble.isEmpty {
                 appendColumn(&topBars[bar], at: moment, notes: treble, quantizer: quantizer)
             }
@@ -191,8 +208,9 @@ public enum SheetEngraver {
             }
         }
 
-        // 5. key: the signature that needs the fewest accidentals.
-        let fifths = SheetDraft.guessedFifths(pitches: raw.map(\.pitch))
+        // 5. key: the file's own signature when it declares one — a published
+        //    MIDI states its key, and guessing over it prints flats as sharps.
+        let fifths = declaredFifths ?? SheetDraft.guessedFifths(pitches: raw.map(\.pitch))
 
         // 6. Each staff writes its voices; then the systems.
         var groups: [SheetDraft.BeamGroup] = []
@@ -270,7 +288,7 @@ public enum SheetEngraver {
     /// proportions of an engraved edition rather than a scrolling strip. Ten
     /// made the page a wall of bars and squeezed the columns until a rest sat
     /// on a stem; a waltz breathes at seven.
-    public static let measuresPerSystem = 12
+    public static let measuresPerSystem = 10
     public static let systemsPerPage = 4
     /// How wide a system is, in staff spaces: the paper the sheet is laid
     /// out for, and the width the renderer and the PDF agree on.
@@ -417,7 +435,7 @@ public enum SheetEngraver {
             let columns = columnsOf(measure)
             guard let first = columns.first, let last = columns.last else { return 3.2 }
             let lead = first.left + 0.35
-            let trail = last.right + 0.35
+            let trail = last.right + 0.9
             if columns.count == 1 { return max(3.2, lead + trail) }
             let air = columns.dropLast().map(\.gap).reduce(0, +)
             return max(3.2, lead + air + trail)
@@ -436,7 +454,11 @@ public enum SheetEngraver {
                 // the first bar of a page opens with a clef, a key and a
                 // meter in front of its music: that framing is real width
                 let width = naturalWidth(candidate) + (candidate == 0 ? 6.8 : 0)
-                if chosen.count >= 2, naturals.reduce(0, +) + width > usable { break }
+                // A system is broken as soon as the next bar would have to be
+                // squeezed to fit. Leaving it in and compressing the air is
+                // what prints a dense page as a wall of touching noteheads;
+                // an edition gives the bar the next line instead.
+                if !chosen.isEmpty, naturals.reduce(0, +) + width > usable { break }
                 chosen.append(candidate)
                 naturals.append(width)
             }
@@ -447,8 +469,17 @@ public enum SheetEngraver {
             // it. A single bar too dense for the page is squeezed rather than
             // allowed to overflow.
             let naturalTotal = naturals.reduce(0, +)
+            // A line of bars is stretched to the margin, never compressed
+            // below its own rhythm — a squeezed system is what a page of
+            // touching heads looks like. Only a single bar too dense for the
+            // paper is allowed to give up some air, because it has no other
+            // line to go to.
+            let floor = chosen.count > 1 ? 0.9 : 0.55
+            // The ceiling is high enough that a line of quiet bars still
+            // reaches the margin: a short line that stops in the middle of the
+            // paper is the one thing no edition prints.
             let stretch = naturalTotal > 0
-                ? min(max(usable / naturalTotal, 0.98), 3.0) : 1.0
+                ? min(max(usable / naturalTotal, floor), 6.0) : 1.0
             let widths = naturals.map { $0 * stretch }
 
             var topPlaced: [SheetDraft.Placed] = []
@@ -473,12 +504,17 @@ public enum SheetEngraver {
                 let musicWidth = max(3.0, widths[offset] - inset)
                 let columns = columnMap(columnsOf(index), x: musicX,
                                         measureWidth: musicWidth)
+                // A moment both staves strike must print on one column: the
+                // two halves of a split instant are one chord to the reader,
+                // so neither staff may step aside on its own.
+                let topTicks = chordTicks(in: top, measure: index)
+                let bottomTicks = chordTicks(in: bottom, measure: index)
                 place(staff: top, measure: index, start: start, x: musicX,
                       measureWidth: musicWidth, measureTicks: measureTicks,
-                      columns: columns, into: &topPlaced)
+                      columns: columns, otherStaffTicks: bottomTicks, into: &topPlaced)
                 place(staff: bottom, measure: index, start: start, x: musicX,
                       measureWidth: musicWidth, measureTicks: measureTicks,
-                      columns: columns, into: &bottomPlaced)
+                      columns: columns, otherStaffTicks: topTicks, into: &bottomPlaced)
                 x += widths[offset]
             }
             // The pedal is drawn where it was pressed, inside the bar that
@@ -550,9 +586,20 @@ public enum SheetEngraver {
         return map
     }
 
+    /// The ticks a measure strikes a chord on, so the other staff knows which
+    /// columns it must share.
+    private static func chordTicks(in staff: Staff, measure: Int) -> Set<Int> {
+        guard measure < staff.measures.count else { return [] }
+        var ticks: Set<Int> = []
+        for index in staff.measures[measure] {
+            if case .chord(let chord) = staff.symbols[index] { ticks.insert(chord.startTicks) }
+        }
+        return ticks
+    }
+
     private static func place(staff: Staff, measure: Int, start: Int, x: Double,
                               measureWidth: Double, measureTicks: Int,
-                              columns: [Int: Double],
+                              columns: [Int: Double], otherStaffTicks: Set<Int>,
                               into placed: inout [SheetDraft.Placed]) {
         guard measure < staff.measures.count else { return }
         for index in staff.measures[measure] {
@@ -561,7 +608,17 @@ public enum SheetEngraver {
             case .chord(let chord):
                 // never let a head cross its own closing barline
                 let moment = max(0, chord.startTicks - start)
-                let px = min(columns[moment] ?? x + 1.1, x + measureWidth - 1.5)
+                var px = min(columns[moment] ?? x + 1.1, x + measureWidth - 1.9)
+                // Two voices striking at once print as two chords, never as
+                // one thicket of heads on the same column: the lower voice
+                // steps left, the way an engraver sets a second voice.
+                let shared = staff.measures[measure].contains { other in
+                    guard case .chord(let mate) = staff.symbols[other] else { return false }
+                    return mate.startTicks == chord.startTicks && mate.voice != chord.voice
+                }
+                if shared, chord.voice == 1, !otherStaffTicks.contains(chord.startTicks) {
+                    px = max(x + 0.4, px - 0.95)
+                }
                 placed.append(SheetDraft.Placed(x: px, trackIndex: index, symbol: symbol))
             case .rest(let restStart, _):
                 let wholeMeasure = staff.measures[measure].count == 1
@@ -610,10 +667,16 @@ public enum SheetEngraver {
                 // the note is the beat, and a rest drawn beside it only
                 // repeats what the note already says. The symbol stays in the
                 // rhythm, so the bar still tiles; the page omits the mark.
+                // Also covered: the other voice strikes a chord on this very
+                // moment. The bar still needs the rest for its arithmetic, but
+                // the page does not: a rest printed beside the note that
+                // already says the beat is the double image that makes a
+                // transcription look guessed.
                 let covered = staff.measures[measure].contains { index in
                     guard case .chord(let chord) = staff.symbols[index],
                           chord.voice != voice else { return false }
                     return chord.startTicks < restStart && chord.endTicks > restStart
+                        || chord.startTicks == restStart
                 }
                 if covered, !wholeMeasure { return }
                 let across = (sharesColumn && !wholeMeasure) ? (voice == 0 ? -1.55 : 1.55) : 0

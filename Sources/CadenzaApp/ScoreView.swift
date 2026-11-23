@@ -31,17 +31,47 @@ final class ScoreView: NSView {
         static let accidentalSharp: UInt32 = 0xE262
         static let accidentalNatural: UInt32 = 0xE261
         static let accidentalFlat: UInt32 = 0xE260
+        /// A metronome mark's quarter note, the SMuFL glyph editions set.
+        static let metNoteQuarterUp: UInt32 = 0xECA5
         static let pedalDownMark: UInt32 = 0xE650
         static let pedalUpMark: UInt32 = 0xE655
         static func timeSignatureDigit(_ n: Int) -> UInt32 { 0xE080 + UInt32(n) }
     }
 
     private let marginX: CGFloat = 26
+
+    /// Where the sheet's ink really starts and ends, in staff spaces from the
+    /// row's own origin: the brace overhangs the first barline, and the closing
+    /// barline is a thick stroke. A printer that framed the page on the nominal
+    /// width instead of the ink set the music against the paper's edge.
+    static let inkLeftInset: Double = 2.888 - 1.15
+    static let inkRightInset: Double = 0.9
+    /// The left edge of a system's ink, in points: the brace hangs outside the
+    /// first barline, and `marginX` is where that barline stands. A system's
+    /// staff runs from here to `inkRightX` and nowhere else, so every printed
+    /// line shares one left edge and one right edge.
+    static func inkLeftX(gap: CGFloat) -> CGFloat { 26 - 1.15 * gap }
+    static func inkRightX(rowWidth: Double, gap: CGFloat) -> CGFloat {
+        26 + CGFloat(rowWidth) * gap + CGFloat(inkRightInset) * gap
+    }
+    static func inkWidth(rowWidth: Double, gap: CGFloat) -> CGFloat {
+        inkRightX(rowWidth: rowWidth, gap: gap) - inkLeftX(gap: gap)
+    }
     /// Air above the first system: high ledger lines reach six spaces up.
     var topInset: CGFloat = 56
-    /// Rows to draw; nil draws the whole sheet. Page by page printing sets
-    /// this so a page never cuts a system in half.
-    var visibleRows: ClosedRange<Int>?
+    /// The metronome mark belongs over the first system of the piece, not to
+    /// the page furniture: a music glyph set through an attributed string in
+    /// page space scattered stray heads across the paper.
+    var showsTempoMark = false
+    /// One printed page of rows, and where its first row starts, in points
+    /// from the top of the view. The screen leaves this nil and gets the whole
+    /// scroll; a page never has to reason about page gaps or offsets itself,
+    /// which is where a printed system used to land outside its own staff.
+    struct Page: Sendable, Equatable {
+        var rows: Range<Int>
+        var top: CGFloat
+    }
+    var page: Page?
     private var result: SheetDraft.Result
     private let musicFont: CTFont
     private let fontSize: CGFloat
@@ -71,13 +101,15 @@ final class ScoreView: NSView {
         }
     }
 
-    /// Where a system starts: rows stack at one pitch, with a page gap
-    /// every rowsPerPage systems so pages read as pages.
-    private func systemTop(_ rowIndex: Int, rowHeight: CGFloat, gap: CGFloat) -> CGFloat {
+    /// Rows stack at one pitch. On the screen a page gap keeps the printed
+    /// pages apart; a printed page draws one page and needs no gap at all.
+    private func systemTop(_ rowIndex: Int, rowHeight: CGFloat) -> CGFloat {
+        guard page == nil else { return CGFloat(rowIndex) * rowHeight }
         var y = CGFloat(rowIndex) * rowHeight
         let perPage = result.rowsPerPage
         if perPage > 0 {
-            y += CGFloat(rowIndex / perPage) * CGFloat(SheetEngraver.pageBreakSpace) * gap
+            y += CGFloat(rowIndex / perPage) * CGFloat(SheetEngraver.pageBreakSpace)
+                * CGFloat(ScoreLayout.lineGap)
         }
         return y
     }
@@ -94,11 +126,17 @@ final class ScoreView: NSView {
         let staffGapPx = CGFloat(ScoreLayout.staffGap) * gap
         let rowHeight = CGFloat(result.rowHeight) * gap
 
-        let firstRow = visibleRows?.lowerBound ?? 0
-        for (rowIndex, row) in result.rows.enumerated() {
-            if let visibleRows, !visibleRows.contains(rowIndex) { continue }
-            let top = topInset + systemTop(rowIndex, rowHeight: rowHeight, gap: gap)
-                - systemTop(firstRow, rowHeight: rowHeight, gap: gap)
+        let drawnRows: [SheetDraft.Row]
+        let originY: CGFloat
+        if let page {
+            drawnRows = Array(result.rows[page.rows])
+            originY = page.top
+        } else {
+            drawnRows = result.rows
+            originY = topInset
+        }
+        for (offset, row) in drawnRows.enumerated() where offset < drawnRows.count {
+            let top = originY + systemTop(offset, rowHeight: rowHeight)
             let trebleBottom = top + 4 * gap
             let bassTop = trebleBottom + staffGapPx
             let bassBottom = bassTop + 4 * gap
@@ -107,6 +145,15 @@ final class ScoreView: NSView {
 
             func yOnTreble(_ position: Int) -> CGFloat { trebleBottom - CGFloat(position) * gap / 2 }
             func yOnBass(_ position: Int) -> CGFloat { bassBottom - CGFloat(position) * gap / 2 }
+
+            // A system owns its own box: nothing it draws may reach into the
+            // system above, below or beside it. Clipping here is what keeps a
+            // stray stem or a wide accidental from landing on another page.
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: NSRect(x: leftX - 2.4 * gap,
+                                      y: top - 7.5 * gap,
+                                      width: rightX - leftX + 4.2 * gap,
+                                      height: bassBottom - top + 15 * gap)).addClip()
 
             // staff lines
             ink.withAlphaComponent(0.9).setStroke()
@@ -162,6 +209,21 @@ final class ScoreView: NSView {
                           baselineAt: NSPoint(x: sigX, y: bassBottom - gap), font: musicFont, color: ink)
             }
 
+            // the metronome mark, over the piece's first system
+            if showsTempoMark, row.showsFraming {
+                let markSize = 2.2 * gap
+                if let info = MusicFont.info(Glyph.metNoteQuarterUp) {
+                    drawGlyph(Glyph.metNoteQuarterUp,
+                              baselineAt: NSPoint(x: leftX + 1.2 * gap,
+                                                  y: top - 4.3 * gap - CGFloat(info.centerY) * markSize),
+                              font: MusicFont.ctFont(size: markSize), color: ink)
+                }
+                drawText("= \(Int(result.options.bpm.rounded()))",
+                         at: NSPoint(x: leftX + 4.1 * gap, y: top - 6.2 * gap),
+                         font: .systemFont(ofSize: 10.5, weight: .regular),
+                         color: ink)
+            }
+
             // measure number at the row's opening barline
             drawText("\(row.firstMeasure)",
                     at: NSPoint(x: leftX + 2, y: top - 1.6 * gap),
@@ -189,8 +251,7 @@ final class ScoreView: NSView {
 
             // the sustain pedal, written where the score puts it
             drawPedals(row.bottom, bassBottom: bassBottom, rightX: rightX, gap: gap, ink: ink)
-
-
+            NSGraphicsContext.restoreGraphicsState()
         }
     }
 
@@ -238,12 +299,16 @@ final class ScoreView: NSView {
             let startEdge = fromHigh
             let endEdge = toHigh
             let lift = 1.05 * gap
-            let start = NSPoint(x: fromX, y: yOn(startEdge) - lift)
-            let end = NSPoint(x: toX, y: yOn(endEdge) - lift)
-            // A long phrase bows more than a two-note flick, the way a singer
-            // takes a longer breath.
+            // A slur leaves the edge of a head, not its centre: an arc drawn
+            // from the middle of a notehead reads as a stem through the note.
+            let start = NSPoint(x: fromX + 0.58 * gap, y: yOn(startEdge) - lift)
+            let end = NSPoint(x: toX - 0.58 * gap, y: yOn(endEdge) - lift)
+            guard end.x - start.x > 0.8 * gap else { continue }
+            // A long phrase bows a little more than a two-note flick, but a
+            // phrase mark is not a rainbow: past a space it starts to read as
+            // a second staff line.
             let length = end.x - start.x
-            let bow = (above ? -1 : 1) * gap * min(0.95, 0.45 + length / (24 * gap))
+            let bow = (above ? -1 : 1) * gap * min(0.9, 0.35 + length / (14 * gap))
             tie(from: start, to: end, bow: bow, gap: gap, ink: ink)
         }
     }
@@ -282,7 +347,10 @@ final class ScoreView: NSView {
             let stemsUp = chord.stems.first?.up ?? (note.staffPosition < 4)
             let away: CGFloat = stemsUp ? -1 : 1
             let baseline = y + away * 0.56 * gap
-            let bow: CGFloat = away * 0.34 * gap
+            // A tie over a whole bar bows deeper than one across a beat: a
+            // long tie drawn as a flat whisker reads as a staff line.
+            let span = max(0, toX - fromX)
+            let bow: CGFloat = away * gap * min(0.85, 0.3 + span / (16 * gap))
             let startX = fromX + headHalf + 0.06 * gap
             let endX = toX - headHalf - 0.06 * gap
             guard endX > startX else { continue }
@@ -443,8 +511,9 @@ final class ScoreView: NSView {
 
     private func drawChord(_ chord: SheetDraft.Chord, at x: CGFloat, yOn: (Int) -> CGFloat, gap: CGFloat, ink: NSColor) {
         // Two heads a second apart would sit on top of each other. Engraving
-        // shifts the lower one left and leaves the other under the stem, so
-        // the chord stays legible.
+        // shifts the lower one left by a whole head so both stay round; a
+        // nudge is what left a chord looking like a smudge of overlapping
+        // ovals.
         var columns = [Int](repeating: 0, count: chord.notes.count)
         let byPosition = chord.notes.indices.sorted { chord.notes[$0].staffPosition < chord.notes[$1].staffPosition }
         var previousPosition: Int?
@@ -457,17 +526,36 @@ final class ScoreView: NSView {
             previousColumn = columns[index]
             previousPosition = position
         }
+        let shift = 1.05 * gap
+        let headGlyphWidth = (MusicFont.info(Glyph.noteheadBlack).map { CGFloat($0.width) } ?? 1.18) * fontSize
+        let chordLeft = x + CGFloat(columns.min() ?? 0) * shift - headGlyphWidth / 2
+        let chordRight = x + CGFloat(columns.max() ?? 0) * shift + headGlyphWidth / 2
+
+        // Accidentals stand in columns to the left of the chord, never on top
+        // of a head: two of them a second apart would otherwise print as one
+        // smudged mark over the note it does not belong to.
+        var accidentalColumn = [Int](repeating: 0, count: chord.notes.count)
+        var accidentalColumns: [(position: Int, column: Int)] = []
+        for index in byPosition where chord.notes[index].accidental != .none {
+            let position = chord.notes[index].staffPosition
+            var column = 0
+            while accidentalColumns.contains(where: { $0.column == column && abs($0.position - position) < 3 }) {
+                column += 1
+            }
+            accidentalColumn[index] = column
+            accidentalColumns.append((position, column))
+        }
 
         // heads, their ledger lines, accidentals and dots
         for (index, note) in chord.notes.enumerated() {
-            let cx = x + CGFloat(columns[index]) * 0.62 * gap
+            let cx = x + CGFloat(columns[index]) * shift
             let cy = yOn(note.staffPosition)
             if !note.ledgers.isEmpty {
                 ink.withAlphaComponent(0.9).setStroke()
                 for position in note.ledgers {
                     let y = yOn(position)
-                    strokeLine(from: NSPoint(x: cx - 1.02 * gap, y: y),
-                               to: NSPoint(x: cx + 1.02 * gap, y: y), width: 0.85)
+                    strokeLine(from: NSPoint(x: chordLeft - 0.06 * gap, y: y),
+                               to: NSPoint(x: chordRight + 0.06 * gap, y: y), width: 0.85)
                 }
             }
             if note.accidental != .none {
@@ -479,26 +567,35 @@ final class ScoreView: NSView {
                 // centring the box drops its bowl a space below the line.
                 // The bowl is the part that must sit on the note's line.
                 let accY = note.accidental == .flat ? cy - 0.9 * gap : cy
-                inkGlyph(cp, centerX: cx - 0.85 * gap - accWidth / 2, centerY: accY, gap: gap, ink: ink)
+                let columnX = chordLeft - 0.85 * gap - CGFloat(accidentalColumn[index]) * 0.72 * gap - accWidth / 2
+                inkGlyph(cp, centerX: columnX, centerY: accY, gap: gap, ink: ink)
             }
             let headGlyph = note.head == .whole ? Glyph.noteheadWhole
                 : note.head == .half ? Glyph.noteheadHalf : Glyph.noteheadBlack
-            let headInfo = MusicFont.info(headGlyph)
-            let headWidth = (headInfo?.width ?? 1.18) * fontSize
             inkHead(headGlyph, centerX: cx, centerY: cy, gap: gap, ink: ink)
-            if note.dots > 0 {
-                // A dot is a small disc, not a glyph scaled to the head: it
-                // sits half a space off the head and a space above a line.
+        }
+
+        // Dots belong to the chord, not to one head inside it: they line up
+        // past the rightmost head and stagger only when two dots would land on
+        // each other.
+        var drawnDotYs: [CGFloat] = []
+        for (index, note) in chord.notes.enumerated() where note.dots > 0 {
+            for column in 0..<note.dots {
+                // A dot belongs to its own head: past the chord's rightmost
+                // head, a dot for a note at the bottom of a wide chord floats
+                // beside nothing at all.
                 let onLine = note.staffPosition % 2 == 0
-                let dotY = onLine ? cy - gap / 2 : cy
-                ink.setFill()
-                for dot in 0..<note.dots {
-                    let centre = NSPoint(x: cx + headWidth / 2 + 0.34 * gap + CGFloat(dot) * 0.62 * gap,
-                                         y: dotY)
-                    let radius = 0.145 * gap
-                    NSBezierPath(ovalIn: CGRect(x: centre.x - radius, y: centre.y - radius,
-                                                width: radius * 2, height: radius * 2)).fill()
+                var y = onLine ? yOn(note.staffPosition + 1) : yOn(note.staffPosition)
+                while drawnDotYs.contains(where: { abs($0 - y) < gap * 0.45 }) {
+                    y -= gap
                 }
+                drawnDotYs.append(y)
+                ink.setFill()
+                let centre = NSPoint(x: x + CGFloat(columns[index]) * shift + headGlyphWidth / 2
+                                        + 0.34 * gap + CGFloat(column) * 0.62 * gap, y: y)
+                let radius = 0.145 * gap
+                NSBezierPath(ovalIn: CGRect(x: centre.x - radius, y: centre.y - radius,
+                                            width: radius * 2, height: radius * 2)).fill()
             }
         }
 

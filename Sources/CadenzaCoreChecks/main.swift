@@ -957,6 +957,76 @@ do {
     expect(result.fifths == 0, "no notes guess the key of C")
 }
 
+declaredKey: do {
+    // A published MIDI states its key; guessing over it prints D flat major as
+    // a page of sharps and naturals. The declared signature wins.
+    var events: [NoteEvent] = []
+    for i in 0..<8 {
+        events.append(NoteEvent(pitch: [70, 72, 74, 75, 77, 70, 72, 74][i],
+                                velocity: 80,
+                                onset: Double(i) * 0.5,
+                                duration: 0.45))
+    }
+    let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
+    let guessed = SheetDraft.draft(notes: events, options: options)
+    let declared = SheetDraft.draft(notes: events, options: options, declaredFifths: -5)
+    expect(guessed.fifths != -5, "the notes alone do not spell D flat major")
+    expect(declared.fifths == -5, "a declared key signature is honoured")
+    expect(SheetLayoutFiveFlats(declared), "the key signature draws five flats")
+}
+
+do {
+    // A grip handed to the left hand still prints where it reads: a chord whose
+    // centre sits below middle C belongs on the bass staff, ledger lines and
+    // all, instead of hanging three lines under the treble.
+    let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
+    let grip = [43, 53, 57, 62].map { pitch in
+        NoteEvent(pitch: pitch, velocity: 80, onset: 0, duration: 2.0)
+    }
+    let result = SheetDraft.draft(notes: grip, options: options)
+    func pitches(_ placed: [SheetDraft.Placed]) -> [Int] {
+        placed.compactMap { item in
+            if case .chord(let chord) = item.symbol { return chord.notes.map(\.pitch) }
+            return nil
+        }.flatMap { $0 }
+    }
+    let bass = pitches(result.rows[0].bottom)
+    expect(bass.contains(62), "D4 under a low G2 prints on the bass staff, not the treble")
+    expect(!pitches(result.rows[0].top).contains(53), "F3 never floats below the treble staff")
+}
+
+do {
+    // Two hands hit one instant: a bass note under a chord reaching past two
+    // octaves is not one chord. The widest leap is the seam, and both sides
+    // then print on the staff they belong to.
+    expect(SheetDraft.handSeam([40, 60, 64, 67]) == 1,
+           "a bass note under a chord splits at the octave leap")
+    expect(SheetDraft.handSeam([60, 64, 67]) == nil,
+           "a triad has no seam")
+    expect(SheetDraft.handSeam([55, 59, 62, 65, 69]) == nil,
+           "a tenth is still one chord")
+    let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
+    let grip = [40, 60, 64, 67].map { pitch in
+        NoteEvent(pitch: pitch, velocity: 80, onset: 0, duration: 2.0)
+    }
+    let result = SheetDraft.draft(notes: grip, options: options)
+    func printed(_ placed: [SheetDraft.Placed]) -> [Int] {
+        placed.compactMap { item in
+            if case .chord(let chord) = item.symbol { return chord.notes.map(\.pitch) }
+            return nil
+        }.flatMap { $0 }
+    }
+    expect(printed(result.rows[0].bottom) == [40],
+           "the bass note of a split instant stays on the bass staff")
+    expect(printed(result.rows[0].top).sorted() == [60, 64, 67],
+           "the chord of a split instant stays on the treble staff")
+}
+
+/// The drawn key signature, read off the row the way a player reads it.
+private func SheetLayoutFiveFlats(_ result: SheetDraft.Result) -> Bool {
+    ScoreLayout.keyGlyphs(result.fifths).filter { $0.accidental == .flat }.count == 5
+}
+
 midiProgramChange: do {
     // A program change carries one data byte. Reading two desynchronises the
     // rest of the track, which silently corrupts every imported MIDI file.
