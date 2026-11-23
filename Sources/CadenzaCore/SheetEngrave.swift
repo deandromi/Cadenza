@@ -241,8 +241,8 @@ public enum SheetEngraver {
             if up > 0, up <= totalTicks { pedalMarks.append((up, false)) }
         }
         pedalMarks.sort { $0.tick < $1.tick }
-        let rows = layout(top: top, bottom: bottom, options: options, pageWidth: pageWidth,
-                          pedals: pedalMarks)
+        let rows = layout(top: top, bottom: bottom, options: options, fifths: fifths,
+                          pageWidth: pageWidth, pedals: pedalMarks)
 
         // A system never spills past the paper: if one bar is dense enough to
         // need more room than the page has, the sheet widens a little rather
@@ -297,7 +297,10 @@ public enum SheetEngraver {
     /// Two staves with air between them, then the gap that separates one
     /// system from the next.
     private static let systemHeight = 4.0 + ScoreLayout.staffGap + 4.0
-    private static let systemGap = 12.0
+    // A system carries ledger lines six spaces above the treble and a pedal
+    // line below the bass on a dense page: twelve spaces of air let the tall
+    // ones collide with the line under them.
+    private static let systemGap = 15.0
     private static let pageGap = 10.0
     private static let topSpace = 6.0
 
@@ -328,11 +331,19 @@ public enum SheetEngraver {
     }
 
     private static func layout(top: Staff, bottom: Staff, options: SheetDraft.Options,
+                               fifths: Int,
                                pageWidth: Double,
                                pedals: [(tick: Int, down: Bool)]) -> [SheetDraft.Row] {
         let measureTicks = options.measureTicks
         let count = max(top.measures.count, bottom.measures.count)
-        let framing = 9.5
+        // The room a system keeps before its first barline: clef, key and, on
+        // the opening system, the meter. Nine spaces of it was a page of dead
+        // air at the head of every line — a clef reaches three and a half
+        // spaces, so the barline follows right behind it.
+        let keyWidth = Double(ScoreLayout.keyGlyphs(fifths).count) * 0.95
+        let firstFraming = 6.6 + keyWidth
+        let laterFraming = 5.1 + keyWidth
+        let framing = max(firstFraming, laterFraming)
         let usable = max(20.0, pageWidth - framing - 3.0)
 
         /// The moments of one bar, counted from the barline rather than from
@@ -453,7 +464,7 @@ public enum SheetEngraver {
                 let candidate = measure + chosen.count
                 // the first bar of a page opens with a clef, a key and a
                 // meter in front of its music: that framing is real width
-                let width = naturalWidth(candidate) + (candidate == 0 ? 6.8 : 0)
+                let width = naturalWidth(candidate)
                 // A system is broken as soon as the next bar would have to be
                 // squeezed to fit. Leaving it in and compressing the air is
                 // what prints a dense page as a wall of touching noteheads;
@@ -499,9 +510,10 @@ public enum SheetEngraver {
                 // time signature in front of its music, so its notes start
                 // after that framing instead of under it: a pickup rest
                 // printed on top of the clef is not a pickup rest.
-                let inset: Double = (index == 0 && rows.isEmpty) ? 6.8 : 0
-                let musicX = x + inset
-                let musicWidth = max(3.0, widths[offset] - inset)
+                // The barline already stands behind the clef and the key, so
+                // the bar's first column starts right after it.
+                let musicX = x
+                let musicWidth = max(3.0, widths[offset])
                 let columns = columnMap(columnsOf(index), x: musicX,
                                         measureWidth: musicWidth)
                 // A moment both staves strike must print on one column: the

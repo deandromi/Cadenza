@@ -350,7 +350,7 @@ final class ScoreView: NSView {
             // A tie over a whole bar bows deeper than one across a beat: a
             // long tie drawn as a flat whisker reads as a staff line.
             let span = max(0, toX - fromX)
-            let bow: CGFloat = away * gap * min(0.85, 0.3 + span / (16 * gap))
+            let bow: CGFloat = away * gap * min(0.55, 0.22 + span / (26 * gap))
             let startX = fromX + headHalf + 0.06 * gap
             let endX = toX - headHalf - 0.06 * gap
             guard endX > startX else { continue }
