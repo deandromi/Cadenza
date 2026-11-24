@@ -51,6 +51,22 @@ conversion close to real time with near-perfect note capture.
   onset.
 - The CoreMIDI virtual source is live, the chord sheet updates as chords
   land, and MIDI export is verified.
+- Every session ends by itself with a `.mid` and an engraved `.pdf` in its
+  folder; the page is set by the bundled LilyPond, with tempo, meter, key,
+  beams and dynamics chosen from the performance. Settings, the session
+  archive, import, per-session export, A–B loop, play-along and statistics
+  are built; the sheet's phrase marks are not.
+
+### Next up, in order
+
+1. **Phrase marks on the page.** Slurs are the last thing standing between
+   the engraved page and a publisher's look, and they need a phrase model
+   rather than a legato rule (legato alone carries 85% of attacks).
+2. **The live staff and the printed page agree.** The endless measure in the
+   window quantises on its own; it should follow the same framing the
+   engraver used, so what a player watches become what they print.
+3. **Latency and recall.** Median latency is about 2.0 s against a target
+   under 1 s, and the remaining misses sit in the lowest bass register.
 
 ## Known bugs (user-reported, and where they stand)
 
@@ -78,37 +94,40 @@ conversion close to real time with near-perfect note capture.
   when adding any new callback: `--midi-check` reproduced the trap instantly
   when the annotation was missing.
 
-## Session panel and export (redesign agreed)
+## Session panel and export (built)
 
-- The panel's footer Export button goes away. **Export lives on each
+- The panel's footer Export button is gone. **Export lives on each
   individual session**: tapping it opens a **liquid glass popover** asking
   what to export — the **MIDI file, the audio recording, or both**.
-- **Every session is converted to MIDI automatically** when it ends; no
-  manual export is needed for the .mid to exist.
+- **Every session is converted to MIDI automatically** when it ends, and
+  engraved to PDF a moment later; no manual export is needed for the `.mid`
+  or the `.pdf` to exist.
 - **The panel expands on tap**: pressing anywhere on the session panel other
-  than the existing buttons (which become named shortcuts to functions)
-  expands the panel with a **liquid glass animation** and reveals extra
-  per-session options: **rename**, **copy the MIDI file** directly (without
-  going through an export dialog), delete, and later the sheet PDF.
+  than the existing buttons (which are named shortcuts to functions) expands
+  the panel with a **liquid glass animation** and reveals extra per-session
+  options: **rename**, **copy the MIDI file** directly (without going
+  through an export dialog), delete, and the sheet PDF.
+- **Selection**: shift-click selects a range, and rename, delete and export
+  then apply to every selected session, with duplicates numbered `-1`, `-2`.
 - **Session lifecycle**: when a new session starts, the previous one moves
   to the session history automatically — unless it is empty (no recording,
   no MIDI, no sheet), in which case it is discarded.
 
-## Sessions: import, playback tools and statistics
+## Sessions: import, playback tools and statistics (built)
 
 - **MIDI import**: open a .mid file in Cadenza — play it back through the
   virtual source, watch it on the keybed and endless measure, engrave it to
   a sheet, or use it as a play-along reference.
-- **Audio export**: the raw recording exports as .wav (and .mp3), per
-  session, from the session's export popover.
+- **Audio export**: the raw recording exports as .wav, per session, from the
+  session's export popover.
 - **A-B loop**: select a passage in a session and loop it, with tempo
-  scaling (50–75%) for slow practice.
+  scaling for slow practice.
 - **Play-along with yourself**: play along with your own recording and get
   a timing-accuracy score against it.
 - **Session statistics**: practice time, notes played per day/week, and
   accuracy per session in a simple overview.
 
-## Settings (new section, not built yet)
+## Settings (built)
 
 - **Keep recorded audio** (opt-out): when off, a session's audio recording is
   deleted immediately after the session ends and only the MIDI file is
@@ -116,20 +135,23 @@ conversion close to real time with near-perfect note capture.
 - **Session directory: ...** — a folder picker. Sessions are saved as
   `Session directory/Session N/` containing:
   - `.mid` — always, written automatically at session end
-  - `.pdf` — the engraved sheet, once sheet export lands
+  - `.pdf` — the engraved sheet, written at session end
   - `.wav` — the audio recording, unless the keep-audio preference is off
 - **Input device and channel** — which microphone or audio-interface input
-  to use, plus an **input gain** control with a test tone.
+  to use, plus an **input gain** control.
 - **Tuning reference** — A4 calibration (e.g. 442 Hz) so transcription
   follows the piano's actual pitch.
+- **Click tempo and meter**, the published MIDI port with a republish action,
+  the engraver in use, and the build's version number.
 
 ## Practice tools
 
 - **Metronome with count-in** — built: the click runs on its own engine with an
   accented downbeat, tempo and meter in Settings, and a session started while
   the click runs waits one bar before it takes its first note.
-- **Transport shortcuts** — keyboard shortcuts for the panel's named
-  functions: play/pause, stop, new session, export.
+- **Transport shortcuts** — built: Space starts and stops a session,
+  Option-Space keeps the last minute, and the same actions sit in the menu so
+  they work while a section card has focus.
 
 ## Free playing: catch it, understand it, make something of it
 
