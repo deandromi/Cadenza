@@ -115,6 +115,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 self?.screen?.setNoteCount(count)
             }
             .store(in: &cancellables)
+
+        // The level line reads the microphone, not a guess from how many
+        // keys are down: a quiet room shows a whisper, a chord the top.
+        engine.$meter
+            .receive(on: RunLoop.main)
+            .sink { [weak self] meter in
+                self?.screen?.setInputLevel(Double(meter))
+            }
+            .store(in: &cancellables)
     }
 
     private func makeContent(size: NSSize) -> NSView {

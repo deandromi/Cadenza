@@ -15,6 +15,9 @@ final class TranscriptionEngine: ObservableObject {
 
     @Published private(set) var isRunning = false
     @Published private(set) var level: Float = 0
+    /// The same measurement as the panel's level line draws it: RMS mapped
+    /// onto decibels, so a quiet room reads low and a full chord reads high.
+    @Published private(set) var meter: Float = 0
     @Published private(set) var lastError: String?
 
     /// The merged performance history, growing as windows confirm notes.
@@ -193,6 +196,7 @@ final class TranscriptionEngine: ObservableObject {
             levelTimer = Clock.every(0.5) { [weak self] in
                 guard let self else { return }
                 self.level = self.tapState.currentLevel()
+                self.meter = Self.meterLevel(of: self.level)
                 // the recording is written from here, never from the tap
                 self.tapState.drainRecording()
             }
@@ -205,6 +209,15 @@ final class TranscriptionEngine: ObservableObject {
             lastError = error.localizedDescription
             print("[engine] capture failed: \(error.localizedDescription)")
         }
+    }
+
+    /// RMS to a meter reading on a decibel curve: -60 dB is the floor and
+    /// 0 dB the top, which is the range a piano actually moves through. Raw
+    /// RMS would leave everything quieter than a forte flat against zero.
+    static func meterLevel(of rms: Float, floorDecibels: Float = -60) -> Float {
+        guard rms > 0, floorDecibels < 0 else { return 0 }
+        let decibels = 20 * log10(rms)
+        return min(1, max(0, (decibels - floorDecibels) / -floorDecibels))
     }
 
     /// The raw last `seconds` of microphone, with the content second it

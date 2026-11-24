@@ -46,6 +46,7 @@ final class PracticeScreenView: NSView {
     /// pitches sounding right now, from the engine's note events
     private var soundingPitches: Set<Int> = []
     private var noteCount = 0
+    private var inputLevel = 0.0
     /// the whisper next to the wordmark: an error, a save, a take
     private var statusText = ""
     private var sessionStart: Date?
@@ -200,6 +201,12 @@ final class PracticeScreenView: NSView {
         overlay.replaceContent(content)
     }
 
+    /// The input as the tap measured it, 0 to 1 on a decibel curve.
+    func setInputLevel(_ level: Double) {
+        inputLevel = min(1, max(0, level))
+        refresh()
+    }
+
     func setNoteCount(_ count: Int) {
         noteCount = count
         refresh()
@@ -262,10 +269,10 @@ final class PracticeScreenView: NSView {
         )
     }
 
-    /// The level reads how much of the instrument sounds: one note as a
-    /// whisper, a two-hand chord near the top.
+    /// The level the microphone hears, already mapped from decibels by the
+    /// engine: the line is the room, not a count of keys.
     private var levelTarget: Double {
-        min(1, Double(soundingPitches.count) / 8)
+        inputLevel
     }
 
     // MARK: shot diagnostics
