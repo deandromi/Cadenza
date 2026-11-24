@@ -1109,6 +1109,50 @@ pedalChecks: do {
     }
 }
 
+softPedal: do {
+    // CC67 is the soft pedal: it changes the piano's colour, not a note's
+    // length, so it is read into its own lane and never extends a note.
+    let midi = syntheticMidi(events: [
+        (0, [0xB0, 67, 100]),       // una corda down
+        (0, [0x90, 60, 80]),        // C4 on
+        (480, [0x80, 60, 0]),       // key up at 0.5 s, unpedalled length
+        (480, [0xB0, 67, 0]),       // tre corde at 1.0 s
+        (0, [0xFF, 0x2F, 0x00]),
+    ])
+    let file = try? MidiReader.read(midi)
+    expect(file != nil, "soft-pedal midi parses")
+    if let file {
+        expect(file.softPedals.count == 1, "one soft-pedal span read: \(file.softPedals)")
+        if let span = file.softPedals.first {
+            expect(abs(span.start) < 1e-9 && abs(span.end - 1.0) < 1e-9,
+                   "the soft pedal runs 0 to 1 s")
+        }
+        expect(file.sustainPedals.isEmpty, "the soft pedal is not the sustain pedal")
+        expect(abs((file.notes.first?.duration ?? 0) - 0.5) < 1e-9,
+               "the soft pedal does not lengthen a note")
+    }
+
+    // On the page it is two words, and the page still audits clean.
+    let options = SheetDraft.Options(bpm: 120, numerator: 4, denominator: 4)
+    let notes = [NoteEvent(pitch: 60, velocity: 80, onset: 0.0, duration: 1.0),
+                 NoteEvent(pitch: 64, velocity: 80, onset: 1.0, duration: 1.0),
+                 NoteEvent(pitch: 67, velocity: 80, onset: 2.0, duration: 1.0)]
+    let framing = ScoreFraming(beatsPerMinute: 120,
+                               timeSignature: TimeSignature(beatsPerMeasure: 4, beatUnit: 4),
+                               key: KeySignature(tonic: 0, isMinor: false))
+    guard let score = Engraver.engrave(notes: notes, framing: framing,
+                                       softPedals: [(start: 0.0, end: 1.5)]) else {
+        expect(false, "a score with a soft pedal engraves")
+        break softPedal
+    }
+    let text = LilyPondScore.text(score)
+    expect(text.contains("\\unaCorda"), "the page says una corda")
+    expect(text.contains("\\treCorde"), "and where the colour comes back")
+    expect(!text.contains("pedalSustainStyle"), "with no sustain line drawn for it")
+    expect(LilyPondScore.audit(score, text: text).isEmpty,
+           "a soft-pedalled page still audits clean: \(LilyPondScore.audit(score, text: text))")
+}
+
 pedalSheet: do {
     // A pedal span is drawn as the pedal: "Ped." where it goes down, the
     // release star where it lifts, a line between. What it may never do is

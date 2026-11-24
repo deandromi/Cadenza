@@ -366,9 +366,11 @@ public enum Engraver {
     public static func engrave(
         notes: [NoteEvent],
         chords: [(seconds: Double, symbol: String)] = [],
-        pedals: [(start: Double, end: Double)] = []
+        pedals: [(start: Double, end: Double)] = [],
+        softPedals: [(start: Double, end: Double)] = []
     ) -> Score? {
-        engraveApplying(notes: notes, chords: chords, framing: nil, pedals: pedals)
+        engraveApplying(notes: notes, chords: chords, framing: nil,
+                        pedals: pedals, softPedals: softPedals)
     }
 
     /// The same engraving with the framing the user chose in the choices
@@ -378,16 +380,19 @@ public enum Engraver {
         notes: [NoteEvent],
         chords: [(seconds: Double, symbol: String)] = [],
         framing chosen: ScoreFraming,
-        pedals: [(start: Double, end: Double)] = []
+        pedals: [(start: Double, end: Double)] = [],
+        softPedals: [(start: Double, end: Double)] = []
     ) -> Score? {
-        engraveApplying(notes: notes, chords: chords, framing: chosen, pedals: pedals)
+        engraveApplying(notes: notes, chords: chords, framing: chosen,
+                        pedals: pedals, softPedals: softPedals)
     }
 
     private static func engraveApplying(
         notes: [NoteEvent],
         chords: [(seconds: Double, symbol: String)],
         framing chosen: ScoreFraming?,
-        pedals given: [(start: Double, end: Double)]
+        pedals given: [(start: Double, end: Double)],
+        softPedals givenSoft: [(start: Double, end: Double)] = []
     ) -> Score? {
         // the engraver owns its grouping: inference reads onset groups, so
         // a raw note list from any source becomes grouped first
@@ -503,6 +508,10 @@ public enum Engraver {
             ? grouped.filter(\.isPedalled).map { (start: $0.keyOffset, end: $0.offset) }
             : given)
         let pedals = pedalSpans.map { ScorePedal(startTick: tick($0.start), endTick: tick($0.end)) }
+        // A soft pedal only ever comes from a file that recorded it: nothing
+        // in a microphone take says whether the una corda was down.
+        let softPedals = PedalSpans.merged(givenSoft)
+            .map { ScorePedal(startTick: tick($0.start), endTick: tick($0.end)) }
 
         let chordSymbols = chords
             .sorted { $0.0 < $1.0 }
@@ -518,7 +527,8 @@ public enum Engraver {
             ),
             measures: measures,
             chords: chordSymbols,
-            pedals: pedals
+            pedals: pedals,
+            softPedals: softPedals
         )
     }
 

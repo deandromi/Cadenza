@@ -19,6 +19,9 @@ public struct MidiFile: Sendable {
     /// already carry the pedal's effect folded into their durations; this
     /// keeps the pedal itself so the sheet can engrave real pedal lines.
     public var sustainPedals: [(start: Double, end: Double)]
+    /// Soft-pedal (una corda, CC67) spans in seconds. It changes the piano's
+    /// colour, not the note's length, so it is kept apart from the sustain.
+    public var softPedals: [(start: Double, end: Double)]
     /// The score's own name, when the file carries one (meta 0x03). A sheet
     /// without a title reads as a fragment, so the engraver prints this.
     public var title: String?
@@ -34,6 +37,7 @@ public struct MidiFile: Sendable {
         timeSignatures: [(tick: Int, signature: TimeSignature)],
         keySignatures: [(tick: Int, key: KeySignature)],
         sustainPedals: [(start: Double, end: Double)] = [],
+        softPedals: [(start: Double, end: Double)] = [],
         title: String? = nil,
         heldNotes: [NoteEvent]? = nil
     ) {
@@ -43,6 +47,7 @@ public struct MidiFile: Sendable {
         self.timeSignatures = timeSignatures
         self.keySignatures = keySignatures
         self.sustainPedals = sustainPedals
+        self.softPedals = softPedals
         self.title = title
         self.heldNotes = heldNotes ?? notes
     }
@@ -87,6 +92,8 @@ public enum MidiReader {
         var raw: [(on: Int, off: Int, pitch: Int, velocity: Int)] = []
         // sustain pedal events across all tracks: (tick, isDown)
         var pedalEvents: [(tick: Int, isDown: Bool)] = []
+        // the soft pedal's own switch, kept in its own lane
+        var softEvents: [(tick: Int, isDown: Bool)] = []
         var trackEndTick = 0
 
         for _ in 0..<trackCount {
@@ -131,6 +138,8 @@ public enum MidiReader {
                         }
                     } else if kind == 0xB0 && data1 == 64 {
                         pedalEvents.append((tick, data2 >= 64))
+                    } else if kind == 0xB0 && data1 == 67 {
+                        softEvents.append((tick, data2 >= 64))
                     }
                 case 0xFF:
                     let type = reader.u8()
@@ -226,23 +235,28 @@ public enum MidiReader {
             return seconds
         }
 
-        // sustain spans: each pedal-down opens one, its release closes it;
-        // a pedal still down at the end closes at the track end
-        var sustainPedals: [(start: Double, end: Double)] = []
-        var openPedal: Int?
-        for event in pedals {
-            if event.isDown {
-                if openPedal == nil { openPedal = event.tick }
-            } else if let start = openPedal {
-                if event.tick > start {
-                    sustainPedals.append((seconds(atTick: start), seconds(atTick: event.tick)))
+        // A pedal's spans: each press opens one, its release closes it; a
+        // pedal still down at the end closes at the track end.
+        func spans(of events: [(tick: Int, isDown: Bool)]) -> [(start: Double, end: Double)] {
+            var result: [(start: Double, end: Double)] = []
+            var open: Int?
+            for event in events.sorted(by: { $0.tick < $1.tick }) {
+                if event.isDown {
+                    if open == nil { open = event.tick }
+                } else if let start = open {
+                    if event.tick > start {
+                        result.append((seconds(atTick: start), seconds(atTick: event.tick)))
+                    }
+                    open = nil
                 }
-                openPedal = nil
             }
+            if let start = open {
+                result.append((seconds(atTick: start), seconds(atTick: trackEndTick)))
+            }
+            return result
         }
-        if let start = openPedal {
-            sustainPedals.append((seconds(atTick: start), seconds(atTick: trackEndTick)))
-        }
+        let sustainPedals = spans(of: pedals)
+        let softPedals = spans(of: softEvents)
 
         func events(_ source: [(on: Int, off: Int, pitch: Int, velocity: Int)]) -> [NoteEvent] {
             source
@@ -270,6 +284,7 @@ public enum MidiReader {
             timeSignatures: timeSignatures.sorted { $0.tick < $1.tick },
             keySignatures: keySignatures.sorted { $0.tick < $1.tick },
             sustainPedals: PedalSpans.merged(sustainPedals),
+            softPedals: PedalSpans.merged(softPedals),
             title: fileTitle,
             heldNotes: held
         )

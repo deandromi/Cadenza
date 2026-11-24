@@ -88,11 +88,12 @@ enum LilyPondEngraver {
     static func write(notes: [NoteEvent], options: SheetDraft.Options,
                       title: String, composer: String?,
                       pedals: [(start: Double, end: Double)] = [],
+                      softPedals: [(start: Double, end: Double)] = [],
                       to destination: URL) throws {
         guard let wrapper = wrapperURL else { throw EngravingError.notStaged }
         guard let score = Engraver.engrave(notes: notes,
                                            framing: framing(notes: notes, options: options),
-                                           pedals: pedals) else {
+                                           pedals: pedals, softPedals: softPedals) else {
             throw EngravingError.nothingWritten
         }
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String

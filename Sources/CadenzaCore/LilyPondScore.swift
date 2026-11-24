@@ -329,10 +329,16 @@ public enum LilyPondScore {
         let prefix = "      "
         // The pedal is a staff property, but it has to live inside a music
         // stream: the first stream carries it so one press prints one mark.
-        let marks: [(tick: Int, text: String)] = (carriesPedals ? score.pedals : []).flatMap {
+        let sustain = (carriesPedals ? score.pedals : []).flatMap {
             [(tick: $0.startTick, text: "\\sustainOn"), (tick: $0.endTick, text: "\\sustainOff")]
-        }.sorted { $0.tick < $1.tick }
-        if !marks.isEmpty {
+        }
+        // The soft pedal is colour, not length: two words, no line, and the
+        // player reads it as the colour change it is.
+        let soft = (carriesPedals ? score.softPedals : []).flatMap {
+            [(tick: $0.startTick, text: "\\unaCorda"), (tick: $0.endTick, text: "\\treCorde")]
+        }
+        let marks: [(tick: Int, text: String)] = (sustain + soft).sorted { $0.tick < $1.tick }
+        if !sustain.isEmpty {
             // mixed is the printed Ped. and its release mark, not a
             // string of text masquerading as one
             lines.append(prefix + "\\set Staff.pedalSustainStyle = #'mixed")

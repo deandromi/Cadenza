@@ -702,7 +702,8 @@ extension SmokeMain {
             let options = SheetDraft.inferredOptions(notes: notes)
             let framing = LilyPondEngraver.framing(notes: notes, options: options)
             guard let score = Engraver.engrave(notes: notes, framing: framing,
-                                               pedals: midi.sustainPedals) else {
+                                               pedals: midi.sustainPedals,
+                                               softPedals: midi.softPedals) else {
                 print("\(file.lastPathComponent): nothing to engrave")
                 continue
             }
@@ -778,7 +779,7 @@ extension SmokeMain {
                                       timeSignature: TimeSignature(beatsPerMeasure: options.numerator,
                                                                    beatUnit: options.denominator),
                                       key: Engraver.inferKey(file.heldNotes)),
-                pedals: file.sustainPedals) else {
+                pedals: file.sustainPedals, softPedals: file.softPedals) else {
                 print("lily: nothing to engrave")
                 exit(1)
             }
@@ -799,6 +800,8 @@ extension SmokeMain {
                                        title: ((path as NSString).lastPathComponent as NSString)
                                            .deletingPathExtension,
                                        composer: nil,
+                                       pedals: file.sustainPedals,
+                                       softPedals: file.softPedals,
                                        to: URL(fileURLWithPath: out))
             print(String(format: "lily: %@ in %.0f ms", out, Date().timeIntervalSince(began) * 1000))
         } catch {

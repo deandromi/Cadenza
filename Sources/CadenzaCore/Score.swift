@@ -141,13 +141,17 @@ public struct Score: Sendable, Equatable {
     public let chords: [ScoreChordSymbol]
     /// The pedals the player made, merged so one press prints one mark.
     public let pedals: [ScorePedal]
+    /// The soft pedal (una corda), which changes colour rather than length
+    /// and gets its own two marks.
+    public let softPedals: [ScorePedal]
 
     public init(framing: ScoreFraming, measures: [ScoreMeasure], chords: [ScoreChordSymbol],
-                pedals: [ScorePedal] = []) {
+                pedals: [ScorePedal] = [], softPedals: [ScorePedal] = []) {
         self.framing = framing
         self.measures = measures
         self.chords = chords
         self.pedals = pedals
+        self.softPedals = softPedals
     }
 
     /// Total ticks the score spans, measures included.
