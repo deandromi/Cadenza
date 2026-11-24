@@ -690,16 +690,19 @@ extension SmokeMain {
         var totalHeads = 0
         var totalIssues = 0
         var worstWidest = 0
-        print("take                       played  heads  bars  staves  widest  ties merged  framing          audit")
+        print("take                       played  heads  bars  staves  widest  ties merged  pedals  framing          audit")
         for file in files {
             guard let midi = try? MidiReader.read(url: file) else {
                 print("\(file.lastPathComponent): unreadable")
                 continue
             }
-            let notes = midi.notes
+            // The key's length is what the page holds; the file's pedal spans
+            // are the pedal. Both are facts of the performance, kept apart.
+            let notes = midi.heldNotes
             let options = SheetDraft.inferredOptions(notes: notes)
             let framing = LilyPondEngraver.framing(notes: notes, options: options)
-            guard let score = Engraver.engrave(notes: notes, framing: framing) else {
+            guard let score = Engraver.engrave(notes: notes, framing: framing,
+                                               pedals: midi.sustainPedals) else {
                 print("\(file.lastPathComponent): nothing to engrave")
                 continue
             }
@@ -721,10 +724,10 @@ extension SmokeMain {
             let meter = "\(score.framing.timeSignature.beatsPerMeasure)/\(score.framing.timeSignature.beatUnit)"
             let tempo = Int(score.framing.beatsPerMinute.rounded())
             let name = title
-            print(String(format: "%-24@ %7d %6d %5d %7d %7d %5d %6d  %3d bpm %-5@ %5d",
+            print(String(format: "%-24@ %7d %6d %5d %7d %7d %5d %6d %7d  %3d bpm %-5@ %5d",
                          name as NSString, notes.count, heads, score.measures.count,
                          summary.staves, summary.widestChord, summary.tiedAttacks,
-                         merged, tempo, meter as NSString, issues.count))
+                         merged, score.pedals.count, tempo, meter as NSString, issues.count))
             for issue in issues.prefix(3) {
                 print("    \(issue)")
             }
@@ -768,11 +771,12 @@ extension SmokeMain {
         // way to see what the engraver was told.
         if out.hasSuffix(".ly") {
             guard let score = Engraver.engrave(
-                notes: file.notes,
+                notes: file.heldNotes,
                 framing: ScoreFraming(beatsPerMinute: options.bpm,
                                       timeSignature: TimeSignature(beatsPerMeasure: options.numerator,
                                                                    beatUnit: options.denominator),
-                                      key: Engraver.inferKey(file.notes))) else {
+                                      key: Engraver.inferKey(file.heldNotes)),
+                pedals: file.sustainPedals) else {
                 print("lily: nothing to engrave")
                 exit(1)
             }
@@ -789,7 +793,7 @@ extension SmokeMain {
         }
         let began = Date()
         do {
-            try LilyPondEngraver.write(notes: file.notes, options: options,
+            try LilyPondEngraver.write(notes: file.heldNotes, options: options,
                                        title: ((path as NSString).lastPathComponent as NSString)
                                            .deletingPathExtension,
                                        composer: nil,

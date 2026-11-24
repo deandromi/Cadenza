@@ -324,9 +324,10 @@ public enum Engraver {
     /// Returns nil when there is nothing to engrave.
     public static func engrave(
         notes: [NoteEvent],
-        chords: [(seconds: Double, symbol: String)] = []
+        chords: [(seconds: Double, symbol: String)] = [],
+        pedals: [(start: Double, end: Double)] = []
     ) -> Score? {
-        engraveApplying(notes: notes, chords: chords, framing: nil)
+        engraveApplying(notes: notes, chords: chords, framing: nil, pedals: pedals)
     }
 
     /// The same engraving with the framing the user chose in the choices
@@ -335,15 +336,17 @@ public enum Engraver {
     public static func engrave(
         notes: [NoteEvent],
         chords: [(seconds: Double, symbol: String)] = [],
-        framing chosen: ScoreFraming
+        framing chosen: ScoreFraming,
+        pedals: [(start: Double, end: Double)] = []
     ) -> Score? {
-        engraveApplying(notes: notes, chords: chords, framing: chosen)
+        engraveApplying(notes: notes, chords: chords, framing: chosen, pedals: pedals)
     }
 
     private static func engraveApplying(
         notes: [NoteEvent],
         chords: [(seconds: Double, symbol: String)],
-        framing chosen: ScoreFraming?
+        framing chosen: ScoreFraming?,
+        pedals given: [(start: Double, end: Double)]
     ) -> Score? {
         // the engraver owns its grouping: inference reads onset groups, so
         // a raw note list from any source becomes grouped first
@@ -364,7 +367,10 @@ public enum Engraver {
             return Int((raw / Double(snap)).rounded()) * snap
         }
         func durationTicks(_ note: NoteEvent) -> Int {
-            let raw = (note.offset - note.onset) / quarterSeconds * Double(scoreTicksPerQuarter)
+            // The key's own length, not the string's: a chord struck once and
+            // pedalled for five seconds is one strike with a pedal mark, and a
+            // note that sounds long is not one the player held.
+            let raw = note.keyDuration / quarterSeconds * Double(scoreTicksPerQuarter)
             var bestTicks = snap
             var bestGap = Double.greatestFiniteMagnitude
             for candidate in Self.writableDurations {
@@ -438,6 +444,17 @@ public enum Engraver {
                 notes: (noteGroups[index] ?? []).sorted { ($0.onsetTick, $0.pitch) < ($1.onsetTick, $1.pitch) }
             )
         }
+        // The pedal the player made, in the same unshifted tick space as the
+        // notes: LilyPondScore places the marks by comparing these with each
+        // bar's own start.
+        // A file records the pedal itself; a live take only says which notes
+        // outlived their key, and the pedal is what is left when the string
+        // rings past the key.
+        let pedalSpans = PedalSpans.merged(given.isEmpty
+            ? grouped.filter(\.isPedalled).map { (start: $0.keyOffset, end: $0.offset) }
+            : given)
+        let pedals = pedalSpans.map { ScorePedal(startTick: tick($0.start), endTick: tick($0.end)) }
+
         let chordSymbols = chords
             .sorted { $0.0 < $1.0 }
             // chord ticks live in the same phase-adjusted space as the
@@ -451,7 +468,8 @@ public enum Engraver {
                 key: key
             ),
             measures: measures,
-            chords: chordSymbols
+            chords: chordSymbols,
+            pedals: pedals
         )
     }
 

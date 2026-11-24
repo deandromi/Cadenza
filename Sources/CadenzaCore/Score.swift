@@ -107,6 +107,18 @@ public struct ScoreChordSymbol: Sendable, Equatable {
     }
 }
 
+/// A sustain pedal as the score holds it: where it went down and where it
+/// came up, in ticks from the score's start.
+public struct ScorePedal: Sendable, Equatable {
+    public let startTick: Int
+    public let endTick: Int
+
+    public init(startTick: Int, endTick: Int) {
+        self.startTick = startTick
+        self.endTick = endTick
+    }
+}
+
 /// One measure of the engraved score.
 public struct ScoreMeasure: Sendable, Equatable {
     /// Zero-based sequential number; measure 1 shows the framing.
@@ -127,11 +139,15 @@ public struct Score: Sendable, Equatable {
     public let framing: ScoreFraming
     public let measures: [ScoreMeasure]
     public let chords: [ScoreChordSymbol]
+    /// The pedals the player made, merged so one press prints one mark.
+    public let pedals: [ScorePedal]
 
-    public init(framing: ScoreFraming, measures: [ScoreMeasure], chords: [ScoreChordSymbol]) {
+    public init(framing: ScoreFraming, measures: [ScoreMeasure], chords: [ScoreChordSymbol],
+                pedals: [ScorePedal] = []) {
         self.framing = framing
         self.measures = measures
         self.chords = chords
+        self.pedals = pedals
     }
 
     /// Total ticks the score spans, measures included.

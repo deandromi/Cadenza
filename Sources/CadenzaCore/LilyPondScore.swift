@@ -88,7 +88,8 @@ public enum LilyPondScore {
                 lines.append("    \\new Staff \\with { \\clef \(hand.clef) } {")
             }
             lines.append(contentsOf: staffBody(score, hand: hand, framing: framing,
-                                               bars: bars, first: index == 0))
+                                               bars: bars, first: index == 0,
+                                               carriesPedals: hand == printed.last))
             lines.append(indent + "}")
         }
         if printed.count > 1 {
@@ -217,10 +218,26 @@ public enum LilyPondScore {
     }
 
     private static func staffBody(_ score: Score, hand: Hand, framing: ScoreFraming,
-                                  bars: [Bar], first: Bool) -> [String] {
+                                  bars: [Bar], first: Bool, carriesPedals: Bool) -> [String] {
         let events = attacks(score, hand: hand)
         var lines: [String] = []
         let prefix = "      "
+        // The pedal is one voice and lives under the lowest staff. LilyPond
+        // turns these two commands into "Ped." and its release mark; the text
+        // style prints them the way an edition does, without a bracket line.
+        let marks: [(tick: Int, text: String)] = (carriesPedals ? score.pedals : []).flatMap {
+            [(tick: $0.startTick, text: "\\sustainOn"), (tick: $0.endTick, text: "\\sustainOff")]
+        }.sorted { $0.tick < $1.tick }
+        if !marks.isEmpty {
+            lines.append(prefix + "\\set Staff.pedalSustainStyle = #'text")
+        }
+        var markIndex = 0
+        func flushMarks(upTo tick: Int, into tokens: inout [String]) {
+            while markIndex < marks.count, marks[markIndex].tick <= tick {
+                tokens.append(marks[markIndex].text)
+                markIndex += 1
+            }
+        }
         let key = lilyKey(framing.key)
         let meter = "\\time \(framing.timeSignature.beatsPerMeasure)/\(framing.timeSignature.beatUnit)"
         // Every staff carries the key and the meter, the way a piano score
@@ -242,20 +259,29 @@ public enum LilyPondScore {
             let end = bar.end
             var tokens: [String] = []
             var cursor = start
+            flushMarks(upTo: start, into: &tokens)
             for event in events where event.end > start && event.onset < end {
                 let pieceStart = max(event.onset, start)
                 let pieceEnd = min(event.end, end)
                 guard pieceEnd > pieceStart else { continue }
                 if pieceStart > cursor {
+                    flushMarks(upTo: cursor, into: &tokens)
                     tokens.append(contentsOf: rests(for: pieceStart - cursor))
                 }
+                flushMarks(upTo: pieceStart, into: &tokens)
                 tokens.append(contentsOf: tone(event.pitches, ticks: pieceEnd - pieceStart,
                                                tiedOnward: event.end > pieceEnd,
                                                key: framing.key))
+                // A mark inside a note takes effect where that note ends.
+                flushMarks(upTo: pieceEnd - 1, into: &tokens)
                 cursor = pieceEnd
             }
             if cursor < end {
+                flushMarks(upTo: cursor, into: &tokens)
                 tokens.append(contentsOf: rests(for: end - cursor))
+            }
+            if bar.index == bars.last?.index {
+                flushMarks(upTo: .max, into: &tokens)
             }
             lines.append(prefix + tokens.joined(separator: " ") + " |")
         }
