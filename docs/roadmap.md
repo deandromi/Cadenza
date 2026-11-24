@@ -428,6 +428,13 @@ makes sense. What stayed is rounding: a length a sixteenth off a writable
 value becomes that value, because an engraver rounds a shade rather than
 printing a tie nobody hears.
 
+Dynamics are on the page now, taken from the mean touch of each measure:
+`pp` through `ff`, printed under the bass staff where a pianist reads them, at
+most once every three bars, and only where the level actually moves. A steady
+take prints one mark, which is what a steady take deserves. This is the first
+thing the page knows about the performance that a MIDI file cannot spell out
+any other way — phrasing is the next, and harder, half of that.
+
 The tie column in `--sheet-eval` used to count bar crossings in the model,
 which overstated the page and hid every effect of the writer. It now counts
 the tie marks the page actually prints (`LilyPondScore.printedTies`), and the

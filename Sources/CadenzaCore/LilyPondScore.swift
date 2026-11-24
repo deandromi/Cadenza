@@ -95,7 +95,8 @@ public enum LilyPondScore {
             }
             lines.append(contentsOf: staffBody(score, hand: hand, framing: framing,
                                                bars: bars, first: index == 0,
-                                               carriesPedals: hand == printed.last))
+                                               carriesPedals: hand == printed.last,
+                                               dynamics: hand == printed.last ? dynamicMarks(score) : [:]))
             lines.append(indent + "}")
         }
         if printed.count > 1 {
@@ -195,6 +196,37 @@ public enum LilyPondScore {
         }
     }
 
+    /// The steps a player's touch argues for, in velocity order.
+    private static let dynamicLadder: [(ceiling: Int, mark: String)] = [
+        (44, "\\pp"), (58, "\\p"), (72, "\\mp"), (86, "\\mf"), (102, "\\f"), (Int.max, "\\ff"),
+    ]
+
+    private static func dynamicStep(for velocity: Int) -> Int {
+        dynamicLadder.firstIndex { velocity <= $0.ceiling } ?? dynamicLadder.count - 1
+    }
+
+    /// Dynamics for the page, from the mean touch of each measure. A mark is
+    /// printed where the level moves a step, and never on two neighbouring
+    /// bars: a page says "f" where the playing got louder, not on every bar
+    /// that happened to average differently.
+    private static func dynamicMarks(_ score: Score) -> [Int: String] {
+        var marks: [Int: String] = [:]
+        var lastStep: Int?
+        var lastMarkedBar = -10
+        for measure in score.measures {
+            guard !measure.notes.isEmpty else { continue }
+            let mean = measure.notes.map(\.velocity).reduce(0, +) / measure.notes.count
+            let step = dynamicStep(for: mean)
+            if let previous = lastStep {
+                guard step != previous, measure.index - lastMarkedBar >= 3 else { continue }
+            }
+            marks[measure.startTick] = dynamicLadder[step].mark
+            lastStep = step
+            lastMarkedBar = measure.index
+        }
+        return marks
+    }
+
     /// Beam grouping per beat, in the units the meter is felt in: quarters
     /// in simple meters, dotted quarters in compound ones. LilyPond's stock
     /// exceptions beam a whole 3/4 bar at once, which reads as a run.
@@ -268,7 +300,8 @@ public enum LilyPondScore {
     }
 
     private static func staffBody(_ score: Score, hand: Hand, framing: ScoreFraming,
-                                  bars: [Bar], first: Bool, carriesPedals: Bool) -> [String] {
+                                  bars: [Bar], first: Bool, carriesPedals: Bool,
+                                  dynamics: [Int: String]) -> [String] {
         let events = attacks(score, hand: hand)
         let stream = capped(events)
         var lines: [String] = []
@@ -317,6 +350,8 @@ public enum LilyPondScore {
                 let end = bar.end
                 var tokens: [String] = []
                 var cursor = start
+                // a dynamic stands before everything that happens in its bar
+                if let mark = dynamics[bar.printedStart] { tokens.append(mark) }
                 if carriesMarks {
                     flushMarks(upTo: start, into: &tokens)
                 }

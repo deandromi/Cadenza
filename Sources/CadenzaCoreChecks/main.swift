@@ -1549,7 +1549,15 @@ lilyPondPage: do {
         for line in lines[(start + 1)...] {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed == "}" { break }
-            if !trimmed.isEmpty { body.append(trimmed) }
+            if trimmed.isEmpty { continue }
+            // a bar can open with a dynamic, which says how loud the bar is
+            // rather than what is in it; the note content is what these
+            // checks are about
+            var parts = trimmed.components(separatedBy: " ")
+            if let first = parts.first, ["\\pp", "\\p", "\\mp", "\\mf", "\\f", "\\ff"].contains(first) {
+                parts.removeFirst()
+            }
+            body.append(parts.joined(separator: " "))
         }
         return body
     }
@@ -1694,12 +1702,40 @@ lilyPondPage: do {
     // sharp in a sharp key and a D flat in a flat key.
     func spelling(_ pitch: Int, tonic: Int, minor: Bool = false) -> String {
         let page = LilyPondScore.text(score([[note(pitch, 0, 480)]], tonic: tonic, minor: minor))
-        return staff(page, clef: "treble").last ?? ""
+        let line = staff(page, clef: "treble").last ?? ""
+        // the bar starts with whatever the page commands it to, a dynamic
+        // among them; the spelling is the first token that sounds
+        return tokens(line).filter { !$0.hasPrefix("\\") }.first ?? ""
     }
     expect(spelling(61, tonic: 2).hasPrefix("cis'4"), "a sharp key spells 61 as C sharp")
     expect(spelling(61, tonic: 5).hasPrefix("des'4"), "a flat key spells the same key as D flat")
     expect(spelling(66, tonic: 10).hasPrefix("fis'4") || spelling(66, tonic: 10).hasPrefix("ges'4"),
            "a raised fourth is spelled, not dropped: \(spelling(66, tonic: 10))")
+
+    // Dynamics come from the touch: a bar played loud says so, and the page
+    // does not restate a level it is already holding.
+    func dynamics(_ text: String) -> [String] {
+        var found: [(offset: Int, mark: String)] = []
+        for mark in ["\\pp", "\\p", "\\mp", "\\mf", "\\f", "\\ff"] {
+            var cursor = text.startIndex
+            while let range = text.range(of: " " + mark + " ", range: cursor..<text.endIndex) {
+                found.append((text.distance(from: text.startIndex, to: range.lowerBound), mark))
+                cursor = range.upperBound
+            }
+        }
+        return found.sorted { $0.offset < $1.offset }.map(\.mark)
+    }
+    let steady = LilyPondScore.text(score([[note(60, 0, 480), note(62, 480, 480)]],
+                                          beats: 4, unit: 4))
+    expect(dynamics(steady) == ["\\mf"], "a steady touch prints one dynamic: \(dynamics(steady))")
+    func touched(_ velocity: Int, _ index: Int) -> ScoreNote {
+        ScoreNote(pitch: 60, onsetTick: index * 1920, durationTicks: 480, velocity: velocity)
+    }
+    let moved = LilyPondScore.text(score([[touched(40, 0)], [], [], [touched(100, 3)], [],
+                                          [], [], [touched(40, 7)]]))
+    let marks = dynamics(moved)
+    expect(marks == ["\\pp", "\\f", "\\pp"],
+           "quiet, loud and the return are each marked once: \(marks)")
 
     // The key names the circle of fifths knows, and a minor key is its own.
     func keyLine(_ tonic: Int, minor: Bool) -> String {
