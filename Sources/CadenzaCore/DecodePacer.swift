@@ -26,6 +26,11 @@ public struct DecodePacer: Sendable {
     /// The step to cut the next window at.
     public private(set) var step: Double
     private var measurements = 0
+    /// The last few decode times. One slow decode is a hiccup — a thermal
+    /// clamp, a compile, another app taking the GPU — and reading the pace
+    /// from it would stretch the next minute of windows for no reason. The
+    /// median of eight keeps the pace on the machine's real speed.
+    private var recentWalls: [Double] = []
 
     public init(floorStep: Double, ceilingStep: Double) {
         self.floorStep = floorStep
@@ -40,8 +45,13 @@ public struct DecodePacer: Sendable {
     public mutating func record(wall: Double, backlog: Double, decoders: Int) -> Double {
         measurements += 1
         let parallel = Double(max(1, decoders))
-        // what the machine can sustain, whatever the pacer guessed so far
-        let sustainable = min(ceilingStep, max(floorStep, wall / parallel * floorMargin))
+        recentWalls.append(wall)
+        if recentWalls.count > 8 { recentWalls.removeFirst() }
+        let sorted = recentWalls.sorted()
+        let typical = sorted[sorted.count / 2]
+        // what the machine can sustain, whatever the pacer guessed so far,
+        // read from the typical decode rather than the last one
+        let sustainable = min(ceilingStep, max(floorStep, typical / parallel * floorMargin))
 
         var next = step
         if backlog > strainedBacklog {

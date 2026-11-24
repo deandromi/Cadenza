@@ -246,6 +246,16 @@ extension SmokeMain {
           }
         }
 
+        // what one window costs on this machine, for the latency budget: a
+        // note waits for the step that carries it plus its window's decode
+        let walls = schedule.map(\.decodeWall).sorted()
+        if !walls.isEmpty {
+            let median = walls[walls.count / 2]
+            let p90 = walls[Int(Double(walls.count - 1) * 0.9)]
+            print(String(format: "decode wall: median %.2f s, p90 %.2f s over %d windows (step floor %.2f s)",
+                         median, p90, walls.count, plan.streamingStep))
+        }
+
         // the two-decoder queue: each window takes the earlier-free decoder
         var slotFree = [0.0, 0.0]
         var struckLatencies: [Double] = []

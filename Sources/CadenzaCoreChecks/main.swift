@@ -1382,6 +1382,16 @@ do {
      _ = single.record(wall: 3.0, backlog: 2.0, decoders: 1)
     expect(single.step >= 3.0 * 1.15 - 1e-9, "one decoder lifts the pace further, got \(single.step)")
 
+    // one stalled decode is a hiccup, not a new machine: the pace reads the
+    // median of the recent decodes, so a single 8 s stall does not stretch
+    // every window after it
+    var hiccup = cheap()
+    for _ in 0..<8 { _ = hiccup.record(wall: 0.5, backlog: 0.2, decoders: 2) }
+    let settled = hiccup.step
+    step = hiccup.record(wall: 8.0, backlog: 1.0, decoders: 2)
+    expect(step <= settled + 1e-9,
+           "one stalled decode does not stretch the pace: settled \(settled), after \(step)")
+
     // an idle pipeline buys resolution back, but never past its floor
     var idle = DecodePacer(floorStep: 0.5, ceilingStep: 4.0)
     for _ in 0..<80 { _ = idle.record(wall: 0.2, backlog: 0.05, decoders: 2) }
