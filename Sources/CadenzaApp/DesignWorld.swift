@@ -56,13 +56,6 @@ enum PaperTheme {
     }
 }
 
-/// The keybed and the blooms share one piano range: A0 through C8, the
-/// full instrument the model hears.
-enum PianoRange {
-    static let firstPitch = 21
-    static let lastPitch = 108
-}
-
 /// A line field with the paper world's defaults.
 @MainActor
 func makeInkLabel(_ text: String, font: NSFont, color: NSColor) -> NSTextField {

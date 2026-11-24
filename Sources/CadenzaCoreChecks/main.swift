@@ -2003,6 +2003,48 @@ phrasingModel: do {
            "an unclosed slur is caught by the audit")
 }
 
+// MARK: the piano's own keys
+
+// The keybed lights a key by pitch, so the mapping from pitch to ivory is the
+// one fact a wrong key can hide in. F sharp is not a white key, and F is not
+// a black one: this is the bug that lit the wrong keys under the finger.
+do {
+    let ivoryClasses = (60...71).filter { PianoKeyboard.isIvory($0) }.map { $0 % 12 }
+    expect(ivoryClasses == [0, 2, 4, 5, 7, 9, 11],
+           "the ivory keys are C D E F G A B: \(ivoryClasses)")
+    expect(PianoKeyboard.isIvory(65) && !PianoKeyboard.isIvory(66),
+           "F is ivory and F sharp is ebony")
+    expect(PianoKeyboard.isIvory(21) && PianoKeyboard.isIvory(24) && PianoKeyboard.isIvory(108),
+           "the range opens on A0 and closes on C8, both ivory")
+    expect(PianoKeyboard.ivoryCount == 52,
+           "eighty-eight keys hold fifty-two ivory ones: \(PianoKeyboard.ivoryCount)")
+    expect(PianoKeyboard.ivoryIndex(of: 21) == 0 && PianoKeyboard.ivoryIndex(of: 108) == 51,
+           "the ivory keys number 0 at A0 through 51 at C8")
+    expect(PianoKeyboard.ivoryIndex(of: 66) == nil && PianoKeyboard.ivoryIndex(of: 61) == nil,
+           "an ebony key has no column of its own")
+
+    // Every column from A0 to C8 is used exactly once, in playing order, and
+    // every ebony key leans on the ivory key just below it.
+    let columns = (PianoKeyboard.firstPitch...PianoKeyboard.lastPitch)
+        .compactMap { PianoKeyboard.ivoryIndex(of: $0) }
+    expect(columns == Array(0..<52),
+           "the ivory columns run 0 to 51 in order, once each: \(columns.count) columns")
+    let leaning = (PianoKeyboard.firstPitch...PianoKeyboard.lastPitch)
+        .filter { !PianoKeyboard.isIvory($0) }
+    expect(leaning.allSatisfy { PianoKeyboard.isIvory(PianoKeyboard.ivoryBelow($0))
+                                && PianoKeyboard.ivoryBelow($0) == $0 - 1 },
+           "every ebony key leans on the ivory key immediately below it")
+    // An ebony key leans on the ivory key just below it, not the one above:
+    // F sharp leans on F and not on E, which is the seam a counter that ran
+    // on F as a black key used to get wrong.
+    expect(PianoKeyboard.ivoryBelow(66) == 65
+           && PianoKeyboard.ivoryBelow(61) == 60
+           && PianoKeyboard.ivoryBelow(63) == 62,
+           "F sharp leans on F, C sharp on C and D sharp on D")
+    expect(PianoKeyboard.ivoryIndex(of: 60) == 23 && PianoKeyboard.ivoryIndex(of: 65) == 26,
+           "C4 is ivory column 23 and F4 is column 26")
+}
+
 if failures == 0 {
     print("all \(checks) checks passed")
 } else {

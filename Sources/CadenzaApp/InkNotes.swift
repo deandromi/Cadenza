@@ -356,16 +356,16 @@ final class NoteBloomView: NSView {
     /// Pitch mirrored across the field the way the keybed lays it out, using
     /// nearly the full width, each strike slightly reseeded.
     private static func glyphX(_ pitch: Int, serial: Int, in width: CGFloat) -> CGFloat {
-        let fraction = Double(pitch - PianoRange.firstPitch)
-            / Double(PianoRange.lastPitch - PianoRange.firstPitch)
+        let fraction = Double(pitch - PianoKeyboard.firstPitch)
+            / Double(PianoKeyboard.lastPitch - PianoKeyboard.firstPitch)
         let jitter = Double((pitch * 53 + serial * 97) % 33 - 16)
         return CGFloat(Double(width) * (0.09 + 0.78 * fraction) + jitter)
     }
 
     /// Notation logic: high pitches bloom high, low pitches near the keys.
     private static func glyphY(_ pitch: Int, in height: CGFloat) -> CGFloat {
-        let fraction = Double(pitch - PianoRange.firstPitch)
-            / Double(PianoRange.lastPitch - PianoRange.firstPitch)
+        let fraction = Double(pitch - PianoKeyboard.firstPitch)
+            / Double(PianoKeyboard.lastPitch - PianoKeyboard.firstPitch)
         return CGFloat(Double(height) * (0.10 + 0.42 * fraction))
     }
 

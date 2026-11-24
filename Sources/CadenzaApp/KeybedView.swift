@@ -12,11 +12,8 @@ import CadenzaCore
 /// rebuild ninety-odd bezier paths and gradients, which is a lot of ink for
 /// a single key turning carmine.
 final class KeybedView: NSView {
-    private static let naturals = 52
     /// the seam of dark bed showing between ivory blocks
     private static let seam: CGFloat = 0.8
-    /// natural pitch classes C D E F G A B, as a bit pattern by pitch class
-    private static let naturalMask: UInt16 = 0x0AD5
 
     /// the dark bed the keys sit in; it shows through every seam
     private static let keybed = NSColor(name: "cadenzaKeybed") { appearance in
@@ -184,7 +181,7 @@ final class KeybedView: NSView {
         ), let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
         rep.size = size
 
-        bedFaces = keyFaces(width: bounds.width / CGFloat(Self.naturals))
+        bedFaces = keyFaces()
         let faces = bedFaces
         let height = bounds.height
 
@@ -208,19 +205,21 @@ final class KeybedView: NSView {
     }
 
     /// Every key of the range, in playing order, with the geometry its paint
-    /// and its lit state both use.
-    private func keyFaces(width: CGFloat) -> [KeyFace] {
+    /// and its lit state both use. Where a key sits is the piano's own
+    /// arithmetic (`PianoKeyboard`), not a counter kept here: F is ivory and
+    /// F sharp is ebony because the instrument says so.
+    private func keyFaces() -> [KeyFace] {
+        let width = bounds.width / CGFloat(PianoKeyboard.ivoryCount)
         let accidentalWidth = width * 0.55
         let accidentalHeight = bounds.height * 0.62
         var faces: [KeyFace] = []
         faces.reserveCapacity(88)
-        var naturalsPassed = 0
-        for pitch in PianoRange.firstPitch...PianoRange.lastPitch {
-            if Self.isNatural(pitch) {
+        for pitch in PianoKeyboard.firstPitch...PianoKeyboard.lastPitch {
+            if let column = PianoKeyboard.ivoryIndex(of: pitch) {
                 faces.append(KeyFace(
                     pitch: pitch,
                     rect: NSRect(
-                        x: CGFloat(naturalsPassed) * width + Self.seam,
+                        x: CGFloat(column) * width + Self.seam,
                         y: 0,
                         width: width - Self.seam * 2,
                         height: bounds.height
@@ -228,11 +227,12 @@ final class KeybedView: NSView {
                     radius: 2.5,
                     isSharp: false
                 ))
-                naturalsPassed += 1
             } else {
-                // the sharp leans the way a real action does, never dead-center
+                // the ebony key sits across the seam of the ivory key below
+                // it, leaning the way a real action does, never dead-center
+                let column = PianoKeyboard.ivoryIndex(of: PianoKeyboard.ivoryBelow(pitch)) ?? 0
                 let drift = Self.accidentalOffsets[pitch % 12] ?? 0
-                let center = CGFloat(naturalsPassed) * width + drift * width
+                let center = CGFloat(column + 1) * width + drift * width
                 faces.append(KeyFace(
                     pitch: pitch,
                     rect: NSRect(
@@ -320,7 +320,12 @@ final class KeybedView: NSView {
 
     private func drawSoundingKeys() {
         guard !glow.isEmpty, !bedFaces.isEmpty else { return }
-        for face in bedFaces {
+        // the ivory keys first, the ebony ones over them: a lit white key must
+        // not paint across the black key that sits on its seam
+        let sounding = bedFaces
+            .filter { (glow[$0.pitch] ?? 0) > 0.001 }
+            .sorted { ($0.isSharp ? 1 : 0, $0.pitch) < ($1.isSharp ? 1 : 0, $1.pitch) }
+        for face in sounding {
             guard let intensity = glow[face.pitch], intensity > 0.001 else { continue }
             let key = keyFront(face.rect, radius: face.radius)
             // carmine sits nearly solid on ebony and as a wash on ivory, and
@@ -370,7 +375,4 @@ final class KeybedView: NSView {
         return path
     }
 
-    private static func isNatural(_ pitch: Int) -> Bool {
-        naturalMask & (1 << UInt16(pitch % 12)) != 0
-    }
 }

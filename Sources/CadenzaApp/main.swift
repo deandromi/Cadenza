@@ -122,6 +122,10 @@ if CommandLine.arguments.contains("--ui-timings") {
     UITimings.run()
     exit(0)
 }
+if CommandLine.arguments.contains("--keybed-shot") {
+    SmokeMain.runKeybedShot()
+    exit(0)
+}
 if CommandLine.arguments.contains("--strip-shot") {
     SmokeMain.runStripShot()
     exit(0)

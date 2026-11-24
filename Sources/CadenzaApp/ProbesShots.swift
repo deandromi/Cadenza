@@ -150,6 +150,54 @@ extension SmokeMain {
         }
     }
 
+    /// Renders the keybed alone, lighting chosen pitches, so the key under a
+    /// note can be checked against the instrument: --keybed-shot. Three
+    /// frames - F alone, F sharp alone, then the chromatic run from C4 - make
+    /// an ivory key lit as ivory and an ebony key lit as ebony, which is
+    /// exactly what a wrong pitch-to-key map gets backwards.
+    static func runKeybedShot() {
+        MainActor.assumeIsolated {
+            NSApplication.shared.appearance = NSAppearance(named: .aqua)
+            keybedFrame("f", lighting: [65])
+            keybedFrame("fsharp", lighting: [66])
+            keybedFrame("chromatic", lighting: Array(60...71))
+        }
+    }
+
+    /// One keybed frame at a time, drawn through the same cached bed the
+    /// running screen blits.
+    @MainActor
+    private static func keybedFrame(_ name: String, lighting pitches: [Int]) {
+        let size = NSSize(width: 1080, height: 132)
+        let bed = KeybedView()
+        bed.frame = NSRect(origin: .zero, size: size)
+        for pitch in pitches { bed.press(pitch: pitch, velocity: 110) }
+        // let the felt settle: the glow has to reach its ceiling
+        RunLoop.main.run(until: Date().addingTimeInterval(0.45))
+        bed.layoutSubtreeIfNeeded()
+        let scale: CGFloat = 2
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        rep.size = size
+        bed.cacheDisplay(in: NSRect(origin: .zero, size: size), to: rep)
+        if let cg = rep.cgImage,
+           let dest = CGImageDestinationCreateWithURL(
+            URL(fileURLWithPath: "/tmp/keybed_\(name).png") as CFURL,
+            UTType.png.identifier as CFString, 1, nil) {
+            CGImageDestinationAddImage(dest, cg, nil)
+            CGImageDestinationFinalize(dest)
+        }
+        let columns = pitches.map { pitch -> String in
+            let kind = PianoKeyboard.isIvory(pitch) ? "ivory" : "ebony"
+            let column = PianoKeyboard.ivoryIndex(of: pitch).map(String.init) ?? "seam"
+            return "\(pitch)=\(kind)@\(column)"
+        }
+        print("keybed-shot: \(name) \(columns.joined(separator: " "))")
+    }
+
     static func runScreenShot() {
         MainActor.assumeIsolated {
             NSApplication.shared.appearance = NSAppearance(named: .aqua)
@@ -175,6 +223,9 @@ extension SmokeMain {
             }
             screen.noteReleased(NoteEvent(pitch: 66, velocity: 80, onset: 0, duration: 0.5))
             screen.syncTransport()
+            // the keys light over a felt's attack, so let it land before the
+            // frame is taken - otherwise the shot shows a silent bed
+            RunLoop.main.run(until: Date().addingTimeInterval(0.45))
 
             let scale: CGFloat = 2
             screen.layoutSubtreeIfNeeded()
