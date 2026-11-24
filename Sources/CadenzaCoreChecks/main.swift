@@ -123,7 +123,11 @@ expect(melDiff < 5e-3, "mel front end matches gold (tol 5e-3)")
 // CoreML inference from Swift
 let mlpackage = URL(fileURLWithPath: "Models/TranskunBackbone.mlpackage")
 do {
+    // CoreML writes a fresh TranskunBackbone_<uuid>.mlmodelc into the system
+    // temp folder and nothing removes it; a checks run is not an exception, and
+    // a few hundred runs filled the disk once already.
     let compiled = try! MLModel.compileModel(at: mlpackage)
+    defer { try? FileManager.default.removeItem(at: compiled) }
     let config = MLModelConfiguration()
     config.computeUnits = .cpuOnly
     let model = try! MLModel(contentsOf: compiled, configuration: config)
