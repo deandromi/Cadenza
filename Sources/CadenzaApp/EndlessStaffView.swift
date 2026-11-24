@@ -21,6 +21,7 @@ final class EndlessStaffView: NSView {
         static let accidentalSharp: UInt32 = 0xE262
         static let accidentalFlat: UInt32 = 0xE260
         static let accidentalNatural: UInt32 = 0xE261
+        static let timeSigZero: UInt32 = 0xE080
     }
 
     private struct StripNote {
@@ -29,6 +30,8 @@ final class EndlessStaffView: NSView {
         let bornAt: Double
         /// wall-clock seconds when the key released, nil while sounding
         var releasedAt: Double?
+        /// this note is the first of its measure, so a barline stands on it
+        let opensMeasure: Bool
     }
 
     /// staff line gap, the vertical unit of the whole strip
@@ -39,6 +42,21 @@ final class EndlessStaffView: NSView {
     private let rightMargin: CGFloat = 46
 
     private var notes: [StripNote] = []
+    /// The framing the printed page will use: the same tempo, meter and key
+    /// the engraver chose. The strip draws its barlines and key signature
+    /// from it, so the running staff and the page a player prints agree.
+    var framing: ScoreFraming? {
+        didSet {
+            firstOnset = nil
+            lastMeasure = nil
+            needsDisplay = true
+        }
+    }
+    /// The performance time of the first note of this session, which is the
+    /// zero the measures are counted from.
+    private var firstOnset: Double?
+    /// The measure the strip has already opened a barline for.
+    private var lastMeasure: Int?
     private var displayTimer: Timer?
     /// the lens hovers: the playhead warms up
     var nowLineHighlighted: Bool = false {
@@ -71,17 +89,44 @@ final class EndlessStaffView: NSView {
     // MARK: the pipeline feeds the strip
 
     /// A note was confirmed: it engraved itself at the now line.
-    func noteStruck(pitch: Int) {
-        noteStruck(pitch: pitch, age: 0)
+    func noteStruck(pitch: Int, onset: Double) {
+        noteStruck(pitch: pitch, onset: onset, age: 0)
     }
 
     /// The same strike, placed `age` seconds back in the strip's past -
     /// the shape a note has some time after the pipeline confirmed it.
-    func noteStruck(pitch: Int, age: Double) {
+    func noteStruck(pitch: Int, onset: Double = 0, age: Double) {
         guard (21...108).contains(pitch) else { return }
-        notes.append(StripNote(pitch: pitch, bornAt: CACurrentMediaTime() - age, releasedAt: nil))
+        notes.append(StripNote(pitch: pitch, bornAt: CACurrentMediaTime() - age,
+                               releasedAt: nil, opensMeasure: opensMeasure(at: onset)))
         startClock()
         needsDisplay = true
+    }
+
+    /// Whether a strike is the first of a measure. Measures are counted in
+    /// performance time from the first note of the session, at the tempo and
+    /// meter the framing names: the same arithmetic the page is cut by.
+    private func opensMeasure(at onset: Double) -> Bool {
+        let secondsPerBar = measureSeconds
+        guard secondsPerBar > 0, onset.isFinite else { return false }
+        guard let origin = firstOnset else {
+            firstOnset = onset
+            lastMeasure = 0
+            return true
+        }
+        let measure = Int(floor((onset - origin) / secondsPerBar))
+        // notes of one chord may report in any order: only a later measure
+        // opens, so a bass note arriving after its treble does not open one
+        guard measure > (lastMeasure ?? 0) else { return false }
+        lastMeasure = measure
+        return true
+    }
+
+    private var measureSeconds: Double {
+        guard let framing, framing.beatsPerMinute > 0 else { return 0 }
+        let beats = Double(framing.timeSignature.beatsPerMeasure)
+            * 4.0 / Double(framing.timeSignature.beatUnit)
+        return beats * 60.0 / framing.beatsPerMinute
     }
 
     /// The key rose: the note's ink settles into its released shade.
@@ -92,6 +137,12 @@ final class EndlessStaffView: NSView {
             break
         }
         needsDisplay = true
+    }
+
+    /// A new take begins: measures are counted from its first note again.
+    func startTimeline() {
+        firstOnset = nil
+        lastMeasure = nil
     }
 
     /// The session ends: the strip becomes blank paper again.
@@ -160,6 +211,39 @@ final class EndlessStaffView: NSView {
         drawGlyph(Glyph.gClef, baselineAt: NSPoint(x: clefX, y: yOnTreble(2)), font: musicFont, color: ink.clef)
         drawGlyph(Glyph.fClef, baselineAt: NSPoint(x: clefX, y: yOnBass(6)), font: musicFont, color: ink.clef)
 
+        // the key and the meter the printed page will carry, in the same
+        // order and at the same place every edition puts them
+        var runningX = clefX + 2.6 * gap
+        if let key = framing?.key, key.fifths != 0 {
+            let glyph = key.fifths > 0 ? Glyph.accidentalSharp : Glyph.accidentalFlat
+            let places = key.fifths > 0
+                ? (0..<min(abs(key.fifths), 7)).map { Self.sharpPlaces[$0] }
+                : (0..<min(abs(key.fifths), 7)).map { Self.flatPlaces[$0] }
+            for place in places {
+                drawGlyph(glyph, baselineAt: NSPoint(x: runningX, y: yOnTreble(place)),
+                          font: musicFont, color: ink.clef)
+                drawGlyph(glyph, baselineAt: NSPoint(x: runningX, y: yOnBass(place - 2)),
+                          font: musicFont, color: ink.clef)
+                runningX += metrics.sharpWidth * 0.82
+            }
+            runningX += 0.7 * gap
+        }
+        if let signature = framing?.timeSignature {
+            // digits stacked on either side of the middle staff line
+            let top = signature.beatsPerMeasure <= 9 ? [signature.beatsPerMeasure] : [1, signature.beatsPerMeasure % 10]
+            let bottom = signature.beatUnit <= 9 ? [signature.beatUnit] : [1, signature.beatUnit % 10]
+            func digits(_ values: [Int], baselinesAt center: CGFloat) {
+                var x = runningX
+                for value in values {
+                    drawGlyph(Glyph.timeSigZero + UInt32(max(0, min(9, value))),
+                              baselineAt: NSPoint(x: x, y: center), font: musicFont, color: ink.clef)
+                    x += gap * 1.1
+                }
+            }
+            digits(top, baselinesAt: yOnTreble(5))
+            digits(bottom, baselinesAt: yOnTreble(1))
+        }
+
         // the now line: where the pipeline's freshest word lands. Resting
         // warm under the pointer, stamp while pressed - the lens breathes
         let nowLine = pressed ? ink.nowStamp : nowLineHighlighted ? ink.nowWarm : ink.nowCalm
@@ -176,11 +260,28 @@ final class EndlessStaffView: NSView {
         let soundingStems = NSBezierPath()
         let releasedStems = NSBezierPath()
 
+        // Notation is clipped where the clef and the signature stand: a note
+        // scrolling out of the music disappears under the signpost rather
+        // than printing on top of it.
+        let leftInset: CGFloat = 108
+        let barlines = NSBezierPath()
         let horizon = now - Double(bounds.width + 80) / Double(pixelsPerSecond)
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: NSRect(x: leftInset, y: 0,
+                                  width: max(0, bounds.width - leftInset),
+                                  height: bounds.height)).addClip()
         for note in notes where note.bornAt >= horizon {
             let age = CGFloat(now - note.bornAt)
             let x = nowPoint - age * pixelsPerSecond
             let sounding = note.releasedAt == nil
+
+            // the measure opens on this note: one hairline through both
+            // staves, drawn where the music actually divides rather than on
+            // a wall clock the pipeline's latency would slide against
+            if note.opensMeasure, x > 0, x < bounds.width {
+                barlines.move(to: NSPoint(x: x, y: top))
+                barlines.line(to: NSPoint(x: x, y: bassBottom))
+            }
 
             let treble = ScoreLayout.isTreble(note.pitch)
             let position = treble ? ScoreLayout.treblePosition(note.pitch) : ScoreLayout.bassPosition(note.pitch)
@@ -218,6 +319,11 @@ final class EndlessStaffView: NSView {
             stem.line(to: NSPoint(x: stemX, y: endpoint))
         }
 
+        if !barlines.isEmpty {
+            ink.line.setStroke()
+            barlines.lineWidth = 0.7
+            barlines.stroke()
+        }
         if !ledgers.isEmpty {
             ink.line.setStroke()
             ledgers.lineWidth = 0.8
@@ -234,7 +340,14 @@ final class EndlessStaffView: NSView {
             releasedStems.lineWidth = stemWidth
             releasedStems.stroke()
         }
+        NSGraphicsContext.restoreGraphicsState()
     }
+
+    /// Where the key signature's marks sit on the treble staff, from the
+    /// bottom line up: F, C, G, D, A, E, B. The bass staff reads two places
+    /// lower, which is why one table serves both.
+    private static let sharpPlaces = [8, 5, 9, 6, 3, 7, 4]
+    private static let flatPlaces = [4, 7, 3, 6, 2, 5, 1]
 
     /// Ink shades and glyph metrics, resolved once: the strip redraws thirty
     /// times a second and used to rebuild both on every frame.
@@ -289,7 +402,7 @@ final class EndlessStaffView: NSView {
     /// The accidental a black key needs, and how far in front of the head it
     /// sits. Natural pitches carry none.
     private func accidental(for pitch: Int) -> (UInt32, CGFloat)? {
-        switch ScoreLayout.accidental(for: pitch, fifths: 0) {
+        switch ScoreLayout.accidental(for: pitch, fifths: framing?.key.fifths ?? 0) {
         case .sharp: return (Glyph.accidentalSharp, metrics.sharpWidth)
         case .flat: return (Glyph.accidentalFlat, metrics.flatWidth)
         case .natural: return (Glyph.accidentalNatural, metrics.naturalWidth)

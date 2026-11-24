@@ -41,11 +41,34 @@ extension SmokeMain {
             let strip = EndlessStaffView()
             let size = NSSize(width: 900, height: 240)
             strip.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
-            // a chord, a melody, an accidental and a ledger test, oldest first
-            for (pitch, age) in [(48, 8.6), (55, 8.5), (72, 6.4), (76, 6.3),
-                                 (61, 4.4), (66, 4.3), (70, 2.2), (84, 0.9),
-                                 (93, 0.9), (30, 0.4)] {
-                strip.noteStruck(pitch: pitch, age: age)
+            // The same framing the page would be cut by: a waltz in D major,
+            // so the strip's key, meter and barlines have something to say.
+            strip.framing = ScoreFraming(
+                beatsPerMinute: 96,
+                timeSignature: TimeSignature(beatsPerMeasure: 3, beatUnit: 4),
+                key: KeySignature(tonic: 2, isMinor: false))
+            // four bars of a waltz: a bass note and a chord on each beat,
+            // oldest first, with the accidental and ledger tests among them
+            let bar = 3 * 60.0 / 96
+            let onsets: [(Double, [Int])] = [
+                (0 * bar + 0.00, [50, 66, 69, 74]),
+                (0 * bar + 0.62, [69, 73, 78]),
+                (0 * bar + 1.25, [66, 69, 74]),
+                (1 * bar + 0.00, [43, 62, 67, 71]),
+                (1 * bar + 0.62, [67, 70, 74]),
+                (1 * bar + 1.25, [62, 65, 70]),
+                (2 * bar + 0.00, [45, 61, 64, 69]),
+                (2 * bar + 0.62, [64, 68, 73]),
+                (2 * bar + 1.25, [61, 64, 69]),
+                (3 * bar + 0.00, [50, 62, 66, 69]),
+                (3 * bar + 0.62, [30, 66, 69, 74]),
+                (3 * bar + 1.25, [93, 66, 71, 74]),
+            ]
+            let latest = onsets.map(\.0).max() ?? 0
+            for (onset, pitches) in onsets {
+                for pitch in pitches {
+                    strip.noteStruck(pitch: pitch, onset: onset, age: latest - onset)
+                }
             }
             // flush the timer: draw one frame now
             let scale: CGFloat = 2

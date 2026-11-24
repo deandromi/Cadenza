@@ -118,6 +118,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
         // The level line reads the microphone, not a guess from how many
         // keys are down: a quiet room shows a whisper, a chord the top.
+        // The strip draws the measures the printed page will have. The
+        // framing is inferred the same way the engraver infers it, at a
+        // reading pace rather than on every window: the numbers settle
+        // within the first bars of a take.
+        engine.$notes
+            .throttle(for: .seconds(2), scheduler: RunLoop.main, latest: true)
+            .sink { [weak self] notes in
+                guard notes.count >= 8 else { return }
+                let options = SheetDraft.inferredOptions(notes: notes)
+                let framing = LilyPondEngraver.framing(notes: notes, options: options)
+                self?.screen?.setSheetFraming(framing)
+            }
+            .store(in: &cancellables)
+
         engine.$meter
             .receive(on: RunLoop.main)
             .sink { [weak self] meter in

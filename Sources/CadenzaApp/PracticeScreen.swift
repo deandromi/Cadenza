@@ -165,7 +165,7 @@ final class PracticeScreenView: NSView {
     func noteStruck(_ event: NoteEvent) {
         soundingPitches.insert(event.pitch)
         keybed.press(pitch: event.pitch, velocity: event.velocity)
-        staffLens.stripView.noteStruck(pitch: event.pitch)
+        staffLens.stripView.noteStruck(pitch: event.pitch, onset: event.onset)
         refresh()
     }
 
@@ -175,6 +175,12 @@ final class PracticeScreenView: NSView {
         keybed.release(pitch: event.pitch)
         staffLens.stripView.noteReleased(pitch: event.pitch)
         refresh()
+    }
+
+    /// The framing the page will be cut by, handed to the running staff so
+    /// its barlines, key and meter are the printed page's own.
+    func setSheetFraming(_ framing: ScoreFraming?) {
+        staffLens.stripView.framing = framing
     }
 
     func setSessions(_ sessions: [SessionRecord], playing: SessionRecord?) {
@@ -234,6 +240,7 @@ final class PracticeScreenView: NSView {
     func sessionStarted() {
         sessionStart = Date()
         sessionSeconds = 0
+        staffLens.stripView.startTimeline()
         refresh()
         guard clockTimer == nil else { return }
         clockTimer = Clock.every(1.0) { [weak self] in self?.tickClock() }
