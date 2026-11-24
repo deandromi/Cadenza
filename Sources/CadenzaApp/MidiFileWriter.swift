@@ -3,9 +3,11 @@ import Foundation
 
 /// Writes note events to a Standard MIDI File, format 0 with one track.
 ///
-/// Timing uses 480 ticks per quarter note at 120 bpm, which makes one second
-/// exactly 960 ticks. Multi-byte values are big-endian and every event carries
-/// a full status byte, so no running status is used.
+/// Timing uses 480 ticks per quarter note at the tempo the take implies, so
+/// the file and the printed page speak of the same beat: a sheet marked 189
+/// that opens at 120 in a DAW is two documents, not one. Multi-byte values are
+/// big-endian and every event carries a full status byte, so no running status
+/// is used.
 public enum MidiFileWriter {
     /// Largest delta time a single event may carry, also the four-byte
     /// variable-length quantity ceiling.
@@ -13,15 +15,29 @@ public enum MidiFileWriter {
 
     private static let ticksPerQuarter = 480
 
-    private static let ticksPerSecond = 960.0
-
     /// Writes `notes` as a format 0 MIDI file to `url`, replacing any file there.
-    public static func write(_ notes: [NoteEvent], to url: URL) throws {
+    /// Without a framing the file is 120 bpm in 4/4, the neutral reading.
+    public static func write(_ notes: [NoteEvent], to url: URL,
+                             framing: ScoreFraming? = nil) throws {
         var track: [UInt8] = []
 
-        // Tempo meta event, 500000 microseconds per quarter note (120 bpm),
-        // so one second of audio maps to 960 ticks.
-        track.append(contentsOf: [0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20])
+        let bpm = min(300, max(20, framing?.beatsPerMinute ?? 120))
+        let microsPerQuarter = Int((60_000_000.0 / bpm).rounded())
+        track.append(contentsOf: [0x00, 0xFF, 0x51, 0x03,
+                                  UInt8((microsPerQuarter >> 16) & 0xFF),
+                                  UInt8((microsPerQuarter >> 8) & 0xFF),
+                                  UInt8(microsPerQuarter & 0xFF)])
+        if let meter = framing?.timeSignature {
+            // FF 58 04 nn dd cc bb: the meter, its denominator as a power of
+            // two, and 24 clocks per metronome click (LilyPond's 4 = default).
+            let denominatorPower = UInt8(max(0, Int(log2(Double(max(1, meter.beatUnit))))))
+            track.append(contentsOf: [0x00, 0xFF, 0x58, 0x04,
+                                      UInt8(min(255, meter.beatsPerMeasure)),
+                                      denominatorPower, 24, 8])
+        }
+
+        let ticksPerSecond = Double(ticksPerQuarter) * bpm / 60.0
+        func tick(ofSeconds seconds: Double) -> Int { max(0, Int((seconds * ticksPerSecond).rounded())) }
 
         // The note's own length is the key's: a score and another app's
         // playback both read it that way. Whatever the pedal added is written
@@ -40,7 +56,7 @@ public enum MidiFileWriter {
             wire.append((onset + max(1, tick(ofSeconds: note.keyDuration)), 0, note.pitch,
                          .noteOff(pitch: note.pitch)))
         }
-        for span in Self.pedalSpans(of: notes) {
+        for span in Self.pedalSpans(of: notes, ticksPerSecond: ticksPerSecond) {
             wire.append((span.start, 1, 0, .pedal(down: true)))
             wire.append((span.end, 1, 0, .pedal(down: false)))
         }
@@ -82,7 +98,11 @@ public enum MidiFileWriter {
     /// The pedal's own spans, in ticks: every note that outlived its key says
     /// how long the string kept ringing, and spans that touch or overlap are
     /// one press, because a pedal cannot lift and return within a tick.
-    private static func pedalSpans(of notes: [NoteEvent]) -> [(start: Int, end: Int)] {
+    private static func pedalSpans(of notes: [NoteEvent],
+                                   ticksPerSecond: Double) -> [(start: Int, end: Int)] {
+        func tick(ofSeconds seconds: Double) -> Int {
+            max(0, Int((seconds * ticksPerSecond).rounded()))
+        }
         var spans: [(start: Int, end: Int)] = []
         for note in notes where note.isPedalled {
             let down = tick(ofSeconds: note.onset + note.keyDuration)
@@ -99,11 +119,6 @@ public enum MidiFileWriter {
             }
         }
         return merged
-    }
-
-    /// Rounds seconds to integer ticks under the file's 960 ticks per second.
-    private static func tick(ofSeconds seconds: Double) -> Int {
-        max(0, Int((seconds * ticksPerSecond).rounded()))
     }
 
     /// Assembles a length-prefixed chunk: id, big-endian payload length,

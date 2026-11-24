@@ -406,21 +406,20 @@ public enum Engraver {
             ScoreNote(pitch: $0.pitch, onsetTick: $0.onset, durationTicks: $0.duration, velocity: $0.velocity)
         }
 
-        // align measure one's downbeat with the strongest beat phase, then
-        // everything after phase zero is measure space; notes before the
-        // first downbeat are a pickup inside measure zero
-        var phase = bestPhase(grouped, timeSignature: timeSignature, tempo: tempo)
-        phase = max(0, min(phase, timeSignature.ticksPerMeasure - snap))
+        // Align measure one's downbeat with the strongest beat phase. Ticks
+        // before that downbeat are a pickup, and a pickup bar is its own bar:
+        // flooring the division puts those notes in measure -1 instead of
+        // rounding them into measure zero, where the bar they were printed in
+        // did not contain them. Truncating division lost them from the page.
+        let phase = max(0, min(bestPhase(grouped, timeSignature: timeSignature, tempo: tempo),
+                               timeSignature.ticksPerMeasure - snap))
         let measureTicks = timeSignature.ticksPerMeasure
-        if scored.contains(where: { $0.onsetTick < phase }) {
-            phase -= measureTicks
-        }
 
         func adjusted(_ t: Int) -> Int { t - phase }
 
         var noteGroups: [Int: [ScoreNote]] = [:]
         for note in scored {
-            let measure = adjusted(note.onsetTick) / measureTicks
+            let measure = Int((Double(adjusted(note.onsetTick)) / Double(measureTicks)).rounded(.down))
             noteGroups[measure, default: []].append(ScoreNote(
                 pitch: note.pitch,
                 onsetTick: note.onsetTick,

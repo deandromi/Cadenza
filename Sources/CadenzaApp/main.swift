@@ -32,6 +32,12 @@ if let index = CommandLine.arguments.firstIndex(of: "--sheet-rules"), CommandLin
     exit(0)
 }
 
+if let index = CommandLine.arguments.firstIndex(of: "--sheet-eval"), CommandLine.arguments.count > index + 1 {
+    let out = CommandLine.arguments.count > index + 2 ? CommandLine.arguments[index + 2] : nil
+    SmokeMain.runSheetEval(directory: CommandLine.arguments[index + 1], out: out)
+    exit(0)
+}
+
 if let index = CommandLine.arguments.firstIndex(of: "--lily"), CommandLine.arguments.count > index + 2 {
     SmokeMain.runLily(path: CommandLine.arguments[index + 1], out: CommandLine.arguments[index + 2])
     exit(0)

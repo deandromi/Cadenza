@@ -187,7 +187,8 @@ final class SessionStore {
     /// what the panel lists it by. Sessions with no notes are discarded.
     @discardableResult
     func saveSession(notes: [NoteEvent], startedAt: Date, durationSeconds: Double,
-                     audio: (url: URL, rate: Double)? = nil, keepAudio: Bool = true) -> SessionRecord? {
+                     audio: (url: URL, rate: Double)? = nil, keepAudio: Bool = true,
+                     framing: ScoreFraming? = nil) -> SessionRecord? {
         guard !notes.isEmpty else { return nil }
         let folderName = nextFolderName()
         let folder = directory.appendingPathComponent(folderName, isDirectory: true)
@@ -200,7 +201,8 @@ final class SessionStore {
         record.folderName = folderName
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try MidiFileWriter.write(notes, to: folder.appendingPathComponent(record.midiFileName))
+            try MidiFileWriter.write(notes, to: folder.appendingPathComponent(record.midiFileName),
+                                     framing: framing)
             if keepAudio, let audio, FileManager.default.fileExists(atPath: audio.url.path) {
                 try FileManager.default.moveItem(at: audio.url, to: folder.appendingPathComponent(record.audioFileName))
                 record.hasAudio = true

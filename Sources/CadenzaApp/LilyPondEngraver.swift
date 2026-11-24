@@ -66,17 +66,31 @@ enum LilyPondEngraver {
         }
     }
 
+    /// Engraves an already-cut score: the eval and the sheet panel engrave
+    /// once and keep the score they measured.
+    static func write(score: Score, metadata: LilyPondScore.Metadata = LilyPondScore.Metadata(),
+                      to destination: URL) throws {
+        guard let wrapper = wrapperURL else { throw EngravingError.notStaged }
+        try write(source: LilyPondScore.text(score, metadata: metadata),
+                  wrapper: wrapper, to: destination)
+    }
+
+    /// The framing a take argues for, so the session MIDI, the printed page
+    /// and the panel all speak of the same tempo, meter and key.
+    static func framing(notes: [NoteEvent], options: SheetDraft.Options) -> ScoreFraming {
+        ScoreFraming(beatsPerMinute: options.bpm,
+                     timeSignature: TimeSignature(beatsPerMeasure: options.numerator,
+                                                  beatUnit: options.denominator),
+                     key: Engraver.inferKey(notes))
+    }
+
     /// Engraves one score to a PDF at `destination`.
     static func write(notes: [NoteEvent], options: SheetDraft.Options,
                       title: String, composer: String?,
                       to destination: URL) throws {
         guard let wrapper = wrapperURL else { throw EngravingError.notStaged }
-        guard let score = Engraver.engrave(
-            notes: notes,
-            framing: ScoreFraming(beatsPerMinute: options.bpm,
-                                  timeSignature: TimeSignature(beatsPerMeasure: options.numerator,
-                                                               beatUnit: options.denominator),
-                                  key: Engraver.inferKey(notes))) else {
+        guard let score = Engraver.engrave(notes: notes,
+                                           framing: framing(notes: notes, options: options)) else {
             throw EngravingError.nothingWritten
         }
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String

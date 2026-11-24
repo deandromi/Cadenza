@@ -107,6 +107,14 @@ mkdir -p "$STAGE/share/lilypond/$VERSION"
 for part in ly scm ps fonts; do
     cp -R "$PREFIX/share/lilypond/$VERSION/$part" "$STAGE/share/lilypond/$VERSION/"
 done
+
+# The compiled Scheme. LilyPond finds it beside its libraries, under
+# lib/lilypond/<version>/ccache, and without it every run recompiles the
+# engraver's Scheme from source: measured on a real take, 2.2 s with the cache
+# against 8.4 s without.
+mkdir -p "$STAGE/lib/lilypond/$VERSION"
+rm -rf "$STAGE/lib/lilypond/$VERSION/ccache"
+cp -R "$PREFIX/lib/lilypond/$VERSION/ccache" "$STAGE/lib/lilypond/$VERSION/ccache"
 cp "$PREFIX/share/lilypond/$VERSION/VERSION" "$STAGE/share/lilypond/$VERSION/" 2>/dev/null || true
 
 # License: the engraver is GPL-3.0, and a copy travels with the binary.

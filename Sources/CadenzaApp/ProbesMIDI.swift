@@ -92,6 +92,35 @@ extension SmokeMain {
         print("midi probe PASSED: keys 0.5 s, pedal 1.5-5.0 s, sound 4.0 s")
     }
 
+    /// A file has to say the same thing as the page: the tempo and meter a
+    /// take implies go into the header, and the note times survive them.
+    private static func checkFramedRoundTrip(notes: [NoteEvent]) throws {
+        let framing = ScoreFraming(beatsPerMinute: 189,
+                                   timeSignature: TimeSignature(beatsPerMeasure: 3, beatUnit: 4),
+                                   key: KeySignature(tonic: 0, isMinor: false))
+        let url = URL(fileURLWithPath: "/tmp/cadenza_framed.mid")
+        try MidiFileWriter.write(notes, to: url, framing: framing)
+        guard let file = try? MidiReader.read(url: url) else {
+            print("midi probe FAILED: the framed file does not read back")
+            exit(1)
+        }
+        guard abs(file.initialTempo - 189) < 1 else {
+            print("midi probe FAILED: the file says \(file.initialTempo) bpm, the page says 189")
+            exit(1)
+        }
+        let meter = file.timeSignatures.first?.signature
+        guard meter?.beatsPerMeasure == 3, meter?.beatUnit == 4 else {
+            print("midi probe FAILED: the file says \(String(describing: meter)), the page says 3/4")
+            exit(1)
+        }
+        guard let e4 = file.notes.first(where: { $0.pitch == 64 }),
+              abs(e4.onset - 0.5) < 0.01, abs(e4.duration - 1.0) < 0.02 else {
+            print("midi probe FAILED: a framed file moved its notes")
+            exit(1)
+        }
+        print("midi probe: framed file reads 189 bpm, 3/4, notes where they were")
+    }
+
     /// MIDI file writer check: three notes in, structurally parsed back out.
     static func runMidiProbe() {
         var notes: [NoteEvent] = [
@@ -103,6 +132,7 @@ extension SmokeMain {
         let url = URL(fileURLWithPath: "/tmp/cadenza_smoke.mid")
         do {
             try MidiFileWriter.write(notes, to: url)
+            try checkFramedRoundTrip(notes: notes)
             let data = try Data(contentsOf: url)
             let bytes = [UInt8](data)
 

@@ -639,12 +639,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 // empty sessions (no notes) are discarded by the store; the
                 // previous session moves to the history automatically
                 let keepAudio = SettingsKeys.keepRecordedAudio
+                // One framing for the whole take: the session MIDI, the
+                // printed page and the panel then agree on tempo, meter and
+                // key instead of each inferring its own.
+                let options = SheetDraft.inferredOptions(notes: engine.notes)
                 let record = store.saveSession(
                     notes: engine.notes,
                     startedAt: startedAt,
                     durationSeconds: Date().timeIntervalSince(startedAt),
                     audio: engine.lastRecording,
-                    keepAudio: keepAudio)
+                    keepAudio: keepAudio,
+                    framing: LilyPondEngraver.framing(notes: engine.notes, options: options))
                 if let record {
                     engraveSessionPDF(record, notes: engine.notes)
                     // the take describes itself the moment it stops: key,
@@ -761,7 +766,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
             do {
-                try MidiFileWriter.write(self.engine.notes, to: url)
+                let framing = LilyPondEngraver.framing(notes: self.engine.notes,
+                                                       options: SheetDraft.inferredOptions(notes: self.engine.notes))
+                try MidiFileWriter.write(self.engine.notes, to: url, framing: framing)
                 self.screen?.setStatus("Saved \(url.lastPathComponent)", error: false)
             } catch {
                 self.present(error: error.localizedDescription)

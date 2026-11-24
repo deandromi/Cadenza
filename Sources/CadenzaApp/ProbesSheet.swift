@@ -653,6 +653,103 @@ extension SmokeMain {
     /// `--lily <file.mid> <out.pdf>`: the same route a stopped session takes —
     /// the notes become a score, the score becomes LilyPond source, and the
     /// bundled engraver writes the page.
+    /// Every take in a session directory measured against the page it
+    /// produces: notes played against heads printed, the widest chord, the
+    /// staves the take earned, the notes it had to tie, and every rule the
+    /// page breaks. An output directory renders the pages too, so the numbers
+    /// and the paper can be read together.
+    /// - sheet-eval <directory> [outDirectory]
+    static func runSheetEval(directory: String, out: String?) {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: directory)
+        guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            print("eval: cannot list \(directory)")
+            exit(1)
+        }
+        var files: [URL] = []
+        for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            var isDirectory: ObjCBool = false
+            fm.fileExists(atPath: entry.path, isDirectory: &isDirectory)
+            if isDirectory.boolValue {
+                let inner = (try? fm.contentsOfDirectory(at: entry, includingPropertiesForKeys: nil)) ?? []
+                files += inner.filter { $0.pathExtension.lowercased() == "mid" }
+                    .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            } else if entry.pathExtension.lowercased() == "mid" {
+                files.append(entry)
+            }
+        }
+        guard !files.isEmpty else {
+            print("eval: no MIDI files under \(directory)")
+            exit(1)
+        }
+        if let out {
+            try? fm.createDirectory(atPath: out, withIntermediateDirectories: true)
+        }
+
+        var totalPlayed = 0
+        var totalHeads = 0
+        var totalIssues = 0
+        var worstWidest = 0
+        print("take                       played  heads  bars  staves  widest  ties merged  framing          audit")
+        for file in files {
+            guard let midi = try? MidiReader.read(url: file) else {
+                print("\(file.lastPathComponent): unreadable")
+                continue
+            }
+            let notes = midi.notes
+            let options = SheetDraft.inferredOptions(notes: notes)
+            let framing = LilyPondEngraver.framing(notes: notes, options: options)
+            guard let score = Engraver.engrave(notes: notes, framing: framing) else {
+                print("\(file.lastPathComponent): nothing to engrave")
+                continue
+            }
+            // A session folder's file is always "session.mid"; the folder is
+            // what the player named the take by.
+            let stem = file.deletingPathExtension().lastPathComponent
+            let title = stem.lowercased() == "session"
+                ? file.deletingLastPathComponent().lastPathComponent
+                : stem
+            let text = LilyPondScore.text(score, metadata: LilyPondScore.Metadata(title: title))
+            let issues = LilyPondScore.audit(score, text: text)
+            let summary = LilyPondScore.summary(of: score)
+            let heads = LilyPondScore.headCount(score)
+            // Two strikes of one pitch inside one sixteenth are one head on
+            // the page: a chord cannot repeat a pitch, so the merge is the
+            // notation's, not a loss.
+            let uniqueInScore = Set(score.measures.flatMap(\.notes).map { "\($0.pitch):\($0.onsetTick)" }).count
+            let merged = max(0, notes.count - uniqueInScore)
+            let meter = "\(score.framing.timeSignature.beatsPerMeasure)/\(score.framing.timeSignature.beatUnit)"
+            let tempo = Int(score.framing.beatsPerMinute.rounded())
+            let name = title
+            print(String(format: "%-24@ %7d %6d %5d %7d %7d %5d %6d  %3d bpm %-5@ %5d",
+                         name as NSString, notes.count, heads, score.measures.count,
+                         summary.staves, summary.widestChord, summary.tiedAttacks,
+                         merged, tempo, meter as NSString, issues.count))
+            for issue in issues.prefix(3) {
+                print("    \(issue)")
+            }
+            totalPlayed += notes.count
+            totalHeads += heads
+            totalIssues += issues.count
+            worstWidest = max(worstWidest, summary.widestChord)
+            if let out {
+                let destination = URL(fileURLWithPath: out).appendingPathComponent("\(name).pdf")
+                do {
+                    try LilyPondEngraver.write(score: score,
+                                               metadata: LilyPondScore.Metadata(title: name),
+                                               to: destination)
+                } catch {
+                    print("    page failed: \(error.localizedDescription)")
+                }
+            }
+        }
+        print("")
+        print("played \(totalPlayed), printed \(totalHeads), widest chord \(worstWidest), audit issues \(totalIssues)")
+        if totalHeads < totalPlayed {
+            print("of the played notes, \(totalPlayed - totalHeads) struck one pitch twice inside a sixteenth and print as one head")
+        }
+    }
+
     static func runLily(path: String, out: String) {
         guard let file = try? MidiReader.read(url: URL(fileURLWithPath: path)) else {
             print("lily: cannot read \(path)")

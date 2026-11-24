@@ -1565,9 +1565,13 @@ lilyPondPage: do {
         ("2.", 1440), ("2", 960), ("1.", 2880), ("1", 1920),
     ]
 
-    /// A token's length: a note carries it as a suffix, a rest behind its r.
+    /// A token's length: a note carries it as a suffix, a rest behind its r,
+    /// and a tie hangs a tilde on the end.
     func ticks(_ token: String) -> Int? {
-        for length in lengths where token.hasSuffix(length.suffix) {
+        var body = token
+        if body.hasSuffix("~") { body.removeLast() }
+        if body.hasPrefix("r") { body.removeFirst() }
+        for length in lengths where body.hasSuffix(length.suffix) {
             return length.ticks
         }
         return nil
@@ -1611,12 +1615,18 @@ lilyPondPage: do {
     expect(text.contains("title = \"Je te veux\""), "the title travels into the heading")
     expect(text.contains("\\key c \\major"), "C major is written as LilyPond writes it")
     expect(text.contains("\\time 4/4 \\tempo 4 = 96"), "the meter and tempo stand on one line")
-    expect(text.contains("\\new PianoStaff <<"), "a piano page is one staff pair")
+    expect(!text.contains("\\new PianoStaff <<"),
+           "a take that only used the right hand prints one staff, not a pair")
     expect(staff(text, clef: "treble") == ["\\key c \\major", "\\time 4/4 \\tempo 4 = 96",
                                            "c'4 d'4 e'4 f'4 | \\bar \"|.\""],
            "the right hand reads as its notes: \(staff(text, clef: "treble"))")
-    expect(bars(text, clef: "bass") == ["r1 | \\bar \"|.\""],
-           "the hand that played nothing rests the bar: \(bars(text, clef: "bass"))")
+    expect(bars(text, clef: "bass").isEmpty,
+           "the hand that played nothing has no bars to print: \(bars(text, clef: "bass"))")
+    let bothHands = LilyPondScore.text(score([[note(60, 0, 480), note(48, 0, 960)]]))
+    expect(bothHands.contains("\\new PianoStaff <<"),
+           "a take with both hands is a staff pair")
+    expect(bars(bothHands, clef: "bass").first?.hasPrefix("c2") == true,
+           "and the left hand prints under it: \(bars(bothHands, clef: "bass"))")
 
     // Middle C is the divide: a line played either side of it belongs to two
     // staves, and the octave marks count away from it.
@@ -1626,22 +1636,27 @@ lilyPondPage: do {
     expect(staff(split, clef: "bass").last?.hasPrefix("b2") == true,
            "the note below it is the left hand's")
 
-    // Pitches struck together are one attack, and a flam — two hands landing a
-    // few ticks apart — is one attack too, not a roll of sixteenths.
+    // Pitches struck at one instant are one chord. A note that lands on the
+    // next sixteenth is its own attack, not a member of that chord: folding a
+    // grid cell turned every run into a cluster nobody played.
     let chord = LilyPondScore.text(score([[note(60, 0, 480), note(64, 0, 480),
-                                           note(67, 10, 400), note(71, 30, 400)]]))
+                                           note(67, 0, 480), note(71, 0, 480)]]))
     expect(staff(chord, clef: "treble").last?.hasPrefix("<c' e' g' b'>4") == true,
            "a chord prints as one chord: \(staff(chord, clef: "treble"))")
     expect(barTicks(bars(chord, clef: "treble")[0]) == 1920,
            "and the bar it sits in still counts four beats")
+    let run = LilyPondScore.text(score([[note(72, 0, 120), note(74, 120, 120),
+                                          note(76, 240, 120)]]))
+    expect(staff(run, clef: "treble").last?.hasPrefix("c''16 d''16 e''16") == true,
+           "a run stays a run: \(staff(run, clef: "treble"))")
 
     // Every bar of the page has to count its meter, whatever was played: the
     // gaps become rests, a note that runs into the barline is cut there, and a
     // note a hair before the barline still belongs to the bar it was played in.
     let messy = score([
-        [note(67, 0, 300), note(69, 90, 110), note(72, 700, 500), note(74, 1700, 120)],
-        [note(60, 1910, 100), note(62, 1920, 240), note(65, 2500, 900)],
-        [note(67, 3900, 60)],
+        [note(67, 0, 240), note(69, 120, 120), note(72, 720, 480), note(74, 1680, 120)],
+        [note(60, 1920, 240), note(62, 2160, 240), note(65, 2520, 960)],
+        [note(67, 3960, 120)],
     ])
     let messyText = LilyPondScore.text(messy)
     for clef in ["treble", "bass"] {
@@ -1650,14 +1665,20 @@ lilyPondPage: do {
                    "bar \(index + 1) of the \(clef) counts its meter: \(barTicks(bar)) — \(bar)")
         }
     }
-    expect(barTicks(bars(messyText, clef: "treble")[1]) == 1920,
-           "a note held over the barline is cut at the bar")
+    expect(bars(messyText, clef: "treble")[0].hasSuffix("~ | \\bar \"|.\"") == false,
+           "no tie leaves the last bar")
+    let held = LilyPondScore.text(score([[note(62, 480, 240), note(60, 1440, 960)],
+                                         [note(64, 2400, 480)]]))
+    expect(bars(held, clef: "treble")[0].contains("c'4~"),
+           "a note held over the barline is tied: \(bars(held, clef: "treble"))")
+    expect(bars(held, clef: "treble")[1].hasPrefix("c'4"),
+           "and the tie lands on the same pitch in the next bar")
 
     // A meter that is not 4/4 counts its own way, and the page still totals it.
     var metered = true
     for (beats, unit) in [(3, 4), (6, 8), (2, 2), (5, 4)] {
-        let page = LilyPondScore.text(score([[note(60, 0, 200), note(64, 260, 500)],
-                                             [note(67, 900, 480)]],
+        let page = LilyPondScore.text(score([[note(60, 0, 240), note(64, 240, 480)],
+                                             [note(67, 960, 480)]],
                                             beats: beats, unit: unit))
         let rule = TimeSignature(beatsPerMeasure: beats, beatUnit: unit).ticksPerMeasure
         for bar in bars(page, clef: "treble") {
@@ -1704,6 +1725,85 @@ lilyPondPage: do {
     expect(tricky.contains("title = \"L'après \\\"midi\\\"\""), "a quote in the title is escaped")
     expect(tricky.contains("composer = \"C:\\\\temp\""), "a backslash in the heading is escaped")
     expect(tricky.contains("\n}\n"), "the heading closes whatever it holds")
+}
+
+// MARK: the LilyPond page, the rules it is written by
+
+lilyPondRules: do {
+    func score(_ measures: [[ScoreNote]], bpm: Double = 96,
+               beats: Int = 4, unit: Int = 4,
+               tonic: Int = 0, minor: Bool = false) -> Score {
+        let framing = ScoreFraming(beatsPerMinute: bpm,
+                                   timeSignature: TimeSignature(beatsPerMeasure: beats, beatUnit: unit),
+                                   key: KeySignature(tonic: tonic, isMinor: minor))
+        let ticks = framing.timeSignature.ticksPerMeasure
+        return Score(framing: framing,
+                     measures: measures.enumerated().map { index, notes in
+                         ScoreMeasure(index: index, startTick: index * ticks, notes: notes)
+                     },
+                     chords: [])
+    }
+    func note(_ pitch: Int, _ onset: Int, _ duration: Int) -> ScoreNote {
+        ScoreNote(pitch: pitch, onsetTick: onset, durationTicks: duration, velocity: 80)
+    }
+
+    // A left-hand-only take is one bass staff: the old page gave every take a
+    // grand staff and left the unused one full of whole rests.
+    let bass = LilyPondScore.text(score([[note(48, 0, 480), note(50, 480, 480)]]))
+    expect(bass.contains("\\clef bass"), "a left-hand take prints a bass staff")
+    expect(!bass.contains("\\clef treble"), "and no treble staff it never played")
+    expect(bass.contains("\\time 4/4 \\tempo 4 = 96"),
+           "the meter and tempo stand on the staff that exists")
+
+    // A pickup is its own short bar, declared as a partial. The notes before
+    // the first downbeat used to be dropped by a truncating division.
+    let pickup = Score(
+        framing: ScoreFraming(beatsPerMinute: 120,
+                              timeSignature: TimeSignature(beatsPerMeasure: 3, beatUnit: 4),
+                              key: KeySignature(tonic: 0, isMinor: false)),
+        measures: [
+            ScoreMeasure(index: -1, startTick: -720, notes: [note(72, 0, 240), note(74, 240, 480)]),
+            ScoreMeasure(index: 0, startTick: 720, notes: [note(76, 720, 480)]),
+        ],
+        chords: [])
+    let pickupText = LilyPondScore.text(pickup)
+    expect(pickupText.contains("\\partial 4."),
+           "a pickup declares its own short bar")
+    expect(pickupText.contains("c''8 d''4 |"),
+           "and the notes before the downbeat are still on the page: \(pickupText.components(separatedBy: "\n").filter { $0.contains("|") })")
+    expect(LilyPondScore.audit(pickup).isEmpty,
+           "the pickup bar counts its own length: \(LilyPondScore.audit(pickup))")
+
+    // A note held over several bars is written as a chain of ties, each piece
+    // landing on the same pitch, never shortened.
+    let long = LilyPondScore.text(score([[note(60, 0, 2400)]]))
+    expect(long.contains("c'1~"),
+           "a note longer than its bar is tied onward: \(long.components(separatedBy: "\n").filter { $0.contains("|") })")
+    expect(LilyPondScore.audit(score([[note(60, 0, 2400)]]), text: long).isEmpty,
+           "and every bar it crosses still counts four beats")
+
+    // A value too long for one symbol splits into tied symbols inside the bar.
+    let fiveFour = LilyPondScore.text(score([[note(60, 0, 2400)]], beats: 5, unit: 4))
+    expect(fiveFour.contains("c'1~ c'4"),
+           "a whole 5/4 bar of one note is a tied pair: \(fiveFour.components(separatedBy: "\n").filter { $0.contains("|") })")
+
+    // The audit is the gate: it passes a legal page and refuses a broken one.
+    let page = score([[note(60, 0, 480), note(64, 480, 480), note(67, 960, 480), note(72, 1440, 480)]])
+    let pageText = LilyPondScore.text(page)
+    expect(LilyPondScore.audit(page, text: pageText).isEmpty,
+           "a legal page passes its own audit: \(LilyPondScore.audit(page, text: pageText))")
+    let broken = pageText.replacingOccurrences(of: "c'4 e'4", with: "c'4 e'8")
+    expect(!LilyPondScore.audit(page, text: broken).isEmpty,
+           "a bar that lost a value is caught by the audit")
+
+    // What the page promises as counts, for the eval and for the app.
+    let chordScore = score([[note(60, 0, 480), note(64, 0, 480), note(67, 0, 480),
+                             note(72, 0, 480), note(76, 960, 480)]])
+    expect(LilyPondScore.headCount(chordScore) == 5, "five heads printed for five played notes")
+    expect(LilyPondScore.summary(of: chordScore).widestChord == 4,
+           "the widest chord is the four-note grip")
+    expect(LilyPondScore.summary(of: chordScore).staves == 1,
+           "and the page is one staff")
 }
 
 if failures == 0 {

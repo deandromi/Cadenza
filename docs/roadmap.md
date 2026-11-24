@@ -317,6 +317,36 @@ draws what the layout produces.
 - Engraving fills empty measures with whole rests, and chord symbols share
   the measures' phase space (a pickup no longer orphans them).
 
+### The page that ships: LilyPond, an audit, and numbers (2026-11-24)
+
+The app no longer draws the sheet it exports: `LilyPondScore` writes the music
+as LilyPond source and the bundled engraver (2.26.0, 42 MB, see
+`Tools/bundle_lilypond.sh`) sets the page. Three decisions in that file are
+musical and worth keeping: a hand is one voice, a chord is what sounded at one
+instant (never what fell in one grid cell), and a note that crosses a barline
+is tied into its remainder instead of being cut. A staff is printed only when
+a hand played on it, and a pickup is declared as `\partial` so the notes
+before the downbeat survive — the truncating division that used to place them
+in a bar that did not contain them dropped them from the page.
+
+`LilyPondScore.audit` checks the written page against its own rules (every bar
+counts its length, every token is a value LilyPond reads, a tie lands on the
+same pitches), and `--sheet-eval <sessionDir> [outDir]` runs it over a whole
+archive, printing played notes, printed heads, bars, staves, the widest chord,
+how many notes were tied, and how many were two strikes of one pitch inside a
+sixteenth. On the seven takes in the author's archive: 1336 played, 1308
+printed, 28 of them merges, 0 audit issues. On the two reference files: Satie
+2050/2050 at 172 bpm in 3/4 (a waltz, now read as one), Hey Bulldog 1567/1608
+at 104 bpm in 4/4 — both the published framing.
+
+The session MIDI now carries the same tempo and meter as the page, so a take
+opened in a DAW does not play at 120 while the sheet says 189.
+
+What is left here: the pedal. Durations still carry the string's ring, so a
+pedalled chord prints as ties across bars (522 of Satie's 2050) instead of
+`Ped.` and a release, which is what the drawer inks and the engraver does
+not yet. That is the next pass.
+
 ### Pedal is not note length (found and fixed 2026-11-22)
 
 The sheet's longest tie chains are not a tie bug: they are the pedal. The
