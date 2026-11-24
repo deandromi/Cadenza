@@ -395,8 +395,16 @@ public enum Engraver {
         guard let first = grouped.map(\.onset).min() else { return nil }
 
         let tempo = chosen?.beatsPerMinute ?? inferTempo(grouped)
+        // the meter the page cuts is the one the options step would offer:
+        // the bass can call a waltz, and the scorer decides the rest
         let key = chosen?.key ?? inferKey(grouped)
-        let timeSignature = chosen?.timeSignature ?? inferTimeSignature(grouped, tempo: tempo)
+        let timeSignature = chosen?.timeSignature ?? {
+            let scored = inferTimeSignature(grouped, tempo: tempo)
+            if let numerator = SheetDraft.bassMeterGuess(grouped, tempo: tempo) {
+                return TimeSignature(beatsPerMeasure: numerator, beatUnit: scored.beatUnit)
+            }
+            return scored
+        }()
         let quarterSeconds = 60.0 / tempo
 
         // raw ticks relative to the first note, snapped to the sixteenth

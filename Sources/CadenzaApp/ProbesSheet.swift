@@ -715,6 +715,7 @@ extension SmokeMain {
             let text = LilyPondScore.text(score, metadata: LilyPondScore.Metadata(title: title))
             let issues = LilyPondScore.audit(score, text: text)
             let summary = LilyPondScore.summary(of: score)
+            let printedTies = LilyPondScore.printedTies(in: text)
             let heads = LilyPondScore.headCount(score)
             // Two strikes of one pitch inside one sixteenth are one head on
             // the page: a chord cannot repeat a pitch, so the merge is the
@@ -726,7 +727,7 @@ extension SmokeMain {
             let name = title
             print(String(format: "%-24@ %7d %6d %5d %7d %7d %5d %6d %7d  %3d bpm %-5@ %5d",
                          name as NSString, notes.count, heads, score.measures.count,
-                         summary.staves, summary.widestChord, summary.tiedAttacks,
+                         summary.staves, summary.widestChord, printedTies,
                          merged, score.pedals.count, tempo, meter as NSString, issues.count))
             for issue in issues.prefix(3) {
                 print("    \(issue)")

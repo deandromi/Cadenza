@@ -418,6 +418,21 @@ checked against the published PDFs and the seven takes on this machine.
 | Hey Bulldog | 1608 notes | 67 bars, 4/4 at 104, 0 ties | 155 s | 152 s |
 | Reflets dans l'eau | 2033 notes, 7 pedals | 148 bars, 4/4 at 120, 113 ties | 296 s | 295 s |
 
+Two things were measured and one of them was thrown away. A hand is not one
+voice — a quarter of the attacks are still down when the next key is struck —
+so the writer now deals those notes into a second voice and hides its rests.
+It prints truer lengths and it costs 15 to 40 percent more ties plus rests
+inside the upper staff, which is why it is not in the page today: the
+engraver needs a convincing way to hide inner-voice rests before that trade
+makes sense. What stayed is rounding: a length a sixteenth off a writable
+value becomes that value, because an engraver rounds a shade rather than
+printing a tie nobody hears.
+
+The tie column in `--sheet-eval` used to count bar crossings in the model,
+which overstated the page and hid every effect of the writer. It now counts
+the tie marks the page actually prints (`LilyPondScore.printedTies`), and the
+reference pages read 189, 196 and 0.
+
 The ties are honest: every engraved duration is already a writable value, so
 a tie always means the note crosses a barline. The page prints LilyPond's
 pedal mark rather than text pretending to be one, a staff at urtext size, and

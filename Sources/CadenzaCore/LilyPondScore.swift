@@ -232,29 +232,49 @@ public enum LilyPondScore {
             }
         }
         let onsets = pitches.keys.sorted()
-        var result: [Attack] = []
-        for (index, onset) in onsets.enumerated() {
-            // A hand is one voice: the next attack of the same hand ends the
-            // note that is still sounding.
-            let limit = index + 1 < onsets.count ? onsets[index + 1] - onset : Int.max
+        return onsets.map { onset in
             // The length is kept exactly and split into writable values when
             // the bar is written: rounding it down here silently cut the tail
-            // off every note that outlives a single symbol.
-            let duration = max(smallest, min(sounding[onset] ?? smallest, limit))
-            result.append(Attack(onset: onset, duration: duration,
-                                 pitches: (pitches[onset] ?? []).sorted()))
+            // off every note that outlives a single symbol. Cutting at the
+            // next attack is a voice's business, not a hand's, and happens
+            // once the voices have been dealt.
+            Attack(onset: onset,
+                   duration: max(smallest, sounding[onset] ?? smallest),
+                   pitches: (pitches[onset] ?? []).sorted())
         }
-        return result
+    }
+
+    /// A hand is one voice, so the next attack ends the note that is still
+    /// sounding — except that a length a sixteenth off a writable value is
+    /// rounded to it first: an engraver rounds a shade rather than printing a
+    /// tie nobody hears.
+    private static func capped(_ stream: [Attack]) -> [Attack] {
+        stream.enumerated().map { index, event in
+            let limit = index + 1 < stream.count ? stream[index + 1].onset - event.onset : Int.max
+            let length = event.duration > limit ? limit
+                                                : min(roundedToWritable(event.duration), limit)
+            return Attack(onset: event.onset,
+                          duration: max(smallest, length),
+                          pitches: event.pitches)
+        }
+    }
+
+    /// The writable value nearest a tick length, when one is within a
+    /// sixteenth of it.
+    private static func roundedToWritable(_ ticks: Int) -> Int {
+        let values = durations.map(\.ticks)
+        guard let nearest = values.min(by: { abs($0 - ticks) < abs($1 - ticks) }) else { return ticks }
+        return abs(nearest - ticks) <= smallest ? nearest : ticks
     }
 
     private static func staffBody(_ score: Score, hand: Hand, framing: ScoreFraming,
                                   bars: [Bar], first: Bool, carriesPedals: Bool) -> [String] {
         let events = attacks(score, hand: hand)
+        let stream = capped(events)
         var lines: [String] = []
         let prefix = "      "
-        // The pedal is one voice and lives under the lowest staff. LilyPond
-        // turns these two commands into "Ped." and its release mark; the text
-        // style prints them the way an edition does, without a bracket line.
+        // The pedal is a staff property, but it has to live inside a music
+        // stream: the first stream carries it so one press prints one mark.
         let marks: [(tick: Int, text: String)] = (carriesPedals ? score.pedals : []).flatMap {
             [(tick: $0.startTick, text: "\\sustainOn"), (tick: $0.endTick, text: "\\sustainOff")]
         }.sorted { $0.tick < $1.tick }
@@ -284,46 +304,67 @@ public enum LilyPondScore {
         // beam across the whole bar, and a bar-long beam in a waltz is
         // not what anyone engraves.
         lines.append(contentsOf: beamSettings(framing.timeSignature).map { prefix + $0 })
-        // A pickup is a short first bar, and LilyPond has to be told its
-        // length or it reads the bar as one that lost a note.
-        if let opener = bars.first, opener.start < 0, opener.printedLength > 0 {
-            lines.append(prefix + "\\partial " + partialToken(opener.printedLength))
+        // A pickup is a short first bar. `\partial` belongs to a voice, not
+        // to a staff, so every stream is told about it in its own first bar.
+        let pickup = bars.first { $0.start < 0 && $0.printedLength > 0 }
+        let partial = pickup.map { "\\partial " + partialToken($0.printedLength) }
+
+        /// One stream's measures, filled from that stream's own attacks.
+        func measures(of stream: [Attack], carriesMarks: Bool) -> [String] {
+            var result: [String] = []
+            for bar in bars {
+                let start = bar.printedStart
+                let end = bar.end
+                var tokens: [String] = []
+                var cursor = start
+                if carriesMarks {
+                    flushMarks(upTo: start, into: &tokens)
+                }
+                for event in stream where event.end > start && event.onset < end {
+                    let pieceStart = max(event.onset, start)
+                    let pieceEnd = min(event.end, end)
+                    guard pieceEnd > pieceStart else { continue }
+                    if pieceStart > cursor {
+                        if carriesMarks {
+                            flushMarks(upTo: cursor, into: &tokens)
+                        }
+                        tokens.append(contentsOf: rests(for: pieceStart - cursor))
+                    }
+                    if carriesMarks {
+                        flushMarks(upTo: pieceStart, into: &tokens)
+                    }
+                    tokens.append(contentsOf: tone(event.pitches, ticks: pieceEnd - pieceStart,
+                                                   tiedOnward: event.end > pieceEnd,
+                                                   key: framing.key))
+                    // A mark inside a note takes effect where that note ends.
+                    if carriesMarks {
+                        flushMarks(upTo: pieceEnd - 1, into: &tokens)
+                    }
+                    cursor = pieceEnd
+                }
+                if cursor < end {
+                    if carriesMarks {
+                        flushMarks(upTo: cursor, into: &tokens)
+                    }
+                    tokens.append(contentsOf: rests(for: end - cursor))
+                }
+                if bar.index == bars.last?.index, carriesMarks {
+                    flushMarks(upTo: .max, into: &tokens)
+                }
+                var line = tokens.joined(separator: " ") + " |"
+                if bar.index == bars.first?.index, let partial {
+                    line = partial + " " + line
+                }
+                result.append(line)
+            }
+            return result
         }
 
-        for bar in bars {
-            let start = bar.printedStart
-            let end = bar.end
-            var tokens: [String] = []
-            var cursor = start
-            flushMarks(upTo: start, into: &tokens)
-            for event in events where event.end > start && event.onset < end {
-                let pieceStart = max(event.onset, start)
-                let pieceEnd = min(event.end, end)
-                guard pieceEnd > pieceStart else { continue }
-                if pieceStart > cursor {
-                    flushMarks(upTo: cursor, into: &tokens)
-                    tokens.append(contentsOf: rests(for: pieceStart - cursor))
-                }
-                flushMarks(upTo: pieceStart, into: &tokens)
-                tokens.append(contentsOf: tone(event.pitches, ticks: pieceEnd - pieceStart,
-                                               tiedOnward: event.end > pieceEnd,
-                                               key: framing.key))
-                // A mark inside a note takes effect where that note ends.
-                flushMarks(upTo: pieceEnd - 1, into: &tokens)
-                cursor = pieceEnd
-            }
-            if cursor < end {
-                flushMarks(upTo: cursor, into: &tokens)
-                tokens.append(contentsOf: rests(for: end - cursor))
-            }
-            if bar.index == bars.last?.index {
-                flushMarks(upTo: .max, into: &tokens)
-            }
-            lines.append(prefix + tokens.joined(separator: " ") + " |")
+        var barLines = measures(of: stream, carriesMarks: true)
+        if !barLines.isEmpty {
+            barLines[barLines.count - 1] += " \\bar \"|.\""
         }
-        if !lines.isEmpty {
-            lines[lines.count - 1] += " \\bar \"|.\""
-        }
+        lines.append(contentsOf: barLines.map { prefix + $0 })
         return lines
     }
 
@@ -531,6 +572,17 @@ public enum LilyPondScore {
         return (played.isEmpty ? 1 : played.count, widest, tied)
     }
 
+    /// Tie marks the page actually prints, read back from the text: the
+    /// model's own bar crossings overstate it, because the writer rounds a
+    /// length or lets a voice fill to the barline first.
+    public static func printedTies(in text: String) -> Int {
+        staffBodies(text).reduce(0) { total, staff in
+            total + staff.bars.reduce(0) { sum, bar in
+                sum + bar.filter { $0.hasSuffix("~") }.count
+            }
+        }
+    }
+
     // MARK: - reading the page back (the audit's own parser)
 
     private struct ParsedStaff {
@@ -541,13 +593,9 @@ public enum LilyPondScore {
     private static func staffBodies(_ source: String) -> [ParsedStaff] {
         var result: [ParsedStaff] = []
         var current: ParsedStaff?
-        var pendingPartial = false
 
         func finish() {
-            guard var staff = current else { return }
-            if pendingPartial, let first = staff.bars.first, first.isEmpty {
-                staff.bars.removeFirst()
-            }
+            guard let staff = current else { return }
             result.append(staff)
             current = nil
         }
@@ -556,7 +604,6 @@ public enum LilyPondScore {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("\\clef ") || trimmed.contains("\\clef ") {
                 finish()
-                pendingPartial = false
                 let clef = trimmed.components(separatedBy: "\\clef ").last?
                     .components(separatedBy: " ").first ?? "treble"
                 current = ParsedStaff(clef: clef, bars: [])
@@ -567,12 +614,6 @@ public enum LilyPondScore {
                 continue
             }
             guard var staff = current else { continue }
-            if trimmed.hasPrefix("\\partial") {
-                pendingPartial = true
-                staff.bars.append([])
-                current = staff
-                continue
-            }
             if trimmed.hasPrefix("\\key") || trimmed.hasPrefix("\\time") || trimmed.isEmpty {
                 continue
             }
@@ -601,9 +642,22 @@ public enum LilyPondScore {
             }
         }
         if !current.isEmpty { tokens.append(current) }
-        return tokens.filter {
-            !$0.hasPrefix("\\") && !$0.hasPrefix("\"") && $0 != "|"
+        var kept: [String] = []
+        var skipArgument = false
+        for token in tokens {
+            if skipArgument {
+                // the length a `\partial` names is not a note value in the bar
+                skipArgument = false
+                continue
+            }
+            if token.hasPrefix("\\") {
+                skipArgument = token == "\\partial"
+                continue
+            }
+            if token.hasPrefix("\"") || token == "|" { continue }
+            kept.append(token)
         }
+        return kept
     }
 
     private static func pitchSet(of token: String) -> Set<String> {
