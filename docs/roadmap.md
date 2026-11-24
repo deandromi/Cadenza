@@ -5,7 +5,8 @@ in real time with a Transkun-style model, shows a live chord sheet, acts as
 a MIDI keyboard for other apps, and afterwards turns the recorded
 performance into a finished sheet of music. Longer term it grows into a
 learning tool — a serious alternative to paid music-learning apps — and a
-landing page of its own.
+landing page of its own. The ideas that would change what the app *is*, but
+must wait until all three are finished, are collected under **Far horizon**.
 
 ## North star: accuracy and latency
 
@@ -33,6 +34,12 @@ conversion close to real time with near-perfect note capture.
 - **Pedal notation on the sheet**: the sustain pedal is engraved (done in
   `0d41746` — `Ped.` and the release star from CC64, under the bass staff);
   the soft pedal is still only heard, not written.
+- **Room profile**: one inaudible chirp at launch measures the room's decay
+  and its noise floor, and the onset and offset thresholds set themselves to
+  that room instead of one tuning fitting every room — a live room smears
+  offsets, a dry one makes them brittle. Cheap and measurable against the
+  golden set, so it subsumes the quiet-room energy-gate study listed under
+  the small levers.
 
 ## Where it stands
 
@@ -397,6 +404,33 @@ When the three main functionalities are all fully complete — **recording**,
 gets a beautiful, lush and creative landing page in the app's paper-and-glass
 design language (see `docs/design-language.md`).
 
+## Far horizon (only after recording, the sheet and the learning section are done)
+
+Approved on 2026-11-23, and deliberately parked until the three main
+functionalities are finished. Each of these changes what Cadenza *is* rather
+than what it shows, so none of them may pull work away from the detector, the
+sheet or the learning section.
+
+- **Sing above your playing** — hum or sing a line while playing; the app
+  tracks the voice, aligns it with the piano's onsets and sets it on its own
+  staff and its own MIDI track, so a melody that only existed in the head
+  becomes part of the take. The hard part is not the pitch tracker but telling
+  a sung pitch from the piano's partials underneath it.
+- **Borrow a groove** — take the feel of one performance (the micro-timing of
+  its eighths, its swing, its velocity curve) and lay it over an imported
+  MIDI, so a dry file plays the way the player does. The measurements are
+  already in the note events; what is missing is a groove model and an editor
+  for how much of it to apply.
+- **A plug-in instead of an app** — the transcription as an AUv3 MIDI effect
+  inside Logic, Ableton or anything else that hosts one: notes, chords and the
+  engraved page arriving in the DAW that is already open. The engine already
+  sits behind a protocol; the work is an extension target, a shared container
+  and the sandbox that comes with it.
+- **An ensemble in one take** — a room of players landing in separate staves:
+  separate the sources, transcribe each stream, then engrave one score. The
+  same pipeline behind a harder front end, and it only makes sense once a
+  single piano is close to the 99% target.
+
 ## Ideas parked
 
 Directions agreed on, waiting for their turn:
@@ -614,8 +648,9 @@ and, eventually, fine-tuning on real recordings.
 ## Small levers, in rough order
 
 - A level meter on the session meta lens, wired to the existing tap state.
-- Input validation for quiet rooms: an energy gate study if quiet-passage
-  misfires persist on a good microphone.
+- Input validation for quiet rooms: the room profile above replaces one fixed
+  gate with the room's own measurement, so a separate energy-gate study only
+  matters if quiet-passage misfires persist on a good microphone.
 
 ## Tooling that stays useful
 
