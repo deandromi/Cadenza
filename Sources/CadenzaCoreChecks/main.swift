@@ -19,6 +19,11 @@ var checks = 0
     }
 }
 
+/// The page without its slur marks, for checks about notes and lengths.
+func bare(_ text: String) -> String {
+    text.replacingOccurrences(of: "(", with: "").replacingOccurrences(of: ")", with: "")
+}
+
 func readF32(_ path: String) -> [Float] {
     let data = try! Data(contentsOf: URL(fileURLWithPath: path))
     return data.withUnsafeBytes { raw in
@@ -1578,9 +1583,10 @@ lilyPondPage: do {
     ]
 
     /// A token's length: a note carries it as a suffix, a rest behind its r,
-    /// and a tie hangs a tilde on the end.
+    /// a tie hangs a tilde on the end, and a slur opens `(` or closes `)`.
     func ticks(_ token: String) -> Int? {
-        var body = token
+        var body = token.replacingOccurrences(of: "(", with: "")
+            .replacingOccurrences(of: ")", with: "")
         if body.hasSuffix("~") { body.removeLast() }
         if body.hasPrefix("r") { body.removeFirst() }
         for length in lengths where body.hasSuffix(length.suffix) {
@@ -1633,8 +1639,8 @@ lilyPondPage: do {
                                            "\\set Timing.beamExceptions = #'()",
                                            "\\set Timing.baseMoment = #(ly:make-moment 1/4)",
                                            "\\set Timing.beatStructure = 1,1,1,1",
-                                           "c'4 d'4 e'4 f'4 | \\bar \"|.\""],
-           "the right hand reads as its notes: \(staff(text, clef: "treble"))")
+                                           "c'4( d'4 e'4 f'4) | \\bar \"|.\""],
+           "the right hand reads as its notes, slurred as one phrase: \(staff(text, clef: "treble"))")
     expect(bars(text, clef: "bass").isEmpty,
            "the hand that played nothing has no bars to print: \(bars(text, clef: "bass"))")
     let bothHands = LilyPondScore.text(score([[note(60, 0, 480), note(48, 0, 960)]]))
@@ -1662,7 +1668,7 @@ lilyPondPage: do {
            "and the bar it sits in still counts four beats")
     let run = LilyPondScore.text(score([[note(72, 0, 120), note(74, 120, 120),
                                           note(76, 240, 120)]]))
-    expect(staff(run, clef: "treble").last?.hasPrefix("c''16 d''16 e''16") == true,
+    expect(staff(run, clef: "treble").last?.hasPrefix("c''16( d''16 e''16)") == true,
            "a run stays a run: \(staff(run, clef: "treble"))")
 
     // Every bar of the page has to count its meter, whatever was played: the
@@ -1812,7 +1818,7 @@ lilyPondRules: do {
     let pickupText = LilyPondScore.text(pickup)
     expect(pickupText.contains("\\partial 4."),
            "a pickup declares its own short bar")
-    expect(pickupText.contains("c''8 d''4 |"),
+    expect(bare(pickupText).contains("c''8 d''4 |"),
            "and the notes before the downbeat are still on the page: \(pickupText.components(separatedBy: "\n").filter { $0.contains("|") })")
     expect(LilyPondScore.audit(pickup).isEmpty,
            "the pickup bar counts its own length: \(LilyPondScore.audit(pickup))")
@@ -1835,7 +1841,7 @@ lilyPondRules: do {
     let pageText = LilyPondScore.text(page)
     expect(LilyPondScore.audit(page, text: pageText).isEmpty,
            "a legal page passes its own audit: \(LilyPondScore.audit(page, text: pageText))")
-    let broken = pageText.replacingOccurrences(of: "c'4 e'4", with: "c'4 e'8")
+    let broken = pageText.replacingOccurrences(of: "c'4( e'4", with: "c'4( e'8")
     expect(!LilyPondScore.audit(page, text: broken).isEmpty,
            "a bar that lost a value is caught by the audit")
 
@@ -1847,6 +1853,100 @@ lilyPondRules: do {
            "the widest chord is the four-note grip")
     expect(LilyPondScore.summary(of: chordScore).staves == 1,
            "and the page is one staff")
+}
+
+// MARK: phrasing, the model that decides where a slur goes
+
+phrasingModel: do {
+    func event(_ onset: Int, _ length: Int = 120, _ pitch: Int = 72) -> PhraseEvent {
+        PhraseEvent(onsetTick: onset, endTick: onset + length, pitches: [pitch])
+    }
+    // 4/4 at 480 ticks to the quarter
+    let rules = Phrasing.Rules(barTicks: 480, breathTicks: 480)
+
+    // Two measures played straight through are one phrase, from the first
+    // attack inside the first bar to the last attack before the second
+    // barline: an arc that lands on measures, not in the middle of one.
+    let straight = [event(0, 120, 72), event(120, 120, 74), event(240, 120, 76),
+                    event(480, 120, 77), event(600, 120, 79)]
+    let straightSpans = Phrasing.spans(straight, rules: rules)
+    expect(straightSpans == [PhraseSpan(first: 0, last: 4)],
+           "two bars of music are one phrase: \(straightSpans)")
+
+    // A beat of silence between the bars is a breath.
+    let breathed = [event(0, 120, 72), event(120, 120, 74), event(240, 120, 76),
+                    event(960, 120, 77)]
+    expect(Phrasing.spans(breathed, rules: rules) == [PhraseSpan(first: 0, last: 2)],
+           "a beat of silence closes the phrase: \(Phrasing.spans(breathed, rules: rules))")
+
+    // A leap of more than an octave between the bars starts a new one.
+    let leapt = [event(0, 120, 72), event(120, 120, 74), event(240, 120, 76),
+                 event(480, 120, 48)]
+    expect(Phrasing.spans(leapt, rules: rules) == [PhraseSpan(first: 0, last: 2)],
+           "a leap wider than an octave closes the phrase: \(Phrasing.spans(leapt, rules: rules))")
+
+    // An empty bar does it too.
+    let skipped = [event(0, 120, 72), event(120, 120, 74), event(240, 120, 76),
+                   event(1440, 120, 77)]
+    expect(Phrasing.spans(skipped, rules: rules) == [PhraseSpan(first: 0, last: 2)],
+           "a bar with nothing in it closes the phrase: \(Phrasing.spans(skipped, rules: rules))")
+
+    // A single bar of three attacks is a phrase of its own.
+    let oneBar = [event(0, 120, 72), event(120, 120, 74), event(240, 120, 76)]
+    expect(Phrasing.spans(oneBar, rules: rules) == [PhraseSpan(first: 0, last: 2)],
+           "one bar with three attacks is a phrase: \(Phrasing.spans(oneBar, rules: rules))")
+
+    // Two attacks, or the same chord struck three times, print nothing.
+    expect(Phrasing.spans([event(0, 120, 72), event(120, 120, 74)], rules: rules).isEmpty,
+           "a two-attack scrap does not earn a slur")
+    expect(Phrasing.spans([event(0, 120, 60), event(120, 120, 60), event(240, 120, 60)],
+                          rules: rules).isEmpty,
+           "the same chord struck over and over is not a phrase")
+
+    // No phrase runs past two measures, however legato the playing.
+    let endless = (0..<24).map { event($0 * 120, 120, 60 + ($0 % 5)) }
+    let endlessSpans = Phrasing.spans(endless, rules: rules)
+    expect(endlessSpans.allSatisfy { $0.last - $0.first < 16 },
+           "no phrase swallows half a page: \(endlessSpans)")
+
+    // Spans never overlap and always run forwards.
+    expect(zip(endlessSpans, endlessSpans.dropFirst()).allSatisfy { $0.last < $1.first },
+           "phrases follow one another without sharing an attack")
+    expect(endlessSpans.allSatisfy { $0.first < $0.last }, "every phrase covers more than one attack")
+
+    // A pickup measure starts before zero and still groups with its own bar.
+    let pickup = Phrasing.Rules(barTicks: 480, originTick: -240, breathTicks: 480)
+    let early = [event(-240, 240, 72), event(0, 120, 74), event(120, 120, 76),
+                 event(240, 120, 77)]
+    expect(Phrasing.spans(early, rules: pickup).first?.first == 0,
+           "a pickup phrase starts on its first attack")
+
+    // The page the writer prints carries the arcs, balanced, and the audit
+    // reads them as marks rather than as values.
+    func phraseScore() -> Score {
+        let framing = ScoreFraming(beatsPerMinute: 96,
+                                   timeSignature: TimeSignature(beatsPerMeasure: 4, beatUnit: 4),
+                                   key: KeySignature(tonic: 0, isMinor: false))
+        let notes = [60, 62, 64, 65, 67, 69, 71, 72].enumerated().map { index, pitch in
+            ScoreNote(pitch: pitch, onsetTick: index * 60, durationTicks: 60, velocity: 80)
+        }
+        return Score(framing: framing,
+                     measures: [ScoreMeasure(index: 0, startTick: 0, notes: notes)],
+                     chords: [])
+    }
+    let page = LilyPondScore.text(phraseScore())
+    expect(page.contains("(") && page.contains(")"),
+           "a bar of eight moving notes is slurred: \(page.components(separatedBy: "\n").filter { $0.contains("|") })")
+    expect(LilyPondScore.printedSlurs(in: page) == 1,
+           "one phrase prints one slur: \(LilyPondScore.printedSlurs(in: page))")
+    expect(LilyPondScore.audit(phraseScore(), text: page).isEmpty,
+           "the slit page still audits clean: \(LilyPondScore.audit(phraseScore(), text: page))")
+
+    // A slur that never closes is what a broken phrase model looks like, and
+    // the audit has to name it.
+    let unclosed = page.replacingOccurrences(of: ")", with: "")
+    expect(LilyPondScore.audit(phraseScore(), text: unclosed).contains { $0.message.contains("never close") },
+           "an unclosed slur is caught by the audit")
 }
 
 if failures == 0 {

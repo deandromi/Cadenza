@@ -304,6 +304,27 @@ public enum LilyPondScore {
                                   dynamics: [Int: String]) -> [String] {
         let events = attacks(score, hand: hand)
         let stream = capped(events)
+        // Where each attack is printed last: a note cut by the end of the
+        // piece is still the note a slur has to close on.
+        var lastPrintedBar: [Int: Int] = [:]
+        for (position, bar) in bars.enumerated() {
+            for (index, event) in stream.enumerated()
+            where event.end > bar.printedStart && event.onset < bar.end {
+                lastPrintedBar[index] = position
+            }
+        }
+        // Slurs cover what a hand played without breathing, over the attacks
+        // that reach the page: an attack beyond the last bar is not a phrase
+        // ending, it is a note that was not printed.
+        let printOrder = stream.indices.filter { lastPrintedBar[$0] != nil }
+        let marked = Phrasing.marked(
+            printOrder.map { PhraseEvent(onsetTick: stream[$0].onset,
+                                         endTick: stream[$0].end,
+                                         pitches: stream[$0].pitches) },
+            rules: Phrasing.Rules(signature: framing.timeSignature,
+                                  originTick: bars.first?.start ?? 0))
+        let slurStarts = Set(marked.starts.map { printOrder[$0] })
+        let slurEnds = Set(marked.ends.map { printOrder[$0] })
         var lines: [String] = []
         let prefix = "      "
         // The pedal is a staff property, but it has to live inside a music
@@ -345,7 +366,7 @@ public enum LilyPondScore {
         /// One stream's measures, filled from that stream's own attacks.
         func measures(of stream: [Attack], carriesMarks: Bool) -> [String] {
             var result: [String] = []
-            for bar in bars {
+            for (barPosition, bar) in bars.enumerated() {
                 let start = bar.printedStart
                 let end = bar.end
                 var tokens: [String] = []
@@ -355,7 +376,7 @@ public enum LilyPondScore {
                 if carriesMarks {
                     flushMarks(upTo: start, into: &tokens)
                 }
-                for event in stream where event.end > start && event.onset < end {
+                for (index, event) in stream.enumerated() where event.end > start && event.onset < end {
                     let pieceStart = max(event.onset, start)
                     let pieceEnd = min(event.end, end)
                     guard pieceEnd > pieceStart else { continue }
@@ -368,9 +389,15 @@ public enum LilyPondScore {
                     if carriesMarks {
                         flushMarks(upTo: pieceStart, into: &tokens)
                     }
+                    // A slur opens on the first printed piece of its first
+                    // event and closes on the last printed piece of its last,
+                    // so a phrase that crosses a barline still arrives whole.
+                    let slurStart = slurStarts.contains(index) && pieceStart == event.onset
+                    let slurEnd = slurEnds.contains(index) && lastPrintedBar[index] == barPosition
                     tokens.append(contentsOf: tone(event.pitches, ticks: pieceEnd - pieceStart,
                                                    tiedOnward: event.end > pieceEnd,
-                                                   key: framing.key))
+                                                   key: framing.key,
+                                                   slurStart: slurStart, slurEnd: slurEnd))
                     // A mark inside a note takes effect where that note ends.
                     if carriesMarks {
                         flushMarks(upTo: pieceEnd - 1, into: &tokens)
@@ -421,8 +448,13 @@ public enum LilyPondScore {
     /// One held note, written as far as it goes and tied to what follows. A
     /// value too long for one symbol (a note held across a 5/4 bar) becomes a
     /// chain of tied symbols, so nothing is silently shortened.
+    ///
+    /// A slur opens right after the value and closes after the tie, which is
+    /// the one spelling LilyPond reads on a note that is both slurred and
+    /// held over a barline (`f4~)`).
     private static func tone(_ pitches: [Int], ticks: Int, tiedOnward: Bool,
-                             key: KeySignature) -> [String] {
+                             key: KeySignature, slurStart: Bool = false,
+                             slurEnd: Bool = false) -> [String] {
         let names = pitches.map { name(for: $0, in: key) }
         let head = names.count == 1 ? names[0] : "<" + names.joined(separator: " ") + ">"
         var remaining = ticks
@@ -432,11 +464,16 @@ public enum LilyPondScore {
             guard value > 0, value <= remaining else { break }
             let left = remaining - value
             let tie = left > 0 || tiedOnward
-            tokens.append(head + (durationToken(value) ?? "32") + (tie ? "~" : ""))
+            let opens = slurStart && tokens.isEmpty
+            tokens.append(head + (durationToken(value) ?? "32") + (opens ? "(" : "")
+                         + (tie ? "~" : ""))
             remaining = left
         }
         if tokens.isEmpty {
-            tokens.append(head + "32" + (tiedOnward ? "~" : ""))
+            tokens.append(head + "32" + (slurStart ? "(" : "") + (tiedOnward ? "~" : ""))
+        }
+        if slurEnd, !tokens.isEmpty {
+            tokens[tokens.count - 1] += ")"
         }
         return tokens
     }
@@ -564,8 +601,9 @@ public enum LilyPondScore {
                                         message: "counts \(total) ticks where the bar holds \(expected)"))
                 }
             }
+            issues.append(contentsOf: slurIssues(staff))
             for (position, tokens) in staff.bars.enumerated() where position + 1 < staff.bars.count {
-                guard let last = tokens.last, last.hasSuffix("~") else { continue }
+                guard let last = tokens.last, isTied(last) else { continue }
                 let next = staff.bars[position + 1].first
                 if next == nil || next!.hasPrefix("r") || pitchSet(of: next!) != pitchSet(of: last) {
                     issues.append(Issue(staff: staff.clef, measure: position + 1,
@@ -613,9 +651,53 @@ public enum LilyPondScore {
     public static func printedTies(in text: String) -> Int {
         staffBodies(text).reduce(0) { total, staff in
             total + staff.bars.reduce(0) { sum, bar in
-                sum + bar.filter { $0.hasSuffix("~") }.count
+                sum + bar.filter { isTied($0) }.count
             }
         }
+    }
+
+    /// Slurs the page actually prints, read back from the text.
+    public static func printedSlurs(in text: String) -> Int {
+        staffBodies(text).reduce(0) { total, staff in
+            total + staff.bars.reduce(0) { sum, bar in
+                sum + bar.reduce(0) { count, token in
+                    count + token.filter { $0 == "(" }.count
+                }
+            }
+        }
+    }
+
+    /// A strung-together arc is not a slur: each `(` needs its `)`, no slur
+    /// may open inside another, and none may close what it did not open. An
+    /// overlapping phrase would show up here.
+    private static func slurIssues(_ staff: ParsedStaff) -> [Issue] {
+        var open = 0
+        var issues: [Issue] = []
+        for (position, tokens) in staff.bars.enumerated() {
+            for token in tokens where token.contains("(") || token.contains(")") {
+                for mark in token where mark == "(" || mark == ")" {
+                    if mark == "(" {
+                        if open > 0 {
+                            issues.append(Issue(staff: staff.clef, measure: position + 1,
+                                                message: "a slur opens inside another"))
+                        }
+                        open += 1
+                    } else {
+                        open -= 1
+                        if open < 0 {
+                            issues.append(Issue(staff: staff.clef, measure: position + 1,
+                                                message: "a slur closes without opening"))
+                            open = 0
+                        }
+                    }
+                }
+            }
+        }
+        if open > 0 {
+            issues.append(Issue(staff: staff.clef, measure: staff.bars.count,
+                                message: "\(open) slur(s) never close"))
+        }
+        return issues
     }
 
     // MARK: - reading the page back (the audit's own parser)
@@ -695,8 +777,17 @@ public enum LilyPondScore {
         return kept
     }
 
+    /// The token without the marks that do not change what sounds: a slur
+    /// opens with `(` and closes with `)`, and neither moves a pitch or a
+    /// length, so every reader looks at the body.
+    private static func withoutSlurs(_ token: String) -> String {
+        token.replacingOccurrences(of: "(", with: "").replacingOccurrences(of: ")", with: "")
+    }
+
+    private static func isTied(_ token: String) -> Bool { token.contains("~") }
+
     private static func pitchSet(of token: String) -> Set<String> {
-        var body = token
+        var body = withoutSlurs(token)
         if body.hasSuffix("~") { body.removeLast() }
         if let open = body.firstIndex(of: "<"), let close = body.lastIndex(of: ">") {
             return Set(body[body.index(after: open)..<close].split(separator: " ").map(String.init))
@@ -708,7 +799,7 @@ public enum LilyPondScore {
     }
 
     private static func tickLength(ofToken token: String) -> Int? {
-        var body = token
+        var body = withoutSlurs(token)
         if body.hasSuffix("~") { body.removeLast() }
         if body.hasPrefix("r") { body.removeFirst() }
         for entry in durations where body.hasSuffix(entry.token) {

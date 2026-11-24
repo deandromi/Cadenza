@@ -690,7 +690,7 @@ extension SmokeMain {
         var totalHeads = 0
         var totalIssues = 0
         var worstWidest = 0
-        print("take                       played  heads  bars  staves  widest  ties merged  pedals  framing          audit")
+        print("take                       played  heads  bars  staves  widest  ties slurs merged  pedals  framing          audit")
         for file in files {
             guard let midi = try? MidiReader.read(url: file) else {
                 print("\(file.lastPathComponent): unreadable")
@@ -716,6 +716,7 @@ extension SmokeMain {
             let issues = LilyPondScore.audit(score, text: text)
             let summary = LilyPondScore.summary(of: score)
             let printedTies = LilyPondScore.printedTies(in: text)
+            let printedSlurs = LilyPondScore.printedSlurs(in: text)
             let heads = LilyPondScore.headCount(score)
             // Two strikes of one pitch inside one sixteenth are one head on
             // the page: a chord cannot repeat a pitch, so the merge is the
@@ -725,9 +726,9 @@ extension SmokeMain {
             let meter = "\(score.framing.timeSignature.beatsPerMeasure)/\(score.framing.timeSignature.beatUnit)"
             let tempo = Int(score.framing.beatsPerMinute.rounded())
             let name = title
-            print(String(format: "%-24@ %7d %6d %5d %7d %7d %5d %6d %7d  %3d bpm %-5@ %5d",
+            print(String(format: "%-24@ %7d %6d %5d %7d %7d %5d %5d %6d %7d  %3d bpm %-5@ %5d",
                          name as NSString, notes.count, heads, score.measures.count,
-                         summary.staves, summary.widestChord, printedTies,
+                         summary.staves, summary.widestChord, printedTies, printedSlurs,
                          merged, score.pedals.count, tempo, meter as NSString, issues.count))
             for issue in issues.prefix(3) {
                 print("    \(issue)")
