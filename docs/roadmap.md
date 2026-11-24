@@ -53,20 +53,24 @@ conversion close to real time with near-perfect note capture.
   land, and MIDI export is verified.
 - Every session ends by itself with a `.mid` and an engraved `.pdf` in its
   folder; the page is set by the bundled LilyPond, with tempo, meter, key,
-  beams and dynamics chosen from the performance. Settings, the session
-  archive, import, per-session export, A–B loop, play-along and statistics
-  are built; the sheet's phrase marks are not.
+  beams, slurs and dynamics chosen from the performance. Settings, the
+  session archive, import, per-session export, A–B loop, play-along,
+  statistics, the soft pedal and the running staff's own measures are built.
+- Measured on the rendered Hey Bulldog take (60 s, 44.1 kHz): precision
+  0.864, recall 0.963, F1 0.911, offset error median 0.14 s, latency median
+  1.75 s, one 16 s window costing about 0.95 s (0.9 of it the backbone).
 
 ### Next up, in order
 
-1. **Phrase marks on the page.** Slurs are the last thing standing between
-   the engraved page and a publisher's look, and they need a phrase model
-   rather than a legato rule (legato alone carries 85% of attacks).
-2. **The live staff and the printed page agree.** The endless measure in the
-   window quantises on its own; it should follow the same framing the
-   engraver used, so what a player watches become what they print.
-3. **Latency and recall.** Median latency is about 2.0 s against a target
-   under 1 s, and the remaining misses sit in the lowest bass register.
+1. **A decode under half a second.** Latency is the step that carries a note
+   plus its window's decode, and the decode is 0.9 s of backbone on the GPU.
+   Everything else waits on that: a shorter step buys nothing while a window
+   costs a second.
+2. **The tail, not the median.** The pacer now reads the median of the last
+   eight decodes, so one stall costs one window; the p90 still needs a
+   measurement on a cool machine.
+3. **The lowest bass register.** Recall is 0.963 overall and the misses that
+   remain sit below C2, where the model needs the detector's help.
 
 ## Known bugs (user-reported, and where they stand)
 
@@ -143,6 +147,15 @@ conversion close to real time with near-perfect note capture.
   follows the piano's actual pitch.
 - **Click tempo and meter**, the published MIDI port with a republish action,
   the engraver in use, and the build's version number.
+
+## The running staff on the home screen (built 2026-11-24)
+
+The endless measure draws the key signature, the meter and a barline wherever
+a measure opens in the played line, using the same inference the engraver
+runs (tempo, meter, key) at a reading pace. Accidentals follow the key
+instead of C major, and notation is clipped at the signpost rather than
+printed over the clef. What a player watches and what they print now come
+from one framing.
 
 ## Practice tools
 
@@ -320,6 +333,25 @@ Ground rules for that work: meter, key and tempo inference belong in
 CadenzaCore where they are testable from recorded MIDI with no audio stack,
 notation layout is deterministic and unit-testable, and the renderer only
 draws what the layout produces.
+
+### Phrase marks (built 2026-11-24)
+
+Slurs are not a legato rule: 85% of attacks in the reference takes run on
+from the one before, so "note touches the next" slurs the page end to end.
+`Phrasing` groups whole measures instead — a phrase starts inside a measure,
+closes before a barline, carries into the next bar only when music arrives
+without a breath, a leap wider than an octave or an empty bar, and never runs
+past two measures. A phrase of fewer than three attacks, or of one chord
+struck over and over, prints nothing. The audit refuses a slur that opens
+inside another or never closes. Measured: Satie 155 slurs over 146 bars,
+Debussy 101 over 148, Hey Bulldog 60 over 67, 0 audit issues.
+
+### The soft pedal (built 2026-11-24)
+
+CC67 is read into its own lane (it changes colour, never a length) and the
+page writes `una corda` and `tre corde` where the colour changes, with no
+pedal line under them. A microphone take still cannot say whether the una
+corda was down: that needs a timbre measurement, and it is not built.
 
 ### Where the sheet generator stands
 
