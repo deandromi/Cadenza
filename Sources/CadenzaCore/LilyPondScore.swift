@@ -64,11 +64,17 @@ public enum LilyPondScore {
             lines.append(header)
             lines.append("")
         }
-        lines.append("#(set-global-staff-size 19.9)")
+        // a piano page reads at roughly seven millimetres per staff, which
+        // is what an urtext edition uses; LilyPond's default sits smaller
+        lines.append("#(set-global-staff-size 21)")
         // The title is drawn in the top margin, and the first system is placed
         // under it: the default margin is shallower than a title, which put the
         // music through its own heading.
-        lines.append("\\paper { top-margin = 26\\mm }")
+        lines.append("\\paper {")
+        lines.append("  top-margin = 26\\mm")
+        // systems sit a reading breath apart rather than a default gap
+        lines.append("  system-system-spacing = #'((basic-distance . 15) (minimum-distance . 11) (padding . 1))")
+        lines.append("}")
         lines.append("\\layout {")
         lines.append("  \\context {")
         lines.append("    \\Staff")
@@ -189,6 +195,30 @@ public enum LilyPondScore {
         }
     }
 
+    /// Beam grouping per beat, in the units the meter is felt in: quarters
+    /// in simple meters, dotted quarters in compound ones. LilyPond's stock
+    /// exceptions beam a whole 3/4 bar at once, which reads as a run.
+    private static func beamSettings(_ signature: TimeSignature) -> [String] {
+        let compound = signature.beatUnit == 8 && signature.beatsPerMeasure % 3 == 0
+        let moment: String
+        if compound {
+            moment = "3/8"
+        } else {
+            switch signature.beatUnit {
+            case 2: moment = "1/2"
+            case 8: moment = "1/8"
+            default: moment = "1/4"
+            }
+        }
+        let beats = compound ? signature.beatsPerMeasure / 3 : signature.beatsPerMeasure
+        let structure = Array(repeating: "1", count: max(1, beats)).joined(separator: ",")
+        return [
+            "\\set Timing.beamExceptions = #'()",
+            "\\set Timing.baseMoment = #(ly:make-moment \(moment))",
+            "\\set Timing.beatStructure = \(structure)",
+        ]
+    }
+
     /// Every attack of one hand, in order. Onsets are the score's own
     /// quantized ticks: a chord is what sounded at one instant, never what
     /// happened to fall inside one grid cell.
@@ -229,7 +259,9 @@ public enum LilyPondScore {
             [(tick: $0.startTick, text: "\\sustainOn"), (tick: $0.endTick, text: "\\sustainOff")]
         }.sorted { $0.tick < $1.tick }
         if !marks.isEmpty {
-            lines.append(prefix + "\\set Staff.pedalSustainStyle = #'text")
+            // mixed is the printed Ped. and its release mark, not a
+            // string of text masquerading as one
+            lines.append(prefix + "\\set Staff.pedalSustainStyle = #'mixed")
         }
         var markIndex = 0
         func flushMarks(upTo tick: Int, into tokens: inout [String]) {
@@ -248,6 +280,10 @@ public enum LilyPondScore {
         } else {
             lines.append(prefix + meter)
         }
+        // Where the beams break. LilyPond's own default in 3/4 runs one
+        // beam across the whole bar, and a bar-long beam in a waltz is
+        // not what anyone engraves.
+        lines.append(contentsOf: beamSettings(framing.timeSignature).map { prefix + $0 })
         // A pickup is a short first bar, and LilyPond has to be told its
         // length or it reads the bar as one that lost a note.
         if let opener = bars.first, opener.start < 0, opener.printedLength > 0 {

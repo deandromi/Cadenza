@@ -64,29 +64,34 @@ extension SheetDraft {
         let floor = all.map(\.pitch).min() ?? 0
         let deep = all.filter { $0.pitch <= floor + 7 }
         let bass = deep.count >= 4 ? deep : all
-        guard bass.count >= 4 else { return nil }
+        guard bass.count >= 12 else { return nil }
         let origin = bass[0].onset
-        var best: (numerator: Int, score: Double)?
-        for numerator in [3, 4, 2] {
-            let bar = quarter * Double(numerator)
-            let window = 0.12  // an eighth of a 3/4 bar, near enough to hear
-            var hits = 0
+        // Phase concentration of the bass around a bar length: a waltz bass
+        // comes back every three beats, and under any other period its
+        // phase drifts. Two and four cannot be separated this way — a
+        // four-beat barline is also a two-beat barline — so this only ever
+        // calls a waltz, and everything else defers to the meter scorer.
+        func concentration(beats: Double) -> Double {
+            let bar = quarter * beats
+            guard bar > 0.1 else { return 0 }
+            var x = 0.0
+            var y = 0.0
             for note in bass {
-                let position = ((note.onset - origin).truncatingRemainder(dividingBy: bar)) / bar
-                if position < window || position > 1 - window { hits += 1 }
+                let phase = 2 * Double.pi * (note.onset - origin) / bar
+                x += cos(phase)
+                y += sin(phase)
             }
-            let share = Double(hits) / Double(bass.count)
-            // how much better than chance on a grid this coarse
-            let score = share - 2 * window
-            if ProcessInfo.processInfo.environment["CDZ_METER_DEBUG"] != nil {
-                print(String(format: "[meter] %d/4 share %.2f score %.2f", numerator, share, score))
-            }
-            if best == nil || score > best!.score + 0.02 {
-                best = (numerator, score)
-            }
+            return (x * x + y * y).squareRoot() / Double(bass.count)
         }
-        guard let best, best.score > 0.03 else { return nil }
-        return best.numerator
+        let three = concentration(beats: 3)
+        let four = concentration(beats: 4)
+        if ProcessInfo.processInfo.environment["CDZ_METER_DEBUG"] != nil {
+            print(String(format: "[meter] bass %d notes, three %.2f four %.2f",
+                         bass.count, three, four))
+        }
+        // a waltz has to be tight and clearly tighter than four
+        guard three >= 0.30, three >= 2 * four else { return nil }
+        return 3
     }
 
     private static func emptyResult(options: Options) -> Result {

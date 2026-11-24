@@ -73,25 +73,38 @@ public enum Engraver {
         return unique.isEmpty ? [120] : unique
     }
 
-    /// Average tempo in quarter notes per minute: the heaviest onset
-    /// cluster whose tempo sits in the range where a tap-along beat lives
-    /// (50-190 bpm). Faster clusters are subdivisions of the beat, slower
-    /// ones are the bar; if nothing lands in range the heaviest cluster
-    /// overall wins, clamped. Ties go to the slower period, because the
-    /// beat is what the foot taps, not the hand.
+    /// The tempo a player would read, in quarter notes per minute.
+    ///
+    /// The hand's fastest recurring pulse and the foot's beat are rarely the
+    /// same interval: a waltz accompaniment moves in eighths that outnumber
+    /// the quarters two to one, and a page notated on the hand's pulse comes
+    /// out twice as long as the music with half its values demoted to
+    /// sixteenths. So the heaviest onset cluster is taken as the hand's
+    /// pulse and folded by octaves into the span where notes are read
+    /// instead of counted — between a slowish largo and a brisk allegro.
+    /// Octave folding keeps the ratio intact, so a piece still reads as
+    /// twice as fast as a piece at half its pulse.
     public static func inferTempo(_ notes: [NoteEvent]) -> Double {
         let clusters = onsetClusters(notes)
         guard !clusters.isEmpty else { return 120 }
-        let inRange = clusters.filter {
-            let bpm = 60.0 / $0.period
-            return bpm >= 50 && bpm <= 190
-        }
-        let pool = inRange.isEmpty ? clusters : inRange
-        let best = pool.max { a, b in
+        let best = clusters.max { a, b in
             if a.weight != b.weight { return a.weight < b.weight }
             return a.period < b.period
         }!
-        return min(240, max(40, 60.0 / best.period))
+        return foldedTempo(60.0 / best.period)
+    }
+
+    /// The span where a page is read rather than counted: 56 to 152.
+    static let readableTempo: ClosedRange<Double> = 56...152
+
+    /// Fold a raw pulse into the readable span by octaves, so the notation
+    /// keeps the rhythm's ratios and only its scale changes.
+    static func foldedTempo(_ pulse: Double) -> Double {
+        guard pulse > 0 else { return 120 }
+        var folded = min(240, max(40, pulse))
+        while folded > readableTempo.upperBound { folded /= 2 }
+        while folded < readableTempo.lowerBound { folded *= 2 }
+        return folded
     }
 
     // MARK: key
@@ -225,16 +238,20 @@ public enum Engraver {
         for candidate in meterCandidates {
             let measureTicks = candidate.signature.ticksPerMeasure
             let beatTicks = candidate.signature.ticksPerBeat
+            let feltBeat = feltBeatTicks(candidate.signature)
+            let spanPrior = barSpanPrior(candidate.signature, tempo: tempo)
             let positionCount = measureTicks / snap
             guard positionCount > 0 else { continue }
 
+            // positions are tick offsets inside the measure, so they are
+            // compared against tick distances directly
             func positionWeight(_ position: Int, velocity: Double) -> Double {
                 let accent = 0.5 + velocity / 254.0
                 if position == 0 {
                     return accent
-                } else if position % beatTicks == 0 {
+                } else if position % feltBeat == 0 {
                     return 0.55 * accent
-                } else if position % snap == 0 {
+                } else if position % (snap * 2) == 0 {
                     return 0.25 * accent
                 } else {
                     return 0.05 * accent
@@ -260,7 +277,7 @@ public enum Engraver {
                     observed += positionWeight(position, velocity: Double(strike.velocity))
                     if position == 0 {
                         downbeatVelocities.append(Double(strike.velocity))
-                    } else if position % beatTicks == 0 {
+                    } else if position % feltBeat == 0 {
                         beatVelocities.append(Double(strike.velocity))
                     } else {
                         otherVelocities.append(Double(strike.velocity))
@@ -284,7 +301,7 @@ public enum Engraver {
                     }
                 }
 
-                let total = gridLift * accentLift * candidate.prior
+                let total = gridLift * accentLift * candidate.prior * spanPrior
                 if Self.meterDebug, total > candidateBest {
                     print(String(format: "  meter %d/%d phase %d: grid %.3f accent %.3f total %.3f",
                                  candidate.signature.beatsPerMeasure, candidate.signature.beatUnit,
@@ -296,6 +313,30 @@ public enum Engraver {
             scored.append((candidate.signature, candidateBest))
         }
         return scored.sorted { $0.score > $1.score }
+    }
+
+    /// How readable a measure of this meter is at this tempo. A bar is a
+    /// span the eye takes in at once: one that lasts about a second reads
+    /// as a subdivision, and one that runs past five seconds stops feeling
+    /// like a measure. Centred near two and a half seconds, wide enough to
+    /// leave 3/4 and 6/8 room.
+    private static func barSpanPrior(_ signature: TimeSignature, tempo: Double) -> Double {
+        let quarters = Double(signature.ticksPerMeasure) / Double(scoreTicksPerQuarter)
+        let seconds = quarters * 60.0 / max(1, tempo)
+        guard seconds > 0 else { return 1 }
+        let octaves = log2(seconds / 2.5)
+        return exp(-0.5 * pow(octaves / 0.9, 2))
+    }
+
+    /// The beat a listener feels, in ticks: the signature's own unit, except
+    /// in compound meters, where eighths group in threes and the felt beat
+    /// is the dotted quarter.
+    private static func feltBeatTicks(_ signature: TimeSignature) -> Int {
+        let unit = signature.ticksPerBeat
+        if signature.beatUnit == 8 && signature.beatsPerMeasure % 3 == 0 {
+            return unit * 3
+        }
+        return unit
     }
 
     /// Onset strikes with velocity, on the tick grid at the given tempo:

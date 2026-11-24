@@ -1618,6 +1618,9 @@ lilyPondPage: do {
     expect(!text.contains("\\new PianoStaff <<"),
            "a take that only used the right hand prints one staff, not a pair")
     expect(staff(text, clef: "treble") == ["\\key c \\major", "\\time 4/4 \\tempo 4 = 96",
+                                           "\\set Timing.beamExceptions = #'()",
+                                           "\\set Timing.baseMoment = #(ly:make-moment 1/4)",
+                                           "\\set Timing.beatStructure = 1,1,1,1",
                                            "c'4 d'4 e'4 f'4 | \\bar \"|.\""],
            "the right hand reads as its notes: \(staff(text, clef: "treble"))")
     expect(bars(text, clef: "bass").isEmpty,
