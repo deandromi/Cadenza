@@ -396,6 +396,33 @@ rendered to PNG (`/tmp/pdf2png.swift`, CGPDFDocument) and read visually.
   the choices step lets the user pick — that step is load-bearing, not
   cosmetic.
 
+### Where the page stands after the tempo and meter pass
+
+The table above claimed the tempo octave "nailed both files". The page said
+otherwise: 172 bpm printed a waltz 291 measures long. Two corrections, both
+checked against the published PDFs and the seven takes on this machine.
+
+- Tempo is the pulse a player reads, not the fastest pulse the hand makes.
+  The heaviest onset cluster is folded by octaves into 56-152 bpm, which
+  keeps every ratio and only moves the scale. Satie went from 172 bpm and
+  291 measures to 86 bpm and 146 measures; 146 bars of 3/4 at 86 is 305
+  seconds, and the take is 304.
+- The meter pays for the span it asks a reader to take in, counts its dotted
+  beat when it is compound, and lets the bass say exactly one thing. Two
+  nests in four, so counting barlines the bass touched made the shorter
+  claim unbeatable; phase concentration can call a waltz and nothing else.
+
+| | take | page | page | take |
+|---|---|---|---|---|
+| Je te veux | 2050 notes, 6 pedals | 146 bars, 3/4 at 86, 138 ties | 305 s | 304 s |
+| Hey Bulldog | 1608 notes | 67 bars, 4/4 at 104, 0 ties | 155 s | 152 s |
+| Reflets dans l'eau | 2033 notes, 7 pedals | 148 bars, 4/4 at 120, 113 ties | 296 s | 295 s |
+
+The ties are honest: every engraved duration is already a writable value, so
+a tie always means the note crosses a barline. The page prints LilyPond's
+pedal mark rather than text pretending to be one, a staff at urtext size, and
+beams that break on the beat instead of a bar-long beam in 3/4.
+
 ## Learning section (future)
 
 Chord and melody learning as the third main functionality alongside
