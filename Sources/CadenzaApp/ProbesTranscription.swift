@@ -391,7 +391,100 @@ extension SmokeMain {
         }
     }
 
-    /// The instantaneous path's own number: --instant-latency <file.mid>
+    /// The whole chain, as the app actually runs it: --instant-live-latency
+    /// <file.mid> [rate] [tapBuffer] [seconds]. The audio is synthesized from
+    /// the MIDI, then delivered into the real AudioTapState in the chunk size
+    /// installTap asks for, on a clock that moves at the speed of sound, while
+    /// the real InstantStrikeReader polls it every ten milliseconds. What is
+    /// measured is wall time from the moment a sample was captured to the
+    /// moment the strike left the reader: buffering, the poll, the analysis
+    /// window and the confirmation all included, which is the delay a player
+    /// feels between the key and the note leaving the app.
+    static func runInstantLiveLatency(midiPath: String, rate: Double, tapBuffer: Int, seconds: Double) {
+        guard let file = try? MidiReader.read(url: URL(fileURLWithPath: midiPath)) else {
+            print("instant-live: cannot read \(midiPath)")
+            exit(1)
+        }
+        let notes = file.notes.filter { $0.onset < seconds }
+        guard !notes.isEmpty else {
+            print("instant-live: no notes")
+            exit(1)
+        }
+        let samples = synthTones(notes, rate: rate, limit: seconds)
+        var attackTable: [Int: [Double]] = [:]
+        for note in notes { attackTable[note.pitch, default: []].append(note.onset) }
+
+        final class Collected: @unchecked Sendable {
+            var hits: [(pitch: Int, latency: Double, onset: Double)] = []
+            var stray = 0
+            var started = CACurrentMediaTime()
+            let lock = NSLock()
+        }
+        let collected = Collected()
+        let tapState = AudioTapState()
+        tapState.reset(rate: rate)
+        let attacks = attackTable
+        let reader = InstantStrikeReader(tapState: tapState, rate: rate) { strikes in
+            let now = CACurrentMediaTime()
+            collected.lock.lock()
+            defer { collected.lock.unlock() }
+            for strike in strikes {
+                if let nearest = attacks[strike.pitch]?.min(by: {
+                    abs($0 - strike.atSeconds) < abs($1 - strike.atSeconds)
+                }), abs(nearest - strike.atSeconds) < 0.20 {
+                    // the sample was captured at `nearest`; the reader is
+                    // hearing it now
+                    let sinceCapture = now - collected.started - nearest
+                    collected.hits.append((strike.pitch, sinceCapture, nearest))
+                } else {
+                    collected.stray += 1
+                }
+            }
+        }
+        collected.lock.lock()
+        collected.started = CACurrentMediaTime()
+        collected.lock.unlock()
+        reader.start()
+        let started = CACurrentMediaTime()
+        // the tap's own rhythm: a buffer of `tapBuffer` frames every
+        // tapBuffer / rate seconds, filled from the synthesized audio
+        var fed = 0
+        let slice = Int(0.010 * rate)
+        while fed < samples.count {
+            // what the microphone would have captured by now
+            let elapsed = CACurrentMediaTime() - started
+            let captured = min(samples.count, Int(elapsed * rate))
+            // deliver it the way the tap does: whole buffers only
+            while captured - fed >= tapBuffer || (captured >= samples.count && fed < samples.count) {
+                let end = min(samples.count, fed + tapBuffer)
+                tapState.append(Array(samples[fed..<end]))
+                fed = end
+                if captured - fed < tapBuffer { break }
+            }
+            _ = slice
+            RunLoop.current.run(until: Date().addingTimeInterval(0.002))
+        }
+        // let the last window and its confirmation land
+        RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        reader.stop()
+        collected.lock.lock()
+        let hits = collected.hits
+        let stray = collected.stray
+        collected.lock.unlock()
+        let latencies = hits.map(\.latency).sorted()
+        guard !latencies.isEmpty else {
+            print("instant-live: no strike matched a true attack (\(stray) stray)")
+            exit(1)
+        }
+        let median = latencies[latencies.count / 2]
+        let p90 = latencies[Int(Double(latencies.count - 1) * 0.9)]
+        print(String(format: "instant-live: tap %d frames (%.0f ms), %d attacks found, %d stray",
+                     tapBuffer, Double(tapBuffer) / rate * 1000, latencies.count, stray))
+        print(String(format: "instant-live: median %.0f ms, p90 %.0f ms, best %.0f ms, worst %.0f ms",
+                     median * 1000, p90 * 1000, latencies.first! * 1000, latencies.last! * 1000))
+    }
+
+    /// The instantaneous path's own number: --instant-latency <file.mid>    /// The instantaneous path's own number: --instant-latency <file.mid>
     /// [rate] [maxSeconds]. The MIDI is ground truth, its tone is synthesized
     /// the way --synth-midi does it, and the detector reads it in ten
     /// millisecond chunks exactly as the live reader polls the ring. For every

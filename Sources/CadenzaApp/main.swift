@@ -165,6 +165,15 @@ if let index = CommandLine.arguments.firstIndex(of: "--probe-short"), CommandLin
     exit(0)
 }
 
+if let index = CommandLine.arguments.firstIndex(of: "--instant-live-latency"), CommandLine.arguments.count > index + 1 {
+    SmokeMain.runInstantLiveLatency(
+        midiPath: CommandLine.arguments[index + 1],
+        rate: CommandLine.arguments.count > index + 2 ? Double(CommandLine.arguments[index + 2]) ?? 44100 : 44100,
+        tapBuffer: CommandLine.arguments.count > index + 3 ? Int(CommandLine.arguments[index + 3]) ?? 4096 : 4096,
+        seconds: CommandLine.arguments.count > index + 4 ? Double(CommandLine.arguments[index + 4]) ?? 12 : 12
+    )
+    exit(0)
+}
 if let index = CommandLine.arguments.firstIndex(of: "--instant-latency"), CommandLine.arguments.count > index + 1 {
     SmokeMain.runInstantLatency(
         midiPath: CommandLine.arguments[index + 1],

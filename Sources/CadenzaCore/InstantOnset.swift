@@ -8,18 +8,19 @@ import Foundation
 /// audio. That is the floor of the pipeline, and it is far above what a
 /// player feels as immediate. So the strike is taken twice: this detector
 /// reads the attack from the newest few milliseconds of audio and reports a
-/// first guess within one hop, and the decode follows later with the note
-/// the sheet and the MIDI file are actually made of.
+/// first guess within a couple of hops, and the decode follows later with the
+/// note the sheet and the MIDI file are actually made of.
 ///
 /// What it reports is a *strike*, not a note: pitch, force and when the key
 /// moved. Length is not its business — it only sees the attack — so callers
 /// must treat the guess as provisional and let the decode settle it.
 ///
-/// The method is the plain one from the onset-detection literature: spectral
-/// flux over a short-time spectrum, an adaptive threshold from the median of
-/// the last half second, and harmonic summation for the pitches of the
-/// attack. Piano strings are rich in harmonics and struck in groups, so the
-/// detector takes up to four pitches per attack and never more.
+/// Two frames run side by side, and the split is the whole trick. A short
+/// frame (46 ms) fills quickly, so the attack is heard sooner; a long one
+/// (93 ms) resolves the partials well enough to name a chord. Reading the
+/// attack on the short frame and the voices on the long one costs nothing in
+/// time — both are in memory at the same instant — and keeps both the speed
+/// of the one and the accuracy of the other.
 public final class InstantOnsetDetector {
     /// One attacked pitch.
     public struct Strike: Equatable, Sendable {
@@ -39,8 +40,11 @@ public final class InstantOnsetDetector {
     }
 
     public struct Options: Sendable {
-        /// 93 ms at 44.1 kHz: the attack is still an edge, and the spectrum
-        /// is fine enough to tell C from C sharp, which 46 ms is not.
+        /// 93 ms at 44.1 kHz, and the transform is twice that. The frame has
+        /// to be long enough to resolve a chord's partials; a shorter one
+        /// names the attack sooner but reads the notes from a window the
+        /// attack has not reached the middle of yet, and loses more to wrong
+        /// pitches than it gains in milliseconds.
         public var windowSize = 4096
         /// 11.6 ms: one hop is the detector's whole latency budget.
         public var hopSize = 512
@@ -85,13 +89,61 @@ public final class InstantOnsetDetector {
     /// Whether every candidate attack is logged: CADENZA_INSTANT_DEBUG=1.
     static let verbose = ProcessInfo.processInfo.environment["CADENZA_INSTANT_DEBUG"] != nil
 
-    private let rate: Double
-    private let options: Options
-    private let fftSetup: FFTSetup
-    private let log2n: vDSP_Length
-    private let hann: [Float]
-    private let binWidth: Double
-    private let bins: Int
+    /// One transform of one size, with its window and its packed FFT.
+    private final class FrameSpectrum {
+        let size: Int
+        let bins: Int
+        let binWidth: Double
+        private let setup: FFTSetup
+        private let log2n: vDSP_Length
+        private let hann: [Float]
+
+        init(size: Int, rate: Double) {
+            self.size = size
+            // the transform is twice the window: zero padding buys half the
+            // bin width, which is what separates neighbouring semitones
+            let transform = size * 2
+            bins = transform / 2 + 1
+            binWidth = rate / Double(transform)
+            let log2 = vDSP_Length(round(log2(Double(transform))))
+            log2n = log2
+            setup = vDSP_create_fftsetup(log2, FFTRadix(kFFTRadix2))!
+            var hann = [Float](repeating: 0, count: size)
+            vDSP_hann_window(&hann, vDSP_Length(size), Int32(vDSP_HANN_NORM))
+            self.hann = hann
+        }
+
+        deinit {
+            vDSP_destroy_fftsetup(setup)
+        }
+
+        func magnitudes(_ frame: [Float]) -> [Float] {
+            guard frame.count == size else { return [] }
+            let transform = size * 2
+            var windowed = [Float](repeating: 0, count: transform)
+            vDSP_vmul(frame, 1, hann, 1, &windowed, 1, vDSP_Length(size))
+            var real = [Float](repeating: 0, count: transform / 2)
+            var imaginary = [Float](repeating: 0, count: transform / 2)
+            var out = [Float](repeating: 0, count: bins)
+            real.withUnsafeMutableBufferPointer { realPointer in
+                imaginary.withUnsafeMutableBufferPointer { imaginaryPointer in
+                    var split = DSPSplitComplex(realp: realPointer.baseAddress!,
+                                                imagp: imaginaryPointer.baseAddress!)
+                    windowed.withUnsafeBufferPointer { input in
+                        input.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: transform / 2) { pointer in
+                            vDSP_ctoz(pointer, 2, &split, 1, vDSP_Length(transform / 2))
+                        }
+                    }
+                    vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
+                    vDSP_zvabs(&split, 1, &out, 1, vDSP_Length(transform / 2))
+                }
+            }
+            // vDSP packs Nyquist into the real part of bin 0 and leaves the
+            // last bin short by one; both are outside any pitch this looks for
+            out[bins - 1] = abs(out[0])
+            return out
+        }
+    }
 
     /// One analysed frame, kept so a later frame can be read against it.
     private struct Analysed {
@@ -99,15 +151,22 @@ public final class InstantOnsetDetector {
         let power: Float
     }
 
+    private let rate: Double
+    private let options: Options
+    /// the frame both questions are asked of: does something start here, and
+    /// what is it
+    private let analyser: FrameSpectrum
+
     /// the samples after the last processed hop, still to be framed
     private var pending: [Float] = []
     /// how many samples have been handed to the detector in total
     private var fedSamples = 0
-    /// the last few frames. An attack is read against the frame four hops
-    /// back (46 ms), not the one before it: a tone's partials drift in and out
-    /// of the window's scalloping from hop to hop, and that ripple would
-    /// otherwise fire on a note that is merely still ringing.
+    /// the last few short frames. An attack is read against the frame four
+    /// hops back (46 ms), not the one before it: a tone's partials drift in
+    /// and out of the window's scalloping from hop to hop, and that ripple
+    /// would otherwise fire on a note that is merely still ringing.
     private var frames: [Analysed] = []
+
     /// how far back the flux is read
     private let baselineHops: Int
     /// the recent flux history, for the adaptive median
@@ -135,30 +194,15 @@ public final class InstantOnsetDetector {
     public init(rate: Double = 44100, options: Options = Options()) {
         self.rate = rate
         self.options = options
+        analyser = FrameSpectrum(size: options.windowSize, rate: rate)
         let window = options.windowSize
-        // the transform is twice the window: zero padding buys half the bin
-        // width, which is what separates neighbouring semitones at C4
-        let transform = window * 2
-        bins = transform / 2 + 1
-        binWidth = rate / Double(transform)
-        let log2 = vDSP_Length(round(log2(Double(transform))))
-        log2n = log2
-        fftSetup = vDSP_create_fftsetup(log2, FFTRadix(kFFTRadix2))!
-        var hann = [Float](repeating: 0, count: window)
-        vDSP_hann_window(&hann, vDSP_Length(window), Int32(vDSP_HANN_NORM))
-        self.hann = hann
         pending.reserveCapacity(window + options.hopSize)
         fluxHistoryCap = max(8, Int(0.5 * rate / Double(options.hopSize)))
         // 46 ms of baseline: longer than scalloping, shorter than a note
         baselineHops = max(1, Int(0.046 * rate / Double(options.hopSize)))
         // the detector starts against silence, so a strike in its very first
         // frame is an attack and not a frame with nothing to compare to
-        let silence = [Float](repeating: 0, count: bins)
-        frames = [Analysed(magnitudes: silence, power: 0)]
-    }
-
-    deinit {
-        vDSP_destroy_fftsetup(fftSetup)
+        frames = [Analysed(magnitudes: [Float](repeating: 0, count: analyser.bins), power: 0)]
     }
 
     /// Feeds mono samples and returns every attack found in them, oldest
@@ -171,18 +215,17 @@ public final class InstantOnsetDetector {
         let window = options.windowSize
         let hop = options.hopSize
         var strikes: [Strike] = []
-        while pending.count >= window, pending.count >= hop {
+        while pending.count >= window {
             // one frame: the window's own start, which is where its centre is
             let frameStart = fedSamples - pending.count
             let frame = Array(pending[0..<window])
             let centre = Double(frameStart) / rate + Double(window) / 2 / rate
-            strikes.append(contentsOf: analyse(frame, centre: centre))
+            strikes.append(contentsOf: analyse(frame: frame, centre: centre))
             pending.removeFirst(hop)
         }
-        // a caller that stops feeding for a while must not keep a whole
-        // window of history alive in the pending buffer
+        // a caller that stops feeding for a while must not keep history alive
         if pending.count > window * 2 {
-            pending.removeFirst(pending.count - window)
+            pending.removeFirst(pending.count - window * 2)
         }
         return strikes
     }
@@ -193,14 +236,15 @@ public final class InstantOnsetDetector {
 
     // MARK: one frame
 
-    private func analyse(_ frame: [Float], centre: Double) -> [Strike] {
-        let magnitudes = spectrum(frame)
+    private func analyse(frame: [Float], centre: Double) -> [Strike] {
+        let magnitudes = analyser.magnitudes(frame)
         guard !magnitudes.isEmpty else { return [] }
         var power: Float = 0
-        for bin in 2..<bins { power += magnitudes[bin] * magnitudes[bin] }
+        for bin in 2..<analyser.bins { power += magnitudes[bin] * magnitudes[bin] }
 
         // Read against the frame a breath back, then remember this one.
         let baseline = frames.first ?? Analysed(magnitudes: magnitudes, power: power)
+        let voiceBaseline = baseline.magnitudes
         defer {
             frames.append(Analysed(magnitudes: magnitudes, power: power))
             if frames.count > baselineHops + 1 { frames.removeFirst() }
@@ -214,16 +258,12 @@ public final class InstantOnsetDetector {
         // read on the same scale.
         var flux: Float = 0
         var baselineEnergy: Float = 0
-        var riseSpectrum = [Float](repeating: 0, count: bins)
-        let lowestBin = max(1, Int(55 / binWidth))
-        let highestBin = min(bins - 2, Int(6000 / binWidth))
+        let lowestBin = max(1, Int(55 / analyser.binWidth))
+        let highestBin = min(analyser.bins - 2, Int(6000 / analyser.binWidth))
         for bin in lowestBin...highestBin {
             baselineEnergy += baseline.magnitudes[bin]
             let delta = magnitudes[bin] - baseline.magnitudes[bin]
-            if delta > 0 {
-                flux += delta
-                riseSpectrum[bin] = delta
-            }
+            if delta > 0 { flux += delta }
         }
         // a first strike out of silence divides by nothing: the ratio is
         // capped, because an uncapped one would sit in the median for half a
@@ -261,11 +301,9 @@ public final class InstantOnsetDetector {
                 print(String(format: "instant %.3f s: strike confirmed, voices %@", attack.centre,
                              attack.pitches.sorted().map(String.init).joined(separator: " ")))
             }
-            let velocity = attack.velocity
-            let at = attack.centre
             let confirmed = attack.pitches.sorted()
             return confirmed.map { pitch in
-                Strike(pitch: pitch, velocity: velocity, atSeconds: at, confidence: 1)
+                Strike(pitch: pitch, velocity: attack.velocity, atSeconds: attack.centre, confidence: 1)
             }
         }
 
@@ -273,20 +311,21 @@ public final class InstantOnsetDetector {
         guard flux > threshold, powerRise > options.powerRise else { return [] }
         guard centre - lastStrike >= options.refractorySeconds else { return [] }
         var peak: Float = 0
-        for bin in 2..<bins { peak = max(peak, magnitudes[bin]) }
+        for bin in 2..<analyser.bins { peak = max(peak, magnitudes[bin]) }
         let decibels = 20 * log10f(max(peak, 1e-7))
         guard decibels > options.floorDecibels else { return [] }
 
         // the voices are read from what *appeared*, not from everything that
         // is sounding: a note already ringing adds nothing to the rise, so it
         // cannot be reported as newly struck
-        let voices = pitches(in: riseSpectrum)
-        guard !voices.isEmpty else { return [] }
+        let riseSpectrum = rise(against: voiceBaseline, current: magnitudes)
+        let found = pitches(in: riseSpectrum)
+        guard !found.isEmpty else { return [] }
         lastStrike = centre
-        pendingAttack = Pending(baseline: baseline.magnitudes,
+        pendingAttack = Pending(baseline: voiceBaseline,
                                 centre: centre,
                                 velocity: velocity(of: peak),
-                                pitches: Set(voices.map(\.pitch)),
+                                pitches: Set(found.map(\.pitch)),
                                 checksLeft: max(1, options.confirmationFrames))
         // nothing leaves the detector unconfirmed
         return []
@@ -294,9 +333,10 @@ public final class InstantOnsetDetector {
 
     /// The magnitudes that appeared since `baseline`, in this frame.
     private func rise(against baseline: [Float], current: [Float]) -> [Float] {
-        var out = [Float](repeating: 0, count: bins)
-        let lowestBin = max(1, Int(55 / binWidth))
-        let highestBin = min(bins - 2, Int(6000 / binWidth))
+        var out = [Float](repeating: 0, count: analyser.bins)
+        let lowestBin = max(1, Int(55 / analyser.binWidth))
+        let highestBin = min(analyser.bins - 2, Int(6000 / analyser.binWidth))
+        guard lowestBin < highestBin else { return out }
         for bin in lowestBin...highestBin {
             let delta = current[bin] - baseline[bin]
             if delta > 0 { out[bin] = delta }
@@ -371,13 +411,13 @@ public final class InstantOnsetDetector {
 
     /// Every pitch's harmonic sum over one spectrum, strongest first.
     private func scores(in spectrum: [Float]) -> [(pitch: Int, score: Float)] {
-        let lowestBin = max(2, Int(55 / binWidth))
-        let highestBin = min(bins - 2, Int(2200 / binWidth))
+        let lowestBin = max(2, Int(55 / analyser.binWidth))
+        let highestBin = min(analyser.bins - 2, Int(2200 / analyser.binWidth))
         var out: [(pitch: Int, score: Float)] = []
         out.reserveCapacity(options.highestPitch - options.lowestPitch + 1)
-        for pitch in options.lowestPitch...options.highestPitch {
-            let f0 = 440 * pow(2, (Double(pitch) - 69) / 12)
-            let rootBin = Int((f0 / binWidth).rounded())
+        for pitchNumber in options.lowestPitch...options.highestPitch {
+            let f0 = 440 * pow(2, (Double(pitchNumber) - 69) / 12)
+            let rootBin = Int((f0 / analyser.binWidth).rounded())
             guard rootBin >= 2, rootBin < highestBin else { continue }
             let root = max(spectrum[rootBin - 1], spectrum[rootBin], spectrum[rootBin + 1])
             guard root > 0 else { continue }
@@ -386,8 +426,8 @@ public final class InstantOnsetDetector {
             for harmonic in 2...options.harmonics {
                 let f = f0 * Double(harmonic)
                 guard f < 6000 else { break }
-                let bin = Int((f / binWidth).rounded())
-                guard bin >= lowestBin, bin < bins - 1 else { break }
+                let bin = Int((f / analyser.binWidth).rounded())
+                guard bin >= lowestBin, bin < analyser.bins - 1 else { break }
                 let partial = max(spectrum[bin - 1], spectrum[bin], spectrum[bin + 1])
                 score += partial / Float(harmonic * harmonic)
                 strongest = max(strongest, partial)
@@ -397,25 +437,25 @@ public final class InstantOnsetDetector {
             if root < strongest * 0.25 {
                 score *= root / max(strongest * 0.25, 1e-9)
             }
-            out.append((pitch, score))
+            out.append((pitchNumber, score))
         }
         return out.sorted { $0.score > $1.score }
     }
 
     /// How many of a pitch's partials are actually in the spectrum: a real
     /// string has a ladder of them, a coincidence has one or two.
-    private func harmonics(in spectrum: [Float], pitch: Int) -> Int {
-        let f0 = 440 * pow(2, (Double(pitch) - 69) / 12)
-        let rootBin = Int((f0 / binWidth).rounded())
-        guard rootBin >= 2, rootBin < bins - 1 else { return 0 }
+    private func harmonics(in spectrum: [Float], pitch pitchNumber: Int) -> Int {
+        let f0 = 440 * pow(2, (Double(pitchNumber) - 69) / 12)
+        let rootBin = Int((f0 / analyser.binWidth).rounded())
+        guard rootBin >= 2, rootBin < analyser.bins - 1 else { return 0 }
         let root = max(spectrum[rootBin - 1], spectrum[rootBin], spectrum[rootBin + 1])
         guard root > 0 else { return 0 }
         var count = 1
         for harmonic in 2...options.harmonics {
             let f = f0 * Double(harmonic)
             guard f < 6000 else { break }
-            let bin = Int((f / binWidth).rounded())
-            guard bin >= 1, bin < bins - 1 else { break }
+            let bin = Int((f / analyser.binWidth).rounded())
+            guard bin >= 1, bin < analyser.bins - 1 else { break }
             if max(spectrum[bin - 1], spectrum[bin], spectrum[bin + 1]) >= root * 0.15 { count += 1 }
         }
         return count
@@ -423,45 +463,15 @@ public final class InstantOnsetDetector {
 
     /// Takes a voice's partials out of a working spectrum, so the next voice
     /// cannot be read from energy that voice already explained.
-    private func damp(_ spectrum: inout [Float], pitch: Int) {
-        let f0 = 440 * pow(2, (Double(pitch) - 69) / 12)
+    private func damp(_ spectrum: inout [Float], pitch pitchNumber: Int) {
+        let f0 = 440 * pow(2, (Double(pitchNumber) - 69) / 12)
         for harmonic in 1...options.harmonics {
             let f = f0 * Double(harmonic)
             guard f < 6000 else { break }
-            let centre = Int((f / binWidth).rounded())
-            for bin in max(0, centre - 2)...min(bins - 1, centre + 2) {
+            let centre = Int((f / analyser.binWidth).rounded())
+            for bin in max(0, centre - 2)...min(analyser.bins - 1, centre + 2) {
                 spectrum[bin] *= 0.12
             }
         }
-    }
-
-    // MARK: the spectrum
-
-    private func spectrum(_ frame: [Float]) -> [Float] {
-        let window = options.windowSize
-        let transform = window * 2
-        guard frame.count == window else { return [] }
-        var windowed = [Float](repeating: 0, count: transform)
-        vDSP_vmul(frame, 1, hann, 1, &windowed, 1, vDSP_Length(window))
-        var real = [Float](repeating: 0, count: transform / 2)
-        var imaginary = [Float](repeating: 0, count: transform / 2)
-        var magnitudes = [Float](repeating: 0, count: bins)
-        real.withUnsafeMutableBufferPointer { realPointer in
-            imaginary.withUnsafeMutableBufferPointer { imaginaryPointer in
-                var split = DSPSplitComplex(realp: realPointer.baseAddress!,
-                                            imagp: imaginaryPointer.baseAddress!)
-                windowed.withUnsafeBufferPointer { input in
-                    input.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: transform / 2) { pointer in
-                        vDSP_ctoz(pointer, 2, &split, 1, vDSP_Length(transform / 2))
-                    }
-                }
-                vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
-                vDSP_zvabs(&split, 1, &magnitudes, 1, vDSP_Length(transform / 2))
-            }
-        }
-        // vDSP packs Nyquist into the real part of bin 0 and leaves the last
-        // bin short by one; both are outside any pitch this looks for
-        magnitudes[bins - 1] = abs(magnitudes[0])
-        return magnitudes
     }
 }

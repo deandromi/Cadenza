@@ -43,6 +43,16 @@ final class TranscriptionEngine: ObservableObject {
     /// decode's own latency, so a slow machine does not turn real notes into
     /// phantoms, and short enough that a wrong one is not heard for long.
     static let provisionalLife: Double = 3.0
+    /// The tap's chunk. Small enough that a strike is not waiting for audio
+    /// that has already been played, large enough that the callback stays
+    /// cheap: 1024 frames is 21 ms at 48 kHz.
+    static let tapBuffer: AVAudioFrameCount = 1024
+    /// How far behind the live edge a guess was when it left the detector.
+    /// Debug only, but it is the number the whole path is judged by.
+    private var instantDelays: [Double] = []
+    /// how many guesses the decode agreed with, and how many it let go
+    private var provisionalConfirmed = 0
+    private var provisionalExpired = 0
     /// Room floor for the silence skip: about -56 dBFS, under a piano's
     /// quietest note and above a quiet room's noise.
     static let silencePeak: Float = 0.0016
@@ -190,9 +200,12 @@ final class TranscriptionEngine: ObservableObject {
             currentChord = nil
             noteCount = 0
             input.removeTap(onBus: 0)
-            // 4096 frames: the tap chunk bounds how long the ring waits for
-            // its trailing edge; smaller buffers only add callback overhead
-            input.installTap(onBus: 0, bufferSize: 4096, format: format) { @Sendable [tapState] buffer, _ in
+            // 1024 frames (21 ms at 48 kHz): the chunk is the first delay a
+            // strike meets, because the ring only learns about audio when the
+            // buffer arrives. Measured on the live chain, 4096 frames costs
+            // 15 ms of median and 40 ms at the p90 against this; the extra
+            // callbacks (47 a second instead of 12) are allocation-free.
+            input.installTap(onBus: 0, bufferSize: Self.tapBuffer, format: format) { @Sendable [tapState] buffer, _ in
                 // InstallTap's block is the plain ObjC type, so without
                 // @Sendable this closure literal would inherit the enclosing
                 // @MainActor isolation and trap when AVFoundation calls it
@@ -270,6 +283,9 @@ final class TranscriptionEngine: ObservableObject {
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         isRunning = false
+        if Self.verbose {
+            print("[instant] \(provisionalConfirmed) guesses agreed with, \(provisionalExpired) taken back")
+        }
         if Self.verbose, skippedWindows > 0 {
             print("[engine] skipped \(skippedWindows) silent windows, no decode spent on them")
         }
@@ -309,7 +325,15 @@ final class TranscriptionEngine: ObservableObject {
     /// with it, or until it is too old to be believed.
     private func heardInstantly(_ strikes: [InstantOnsetDetector.Strike]) {
         guard isRunning else { return }
+        let edge = tapState.receivedSeconds() + Double(Self.tapBuffer) / tapState.deviceRate()
         for strike in strikes {
+            instantDelays.append(edge - strike.atSeconds)
+            if instantDelays.count > 40 { instantDelays.removeFirst() }
+            if Self.verbose, instantDelays.count % 10 == 0 {
+                let sorted = instantDelays.sorted()
+                print(String(format: "[instant] guess lands %.0f ms behind the live edge (median of %d)",
+                             sorted[sorted.count / 2] * 1000, sorted.count))
+            }
             guard provisional[strike.pitch] == nil else { continue }
             provisional[strike.pitch] = (onset: strike.atSeconds, at: Date())
             let event = NoteEvent(pitch: strike.pitch,
@@ -329,9 +353,25 @@ final class TranscriptionEngine: ObservableObject {
         for (pitch, guess) in provisional where pitch == event.pitch
             && abs(guess.onset - event.onset) < 0.45 {
             provisional.removeValue(forKey: pitch)
+            provisionalConfirmed += 1
             return true
         }
         return false
+    }
+
+    /// The decode has spoken about the moment a guess belongs to, and did not
+    /// name that key: the guess was wrong, so it is taken back now rather than
+    /// left on a keyboard (or in a DAW) until it expires. The decode's word is
+    /// what the sheet and the file are made of, so a guess it does not confirm
+    /// is not worth defending.
+    private func settleProvisional(_ event: NoteEvent) {
+        for (pitch, guess) in provisional where abs(guess.onset - event.onset) < 0.30 {
+            provisional.removeValue(forKey: pitch)
+            provisionalExpired += 1
+            let released = NoteEvent(pitch: pitch, velocity: 64, onset: guess.onset,
+                                     duration: max(0.05, event.onset - guess.onset))
+            onNoteEvent?(released, .released)
+        }
     }
 
     /// Guesses the decode never confirmed are let go: the key lifts, the MIDI
@@ -487,6 +527,7 @@ final class TranscriptionEngine: ObservableObject {
             let kind: NoteEventKind
             switch emission.kind {
             case .struck:
+                settleProvisional(emission.event)
                 kind = .struck
                 if claimProvisional(emission.event) { continue }
             case .extended: kind = .extended

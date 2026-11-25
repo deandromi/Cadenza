@@ -71,13 +71,16 @@ the strike while the window is still decoding. The decode then agrees or
 does not: a confirmed guess is not announced twice, and a guess the decode
 never confirms is let go after three seconds.
 
-Measured on the synthesized reference takes, with the guess checked against
-the MIDI it came from: median 89–100 ms, p90 ≤ 107 ms, best 41 ms. Of the
-guesses, 95% and 97% are right on Hey Bulldog and Debussy, 79% on the Satie,
-which is dense enough that one frame often holds six notes. Recall of the
-guesses is 54–63%: a chord too dense to name from one frame is left to the
-decode rather than guessed at, because a wrong note in a DAW costs more than
-a late right one.
+Measured through the whole chain as the app runs it — the synthesized take
+delivered in the tap's own 1024-frame buffers, the real reader polling every
+10 ms: median 84–96 ms, p90 102–129 ms, best 58 ms. (With the 4096-frame tap
+it was 103 ms median and 142 ms at the p90, so the buffer is part of the
+budget, not an implementation detail.) Of the guesses, 87–95% are right on
+the Satie and Debussy takes, 71% on Hey Bulldog; recall is 35–55%, because a
+chord too dense for one frame is left to the decode rather than guessed at.
+
+A guess the decode contradicts is taken back at once rather than left
+standing for its three seconds, so a wrong key does not hang in a DAW.
 
 ### Next up, in order
 
