@@ -1,0 +1,467 @@
+import Accelerate
+import Foundation
+
+/// The first note of a strike, read from the signal instead of the model.
+///
+/// The neural decode is the authority on what was played, and it cannot be
+/// faster than one window: about 0.8 s of backbone over sixteen seconds of
+/// audio. That is the floor of the pipeline, and it is far above what a
+/// player feels as immediate. So the strike is taken twice: this detector
+/// reads the attack from the newest few milliseconds of audio and reports a
+/// first guess within one hop, and the decode follows later with the note
+/// the sheet and the MIDI file are actually made of.
+///
+/// What it reports is a *strike*, not a note: pitch, force and when the key
+/// moved. Length is not its business — it only sees the attack — so callers
+/// must treat the guess as provisional and let the decode settle it.
+///
+/// The method is the plain one from the onset-detection literature: spectral
+/// flux over a short-time spectrum, an adaptive threshold from the median of
+/// the last half second, and harmonic summation for the pitches of the
+/// attack. Piano strings are rich in harmonics and struck in groups, so the
+/// detector takes up to four pitches per attack and never more.
+public final class InstantOnsetDetector {
+    /// One attacked pitch.
+    public struct Strike: Equatable, Sendable {
+        public var pitch: Int
+        public var velocity: Int
+        /// Content seconds of the attack, the centre of the frame it fell in.
+        public var atSeconds: Double
+        /// How far the pitch's harmonic sum stood above the runner-up, 0…1.
+        /// A clean single note is well above a chord's third voice.
+        public var confidence: Double
+        public init(pitch: Int, velocity: Int, atSeconds: Double, confidence: Double) {
+            self.pitch = pitch
+            self.velocity = velocity
+            self.atSeconds = atSeconds
+            self.confidence = confidence
+        }
+    }
+
+    public struct Options: Sendable {
+        /// 93 ms at 44.1 kHz: the attack is still an edge, and the spectrum
+        /// is fine enough to tell C from C sharp, which 46 ms is not.
+        public var windowSize = 4096
+        /// 11.6 ms: one hop is the detector's whole latency budget.
+        public var hopSize = 512
+        /// The lowest and highest pitch a strike is taken for.
+        public var lowestPitch = 24
+        public var highestPitch = 103
+        /// Harmonics summed per candidate.
+        public var harmonics = 12
+        /// A pitch needs this share of the strongest candidate to be reported
+        /// as another voice of the same attack.
+        public var voiceShare: Float = 0.30
+        /// An attack this soon after the previous one is the same attack still
+        /// ringing, not a new one.
+        public var refractorySeconds = 0.055
+        /// A strike quieter than this is room tone.
+        public var floorDecibels: Float = -48
+        /// How much of the attack's new magnitude the winning note has to
+        /// explain before a guess is worth making. Spread-out energy is a
+        /// chord too dense to name from one frame, and guessing at it costs
+        /// more than waiting for the decode.
+        public var minimumDominance: Float = 0.03
+        /// Harmonics a voice needs in the rise before it is believed.
+        public var minimumHarmonics = 3
+        /// Frames that have to agree with an attack before its notes leave
+        /// the app. Two hops is 23 ms, and it removes most coincidences.
+        public var confirmationFrames = 2
+        /// The flux has to beat the median of the last half second by this
+        /// factor to count as an attack rather than a swell.
+        public var thresholdFactor: Float = 1.8
+        /// The least new magnitude, as a share of the frame a breath back,
+        /// that can still be called an attack: below it the spectrum is just
+        /// settling.
+        public var minimumFlux: Float = 0.35
+        /// How much louder the frame has to be than the one 46 ms back. A
+        /// struck string raises the energy; a ringing one only ever loses it.
+        /// The margin is small on purpose: a new note over a note still
+        /// sounding raises the total by less than it would in silence.
+        public var powerRise: Float = 1.2
+        public init() {}
+    }
+
+    /// Whether every candidate attack is logged: CADENZA_INSTANT_DEBUG=1.
+    static let verbose = ProcessInfo.processInfo.environment["CADENZA_INSTANT_DEBUG"] != nil
+
+    private let rate: Double
+    private let options: Options
+    private let fftSetup: FFTSetup
+    private let log2n: vDSP_Length
+    private let hann: [Float]
+    private let binWidth: Double
+    private let bins: Int
+
+    /// One analysed frame, kept so a later frame can be read against it.
+    private struct Analysed {
+        let magnitudes: [Float]
+        let power: Float
+    }
+
+    /// the samples after the last processed hop, still to be framed
+    private var pending: [Float] = []
+    /// how many samples have been handed to the detector in total
+    private var fedSamples = 0
+    /// the last few frames. An attack is read against the frame four hops
+    /// back (46 ms), not the one before it: a tone's partials drift in and out
+    /// of the window's scalloping from hop to hop, and that ripple would
+    /// otherwise fire on a note that is merely still ringing.
+    private var frames: [Analysed] = []
+    /// how far back the flux is read
+    private let baselineHops: Int
+    /// the recent flux history, for the adaptive median
+    private var fluxHistory: [Float] = []
+    private var fluxHistoryCap: Int
+    /// content seconds of the last attack, for the refractory
+    private var lastStrike: Double = -.infinity
+    /// an attack whose voices are still being checked against the frames that
+    /// follow it
+    private var pendingAttack: Pending?
+
+    /// An attack is named twice: once from the frame it landed in, then again
+    /// from the frames after it, read against the same baseline. A pitch that
+    /// only surfaced because two spectra happened to differ does not survive
+    /// the second reading; a struck string does. The check costs a couple of
+    /// hops, and buys a guess that can be trusted to leave the app.
+    private struct Pending {
+        let baseline: [Float]
+        let centre: Double
+        let velocity: Int
+        var pitches: Set<Int>
+        var checksLeft: Int
+    }
+
+    public init(rate: Double = 44100, options: Options = Options()) {
+        self.rate = rate
+        self.options = options
+        let window = options.windowSize
+        // the transform is twice the window: zero padding buys half the bin
+        // width, which is what separates neighbouring semitones at C4
+        let transform = window * 2
+        bins = transform / 2 + 1
+        binWidth = rate / Double(transform)
+        let log2 = vDSP_Length(round(log2(Double(transform))))
+        log2n = log2
+        fftSetup = vDSP_create_fftsetup(log2, FFTRadix(kFFTRadix2))!
+        var hann = [Float](repeating: 0, count: window)
+        vDSP_hann_window(&hann, vDSP_Length(window), Int32(vDSP_HANN_NORM))
+        self.hann = hann
+        pending.reserveCapacity(window + options.hopSize)
+        fluxHistoryCap = max(8, Int(0.5 * rate / Double(options.hopSize)))
+        // 46 ms of baseline: longer than scalloping, shorter than a note
+        baselineHops = max(1, Int(0.046 * rate / Double(options.hopSize)))
+        // the detector starts against silence, so a strike in its very first
+        // frame is an attack and not a frame with nothing to compare to
+        let silence = [Float](repeating: 0, count: bins)
+        frames = [Analysed(magnitudes: silence, power: 0)]
+    }
+
+    deinit {
+        vDSP_destroy_fftsetup(fftSetup)
+    }
+
+    /// Feeds mono samples and returns every attack found in them, oldest
+    /// first. Frames are cut on the detector's own grid, so a caller may push
+    /// buffers of any size, including one sample at a time.
+    public func push(_ samples: [Float]) -> [Strike] {
+        guard !samples.isEmpty else { return [] }
+        pending.append(contentsOf: samples)
+        fedSamples += samples.count
+        let window = options.windowSize
+        let hop = options.hopSize
+        var strikes: [Strike] = []
+        while pending.count >= window, pending.count >= hop {
+            // one frame: the window's own start, which is where its centre is
+            let frameStart = fedSamples - pending.count
+            let frame = Array(pending[0..<window])
+            let centre = Double(frameStart) / rate + Double(window) / 2 / rate
+            strikes.append(contentsOf: analyse(frame, centre: centre))
+            pending.removeFirst(hop)
+        }
+        // a caller that stops feeding for a while must not keep a whole
+        // window of history alive in the pending buffer
+        if pending.count > window * 2 {
+            pending.removeFirst(pending.count - window)
+        }
+        return strikes
+    }
+
+    public func push(_ samples: UnsafeBufferPointer<Float>) -> [Strike] {
+        push(Array(samples))
+    }
+
+    // MARK: one frame
+
+    private func analyse(_ frame: [Float], centre: Double) -> [Strike] {
+        let magnitudes = spectrum(frame)
+        guard !magnitudes.isEmpty else { return [] }
+        var power: Float = 0
+        for bin in 2..<bins { power += magnitudes[bin] * magnitudes[bin] }
+
+        // Read against the frame a breath back, then remember this one.
+        let baseline = frames.first ?? Analysed(magnitudes: magnitudes, power: power)
+        defer {
+            frames.append(Analysed(magnitudes: magnitudes, power: power))
+            if frames.count > baselineHops + 1 { frames.removeFirst() }
+        }
+
+        // Novelty: how much magnitude appeared that was not there a breath
+        // ago, read against the baseline's own size. Linear magnitudes, not
+        // logs, because a log spectrum is never quiet — the floor is where it
+        // stops — and that floor alone can outweigh a real attack. Dividing by
+        // the baseline makes it a ratio, so a loud passage and a quiet one are
+        // read on the same scale.
+        var flux: Float = 0
+        var baselineEnergy: Float = 0
+        var riseSpectrum = [Float](repeating: 0, count: bins)
+        let lowestBin = max(1, Int(55 / binWidth))
+        let highestBin = min(bins - 2, Int(6000 / binWidth))
+        for bin in lowestBin...highestBin {
+            baselineEnergy += baseline.magnitudes[bin]
+            let delta = magnitudes[bin] - baseline.magnitudes[bin]
+            if delta > 0 {
+                flux += delta
+                riseSpectrum[bin] = delta
+            }
+        }
+        // a first strike out of silence divides by nothing: the ratio is
+        // capped, because an uncapped one would sit in the median for half a
+        // second and deafen the detector to everything after it
+        flux = min(flux / max(baselineEnergy, 1e-6), 50)
+        guard flux > 0 else { return [] }
+        let threshold = max(options.minimumFlux, fluxThreshold())
+        fluxHistory.append(flux)
+        if fluxHistory.count > fluxHistoryCap { fluxHistory.removeFirst() }
+
+        // A swell spreads its energy, an attack multiplies it: the frame has
+        // to be markedly louder than the one a breath back. A tone still
+        // ringing under the pedal only ever gets quieter.
+        let powerRatio = power / max(baseline.power, 1e-12)
+        let powerRise = baseline.power < 1e-9 ? Float.infinity : powerRatio
+
+        if Self.verbose, flux > 0.05 {
+            print(String(format: "instant %.3f s: flux %.3f threshold %.3f power rise %.2f",
+                         centre, flux, threshold, powerRise))
+        }
+
+        // an attack being checked: this frame either agrees with it or not
+        if var attack = pendingAttack {
+            let check = rise(against: attack.baseline, current: magnitudes)
+            let seen = Set(pitches(in: check).map(\.pitch))
+            attack.pitches.formIntersection(seen)
+            attack.checksLeft -= 1
+            if attack.checksLeft > 0 {
+                pendingAttack = attack
+                return []
+            }
+            pendingAttack = nil
+            guard !attack.pitches.isEmpty else { return [] }
+            if Self.verbose {
+                print(String(format: "instant %.3f s: strike confirmed, voices %@", attack.centre,
+                             attack.pitches.sorted().map(String.init).joined(separator: " ")))
+            }
+            let velocity = attack.velocity
+            let at = attack.centre
+            let confirmed = attack.pitches.sorted()
+            return confirmed.map { pitch in
+                Strike(pitch: pitch, velocity: velocity, atSeconds: at, confidence: 1)
+            }
+        }
+
+        // an attack, not a swell; quiet frames never strike
+        guard flux > threshold, powerRise > options.powerRise else { return [] }
+        guard centre - lastStrike >= options.refractorySeconds else { return [] }
+        var peak: Float = 0
+        for bin in 2..<bins { peak = max(peak, magnitudes[bin]) }
+        let decibels = 20 * log10f(max(peak, 1e-7))
+        guard decibels > options.floorDecibels else { return [] }
+
+        // the voices are read from what *appeared*, not from everything that
+        // is sounding: a note already ringing adds nothing to the rise, so it
+        // cannot be reported as newly struck
+        let voices = pitches(in: riseSpectrum)
+        guard !voices.isEmpty else { return [] }
+        lastStrike = centre
+        pendingAttack = Pending(baseline: baseline.magnitudes,
+                                centre: centre,
+                                velocity: velocity(of: peak),
+                                pitches: Set(voices.map(\.pitch)),
+                                checksLeft: max(1, options.confirmationFrames))
+        // nothing leaves the detector unconfirmed
+        return []
+    }
+
+    /// The magnitudes that appeared since `baseline`, in this frame.
+    private func rise(against baseline: [Float], current: [Float]) -> [Float] {
+        var out = [Float](repeating: 0, count: bins)
+        let lowestBin = max(1, Int(55 / binWidth))
+        let highestBin = min(bins - 2, Int(6000 / binWidth))
+        for bin in lowestBin...highestBin {
+            let delta = current[bin] - baseline[bin]
+            if delta > 0 { out[bin] = delta }
+        }
+        return out
+    }
+
+    /// The threshold a flux has to beat: the median of the recent past, so a
+    /// loud passage does not deafen the detector and a quiet one does not
+    /// flood it with swell.
+    private func fluxThreshold() -> Float {
+        guard !fluxHistory.isEmpty else { return 0.6 }
+        let sorted = fluxHistory.sorted()
+        let median = sorted[sorted.count / 2]
+        return median * options.thresholdFactor
+    }
+
+    private func velocity(of peak: Float) -> Int {
+        // -48 dBFS is a whisper, -6 dBFS a fortissimo: the curve a player
+        // would draw from their own quietest to their loudest
+        let decibels = 20 * log10f(max(peak, 1e-7))
+        let share = min(1, max(0, (decibels - options.floorDecibels) / (61 - options.floorDecibels)))
+        return min(120, max(24, Int(24 + share * 96)))
+    }
+
+    /// The voices of one attack, read one at a time: the strongest pitch is
+    /// taken, its partials are damped in a working copy of the spectrum, and
+    /// the next voice is read from what is left. Reading them together is
+    /// what lets one note's partials vote for another note's fundamental, and
+    /// that vote always lands an octave or a twelfth away.
+    ///
+    /// A pitch scores on its own fundamental above all: a harmonic counts for
+    /// 1/h² of it, and a candidate whose root is missing is cut down to a
+    /// fraction, so a borrowed series cannot pass for a struck string.
+    private func pitches(in magnitudes: [Float]) -> [(pitch: Int, confidence: Double)] {
+        let opening = scores(in: magnitudes)
+        var riseTotal: Float = 0
+        for value in magnitudes { riseTotal += value }
+        if Self.verbose {
+            let top = opening.prefix(6).map { "\($0.pitch):\(String(format: "%.0f", $0.score))" }
+            print("instant candidates: \(top.joined(separator: " ")) rise \(String(format: "%.0f", riseTotal))")
+        }
+        guard let best = opening.first, best.score > 0 else { return [] }
+        // one frame cannot name a wash of energy; a struck string puts most of
+        // its attack into a handful of partials of one note
+        guard best.score >= options.minimumDominance * riseTotal else { return [] }
+        guard harmonics(in: magnitudes, pitch: best.pitch) >= options.minimumHarmonics else { return [] }
+        var chosen: [(pitch: Int, confidence: Double)] = [(best.pitch, 1)]
+        var work = magnitudes
+        damp(&work, pitch: best.pitch)
+        while chosen.count < 4 {
+            let round = scores(in: work)
+            var peaks: [Int: Float] = [:]
+            for candidate in round { peaks[candidate.pitch] = candidate.score }
+            guard let next = round.first(where: { candidate in
+                let share = candidate.score / best.score
+                guard share >= options.voiceShare else { return false }
+                guard harmonics(in: work, pitch: candidate.pitch) >= options.minimumHarmonics else { return false }
+                let left = peaks[candidate.pitch - 1] ?? 0
+                let right = peaks[candidate.pitch + 1] ?? 0
+                guard candidate.score >= left, candidate.score >= right else { return false }
+                return !chosen.contains { existing in
+                    let semitones = abs(existing.pitch - candidate.pitch)
+                    return semitones <= 1 || semitones == 12 || semitones == 19 || semitones == 24
+                }
+            }) else { break }
+            chosen.append((next.pitch, Double(min(1, next.score / best.score))))
+            damp(&work, pitch: next.pitch)
+        }
+        return chosen
+    }
+
+    /// Every pitch's harmonic sum over one spectrum, strongest first.
+    private func scores(in spectrum: [Float]) -> [(pitch: Int, score: Float)] {
+        let lowestBin = max(2, Int(55 / binWidth))
+        let highestBin = min(bins - 2, Int(2200 / binWidth))
+        var out: [(pitch: Int, score: Float)] = []
+        out.reserveCapacity(options.highestPitch - options.lowestPitch + 1)
+        for pitch in options.lowestPitch...options.highestPitch {
+            let f0 = 440 * pow(2, (Double(pitch) - 69) / 12)
+            let rootBin = Int((f0 / binWidth).rounded())
+            guard rootBin >= 2, rootBin < highestBin else { continue }
+            let root = max(spectrum[rootBin - 1], spectrum[rootBin], spectrum[rootBin + 1])
+            guard root > 0 else { continue }
+            var score = root
+            var strongest = root
+            for harmonic in 2...options.harmonics {
+                let f = f0 * Double(harmonic)
+                guard f < 6000 else { break }
+                let bin = Int((f / binWidth).rounded())
+                guard bin >= lowestBin, bin < bins - 1 else { break }
+                let partial = max(spectrum[bin - 1], spectrum[bin], spectrum[bin + 1])
+                score += partial / Float(harmonic * harmonic)
+                strongest = max(strongest, partial)
+            }
+            // a candidate without its own root is a harmonic of some other
+            // note, not a note being struck
+            if root < strongest * 0.25 {
+                score *= root / max(strongest * 0.25, 1e-9)
+            }
+            out.append((pitch, score))
+        }
+        return out.sorted { $0.score > $1.score }
+    }
+
+    /// How many of a pitch's partials are actually in the spectrum: a real
+    /// string has a ladder of them, a coincidence has one or two.
+    private func harmonics(in spectrum: [Float], pitch: Int) -> Int {
+        let f0 = 440 * pow(2, (Double(pitch) - 69) / 12)
+        let rootBin = Int((f0 / binWidth).rounded())
+        guard rootBin >= 2, rootBin < bins - 1 else { return 0 }
+        let root = max(spectrum[rootBin - 1], spectrum[rootBin], spectrum[rootBin + 1])
+        guard root > 0 else { return 0 }
+        var count = 1
+        for harmonic in 2...options.harmonics {
+            let f = f0 * Double(harmonic)
+            guard f < 6000 else { break }
+            let bin = Int((f / binWidth).rounded())
+            guard bin >= 1, bin < bins - 1 else { break }
+            if max(spectrum[bin - 1], spectrum[bin], spectrum[bin + 1]) >= root * 0.15 { count += 1 }
+        }
+        return count
+    }
+
+    /// Takes a voice's partials out of a working spectrum, so the next voice
+    /// cannot be read from energy that voice already explained.
+    private func damp(_ spectrum: inout [Float], pitch: Int) {
+        let f0 = 440 * pow(2, (Double(pitch) - 69) / 12)
+        for harmonic in 1...options.harmonics {
+            let f = f0 * Double(harmonic)
+            guard f < 6000 else { break }
+            let centre = Int((f / binWidth).rounded())
+            for bin in max(0, centre - 2)...min(bins - 1, centre + 2) {
+                spectrum[bin] *= 0.12
+            }
+        }
+    }
+
+    // MARK: the spectrum
+
+    private func spectrum(_ frame: [Float]) -> [Float] {
+        let window = options.windowSize
+        let transform = window * 2
+        guard frame.count == window else { return [] }
+        var windowed = [Float](repeating: 0, count: transform)
+        vDSP_vmul(frame, 1, hann, 1, &windowed, 1, vDSP_Length(window))
+        var real = [Float](repeating: 0, count: transform / 2)
+        var imaginary = [Float](repeating: 0, count: transform / 2)
+        var magnitudes = [Float](repeating: 0, count: bins)
+        real.withUnsafeMutableBufferPointer { realPointer in
+            imaginary.withUnsafeMutableBufferPointer { imaginaryPointer in
+                var split = DSPSplitComplex(realp: realPointer.baseAddress!,
+                                            imagp: imaginaryPointer.baseAddress!)
+                windowed.withUnsafeBufferPointer { input in
+                    input.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: transform / 2) { pointer in
+                        vDSP_ctoz(pointer, 2, &split, 1, vDSP_Length(transform / 2))
+                    }
+                }
+                vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
+                vDSP_zvabs(&split, 1, &magnitudes, 1, vDSP_Length(transform / 2))
+            }
+        }
+        // vDSP packs Nyquist into the real part of bin 0 and leaves the last
+        // bin short by one; both are outside any pitch this looks for
+        magnitudes[bins - 1] = abs(magnitudes[0])
+        return magnitudes
+    }
+}

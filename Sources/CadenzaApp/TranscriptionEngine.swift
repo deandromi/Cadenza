@@ -39,6 +39,10 @@ final class TranscriptionEngine: ObservableObject {
 
     /// Windows skipped because the audio under them was silent.
     private var skippedWindows = 0
+    /// How long a guess may stand before it is let go: longer than the
+    /// decode's own latency, so a slow machine does not turn real notes into
+    /// phantoms, and short enough that a wrong one is not heard for long.
+    static let provisionalLife: Double = 3.0
     /// Room floor for the silence skip: about -56 dBFS, under a piano's
     /// quietest note and above a quiet room's noise.
     static let silencePeak: Float = 0.0016
@@ -81,6 +85,17 @@ final class TranscriptionEngine: ObservableObject {
     private var absorbedEdge = WindowPlan.standard.streamingWarmup
     /// the streaming merge state: anchors, live notes, merged history
     private var merge = StreamingMerge(symbolCount: WindowGeometry.symbols.count)
+    /// The instantaneous path: strikes read from the newest audio while a
+    /// window is still decoding. Off with CADENZA_INSTANT=0, which is the
+    /// switch to reach for when a guess lands wrong and the decode alone is
+    /// wanted.
+    private var instantReader: InstantStrikeReader?
+    static let instantEnabled = ProcessInfo.processInfo.environment["CADENZA_INSTANT"] != "0"
+    /// The notes the instantaneous path has struck and the decode has not
+    /// answered yet, keyed by pitch: its guess at the onset, and when the
+    /// guess was made. A guess the decode never confirms is let go, so a
+    /// phantom cannot hang on the keyboard or in a DAW.
+    private var provisional: [Int: (onset: Double, at: Date)] = [:]
     /// when the current capture session began, for the silence watchdog
     private var captureStarted = Date()
 
@@ -192,6 +207,16 @@ final class TranscriptionEngine: ObservableObject {
             // its trailing edge has arrived, so decodes pipeline back to back
             // 100 ms: the tick only submits the next window when its trailing
             // edge has arrived, so tighter pacing trims the submission tail
+            if Self.instantEnabled {
+                // the same audio the model gets: tuning and gain already
+                // applied, at the ring's own rate
+                let reader = InstantStrikeReader(tapState: tapState, rate: tapState.deviceRate()) { strikes in
+                    Task { @MainActor [weak self] in self?.heardInstantly(strikes) }
+                }
+                reader.start()
+                instantReader = reader
+                provisional = [:]
+            }
             tickTimer = Clock.every(0.1) { [weak self] in self?.tick() }
             levelTimer = Clock.every(0.5) { [weak self] in
                 guard let self else { return }
@@ -199,6 +224,7 @@ final class TranscriptionEngine: ObservableObject {
                 self.meter = Self.meterLevel(of: self.level)
                 // the recording is written from here, never from the tap
                 self.tapState.drainRecording()
+                self.expireProvisional()
             }
             isRunning = true
             lastError = nil
@@ -234,6 +260,9 @@ final class TranscriptionEngine: ObservableObject {
 
     func stop() {
         guard isRunning else { return }
+        instantReader?.stop()
+        instantReader = nil
+        releaseProvisional()
         tickTimer?.invalidate()
         tickTimer = nil
         levelTimer?.invalidate()
@@ -272,6 +301,59 @@ final class TranscriptionEngine: ObservableObject {
     /// audio content captured so far this session, for diagnostics
     var capturedSeconds: Double {
         tapState.receivedSeconds()
+    }
+
+    /// A strike was heard in the newest audio, before any window decoded it:
+    /// report it now so the keys, the staff and the MIDI output follow the
+    /// hand rather than the model. It stays provisional until a decode agrees
+    /// with it, or until it is too old to be believed.
+    private func heardInstantly(_ strikes: [InstantOnsetDetector.Strike]) {
+        guard isRunning else { return }
+        for strike in strikes {
+            guard provisional[strike.pitch] == nil else { continue }
+            provisional[strike.pitch] = (onset: strike.atSeconds, at: Date())
+            let event = NoteEvent(pitch: strike.pitch,
+                                  velocity: strike.velocity,
+                                  onset: strike.atSeconds,
+                                  duration: Self.provisionalLife)
+            onNoteEvent?(event, .struck)
+        }
+    }
+
+    /// Whether a decoded strike has already been announced by the
+    /// instantaneous path: same key, close enough in time that it is the same
+    /// attack. The decode's note is what the file and the sheet are made of,
+    /// so it is still the one that lands in the history — only the second
+    /// announcement is dropped.
+    private func claimProvisional(_ event: NoteEvent) -> Bool {
+        for (pitch, guess) in provisional where pitch == event.pitch
+            && abs(guess.onset - event.onset) < 0.45 {
+            provisional.removeValue(forKey: pitch)
+            return true
+        }
+        return false
+    }
+
+    /// Guesses the decode never confirmed are let go: the key lifts, the MIDI
+    /// note ends, and nothing else refers to them.
+    private func expireProvisional() {
+        guard !provisional.isEmpty else { return }
+        let now = Date()
+        for (pitch, guess) in provisional where now.timeIntervalSince(guess.at) > Self.provisionalLife {
+            provisional.removeValue(forKey: pitch)
+            let event = NoteEvent(pitch: pitch, velocity: 64, onset: guess.onset,
+                                  duration: Self.provisionalLife)
+            onNoteEvent?(event, .released)
+        }
+    }
+
+    private func releaseProvisional() {
+        for (pitch, guess) in provisional {
+            let event = NoteEvent(pitch: pitch, velocity: 64, onset: guess.onset,
+                                  duration: max(0.05, Date().timeIntervalSince(guess.at)))
+            onNoteEvent?(event, .released)
+        }
+        provisional = [:]
     }
 
     /// One scheduled step: submit every window whose trailing edge has
@@ -404,7 +486,9 @@ final class TranscriptionEngine: ObservableObject {
         for emission in merge.absorb(result) {
             let kind: NoteEventKind
             switch emission.kind {
-            case .struck: kind = .struck
+            case .struck:
+                kind = .struck
+                if claimProvisional(emission.event) { continue }
             case .extended: kind = .extended
             case .released: kind = .released
             }

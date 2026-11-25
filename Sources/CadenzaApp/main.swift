@@ -165,6 +165,22 @@ if let index = CommandLine.arguments.firstIndex(of: "--probe-short"), CommandLin
     exit(0)
 }
 
+if let index = CommandLine.arguments.firstIndex(of: "--instant-latency"), CommandLine.arguments.count > index + 1 {
+    SmokeMain.runInstantLatency(
+        midiPath: CommandLine.arguments[index + 1],
+        rate: CommandLine.arguments.count > index + 2 ? Double(CommandLine.arguments[index + 2]) ?? 44100 : 44100,
+        maxSeconds: CommandLine.arguments.count > index + 3 ? Double(CommandLine.arguments[index + 3]) : nil
+    )
+    exit(0)
+}
+if let index = CommandLine.arguments.firstIndex(of: "--decode-bench"), CommandLine.arguments.count > index + 3 {
+    SmokeMain.runDecodeBench(
+        audioPath: CommandLine.arguments[index + 1],
+        deviceRate: Double(CommandLine.arguments[index + 2]) ?? 44100,
+        windows: Int(CommandLine.arguments[index + 3]) ?? 3
+    )
+    exit(0)
+}
 if let index = CommandLine.arguments.firstIndex(of: "--decode-dump"), CommandLine.arguments.count > index + 3 {
     SmokeMain.runDecodeDump(
         audioPath: CommandLine.arguments[index + 1],

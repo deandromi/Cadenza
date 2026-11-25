@@ -2045,6 +2045,80 @@ do {
            "C4 is ivory column 23 and F4 is column 26")
 }
 
+// MARK: the first guess at a strike
+
+// The instantaneous path has to name the key that was struck, from one or two
+// hops of audio, without inventing anything on silence and without firing
+// again on a note that is merely still sounding.
+do {
+    func tone(_ pitches: [Int], seconds: Double, rate: Double = 44100, amplitude: Double = 0.22) -> [Float] {
+        var out = [Float](repeating: 0, count: Int(seconds * rate))
+        for pitch in pitches {
+            let f = 440.0 * pow(2.0, Double(pitch - 69) / 12.0)
+            for i in 0..<out.count {
+                let t = Double(i) / rate
+                var s = 0.0
+                for h in 1...6 { s += sin(2.0 * Double.pi * f * Double(h) * t) / Double(h) }
+                let env = exp(-t / 1.2) * min(1.0, t / 0.004 + 0.02)
+                out[i] += Float(amplitude * env * s)
+            }
+        }
+        return out
+    }
+
+    func strikes(in samples: [Float], rate: Double = 44100, expecting: Int = 1) -> [InstantOnsetDetector.Strike] {
+        let detector = InstantOnsetDetector(rate: rate)
+        var found: [InstantOnsetDetector.Strike] = []
+        var index = 0
+        while index < samples.count {
+            let end = min(index + 512, samples.count)
+            found.append(contentsOf: detector.push(Array(samples[index..<end])))
+            index = end
+            if found.count >= expecting { break }
+        }
+        return found
+    }
+
+    let quiet = [Float](repeating: 0, count: 44100)
+    expect(strikes(in: quiet, expecting: 8).isEmpty, "a second of silence strikes nothing")
+
+    // C4 alone: the fundamental the player's hand is on.
+    let single = strikes(in: tone([60], seconds: 1.2))
+    expect(single.count == 1 && single.first?.pitch == 60,
+           "one C4 tone is one strike on 60: \(single.map(\.pitch))")
+    expect((single.first?.velocity ?? 0) >= 24, "a struck tone carries a force: \(single.first?.velocity ?? 0)")
+
+    // A chord lands together, so it is one attack with three voices.
+    let chord = strikes(in: tone([60, 64, 67], seconds: 1.2), expecting: 3)
+    let chordPitches = Set(chord.map(\.pitch))
+    expect(chordPitches.isSuperset(of: [60, 64, 67]),
+           "a C major chord names C, E and G: \(chordPitches.sorted())")
+    expect(chord.count == chordPitches.count || chordPitches.count >= 3,
+           "one attack reports each voice once: \(chord.map(\.pitch))")
+
+    // A ringing note is not a new attack: two seconds of the same tone is
+    // one strike, not a hundred.
+    let held = strikes(in: tone([67], seconds: 2.0), expecting: 6)
+    expect(held.count == 1, "a held G4 is struck once: \(held.count) strikes")
+    expect(abs((held.first?.atSeconds ?? 0) - 0.023) < 0.05,
+           "the strike lands within a hop of the attack: \(held.first?.atSeconds ?? -1) s")
+
+    let high = strikes(in: tone([72], seconds: 1.0))
+    expect(high.first?.pitch == 72, "a lone C5 is a strike on 72: \(high.map(\.pitch))")
+
+    // Two attacks, one after the other, in the order they were played.
+    var sequence = tone([60], seconds: 0.5)
+    sequence.append(contentsOf: [Float](repeating: 0, count: 2205))
+    sequence.append(contentsOf: tone([72], seconds: 0.6))
+    let both = strikes(in: sequence, expecting: 4)
+    let order = both.map(\.pitch)
+    expect(order.contains(60) && order.contains(72),
+           "C4 then C5 both arrive: \(order)")
+    expect(order.firstIndex(of: 60).map { first in
+        order.firstIndex(of: 72).map { $0 > first } ?? false
+    } ?? false, "the later note comes later: \(order)")
+}
+
 if failures == 0 {
     print("all \(checks) checks passed")
 } else {

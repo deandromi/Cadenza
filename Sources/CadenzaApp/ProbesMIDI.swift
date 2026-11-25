@@ -22,15 +22,35 @@ extension SmokeMain {
         }
         let limit = maxSeconds ?? .infinity
         let notes = file.notes.filter { $0.onset < limit }
+        let buffer = synthTones(notes, rate: rate, limit: limit)
+        let count = buffer.count
+        for note in notes {
+            print(String(format: "gt note: %d @%.3f-%.3f v%d", note.pitch, note.onset, note.onset + note.duration, note.velocity))
+        }
+        let data = Data(bytes: buffer, count: buffer.count * MemoryLayout<Float>.size)
+        do {
+            try data.write(to: URL(fileURLWithPath: out))
+            print("synth-midi: \(notes.count) notes -> \(out) (\(count) samples at \(Int(rate)) Hz)")
+        } catch {
+            print("synth-midi FAILED: \(error)")
+            exit(1)
+        }
+    }
+
+    /// The clean audio a probe can ask for: six decaying harmonics per note,
+    /// the same tone for --synth-midi and the latency probe, so the two never
+    /// drift apart.
+    static func synthTones(_ notes: [NoteEvent], rate: Double, limit: Double = .infinity) -> [Float] {
         let tail = 2.0
         let total = min(notes.map { $0.onset + $0.duration }.max() ?? 0, limit) + tail
         let count = Int(total * rate)
-        var buffer = [Float](repeating: 0, count: count)
+        var buffer = [Float](repeating: 0, count: max(count, 1))
         for note in notes {
             let freq = 440.0 * pow(2.0, (Double(note.pitch) - 69.0) / 12.0)
             let amp = Double(note.velocity) / 127.0 * 0.4
             let start = Int(note.onset * rate)
             let end = min(count, Int((note.onset + note.duration) * rate))
+            guard start < end else { continue }
             let dur = max(0.05, note.duration)
             let tau = min(1.8, max(0.25, dur * 0.6))
             var phase = 0.0
@@ -45,16 +65,8 @@ extension SmokeMain {
                 buffer[i] += Float(amp * env * s * 0.22)
                 phase += step
             }
-            print(String(format: "gt note: %d @%.3f-%.3f v%d", note.pitch, note.onset, note.onset + note.duration, note.velocity))
         }
-        let data = Data(bytes: buffer, count: buffer.count * MemoryLayout<Float>.size)
-        do {
-            try data.write(to: URL(fileURLWithPath: out))
-            print("synth-midi: \(notes.count) notes -> \(out) (\(count) samples at \(Int(rate)) Hz)")
-        } catch {
-            print("synth-midi FAILED: \(error)")
-            exit(1)
-        }
+        return buffer
     }
 
     /// The pedal round trip: a note struck and kept ringing by the pedal is

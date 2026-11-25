@@ -391,7 +391,128 @@ extension SmokeMain {
         }
     }
 
-    /// Prints the mel front end's view of one instant: the strongest bands
+    /// The instantaneous path's own number: --instant-latency <file.mid>
+    /// [rate] [maxSeconds]. The MIDI is ground truth, its tone is synthesized
+    /// the way --synth-midi does it, and the detector reads it in ten
+    /// millisecond chunks exactly as the live reader polls the ring. For every
+    /// true attack it prints how long after the attack the strike was
+    /// announced, which is the delay a player would feel between the key and
+    /// the note leaving the app.
+    static func runInstantLatency(midiPath: String, rate: Double, maxSeconds: Double?) {
+        guard let file = try? MidiReader.read(url: URL(fileURLWithPath: midiPath)) else {
+            print("instant-latency: cannot read \(midiPath)")
+            exit(1)
+        }
+        let limit = maxSeconds ?? .infinity
+        let notes = file.notes.filter { $0.onset < limit }
+        guard !notes.isEmpty else {
+            print("instant-latency: no notes")
+            exit(1)
+        }
+        let samples = synthTones(notes, rate: rate, limit: limit)
+        let detector = InstantOnsetDetector(rate: rate)
+        let chunk = Int(0.010 * rate)
+        // every true attack, by key: a strike is read against the nearest one
+        var attacks: [Int: [Double]] = [:]
+        for note in notes { attacks[note.pitch, default: []].append(note.onset) }
+        for pitch in attacks.keys { attacks[pitch]?.sort() }
+        var covered = Set<String>()
+        var fed = 0
+        var latencies: [Double] = []
+        var stray = 0
+        var repeats = 0
+        while fed < samples.count {
+            let end = min(fed + chunk, samples.count)
+            for strike in detector.push(Array(samples[fed..<end])) {
+                let announced = Double(end) / rate
+                guard let nearest = attacks[strike.pitch]?.min(by: {
+                    abs($0 - strike.atSeconds) < abs($1 - strike.atSeconds)
+                }), abs(nearest - strike.atSeconds) < 0.20 else {
+                    stray += 1
+                    continue
+                }
+                let key = "\(strike.pitch)@\(Int(nearest * 1000))"
+                if covered.contains(key) {
+                    repeats += 1
+                } else {
+                    covered.insert(key)
+                    latencies.append(announced - nearest)
+                }
+            }
+            fed = end
+        }
+        let missed = notes.count - covered.count
+        guard !latencies.isEmpty else {
+            print("instant-latency: no strike matched a true attack (\(stray) stray)")
+            exit(1)
+        }
+        let sorted = latencies.sorted()
+        let median = sorted[sorted.count / 2]
+        let p90 = sorted[Int(Double(sorted.count - 1) * 0.9)]
+        print(String(format: "instant-latency: %d attacks of %d found, %d missed, %d stray, %d repeated",
+                     covered.count, notes.count, missed, stray, repeats))
+        print(String(format: "instant-latency: median %.0f ms, p90 %.0f ms, best %.0f ms, worst %.0f ms",
+                     median * 1000, p90 * 1000, sorted.first! * 1000, sorted.last! * 1000))
+        let raw = zip(sorted, 0...).map { value, index in
+            String(format: "%d:%.0f", index, value * 1000)
+        }
+        print("instant-latency ms: \(raw.prefix(24).joined(separator: " "))")
+    }
+
+    /// Times a handful of window decodes and reports what the notebook sees:    /// Times a handful of window decodes and reports what the notebook sees:
+    /// --decode-bench <audio.f32> <rate> <windows>. The decode is the part of
+    /// the latency the pipeline cannot hide behind a step, so this is the
+    /// number that decides whether sub-second note delivery is possible at
+    /// all, and the number an A/B on compute units is read against.
+    static func runDecodeBench(audioPath: String, deviceRate: Double, windows: Int) {
+        guard let assets = AppDelegate.locateAssets() else {
+            print("decode-bench: model assets not found")
+            exit(1)
+        }
+        let context: InferenceContext
+        do {
+            context = try InferenceContext(tensorsDir: assets.tensors, modelURL: assets.model)
+        } catch {
+            print("decode-bench FAILED: \(error)")
+            exit(1)
+        }
+        let data = (try? Data(contentsOf: URL(fileURLWithPath: audioPath))) ?? Data()
+        let input = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        guard !input.isEmpty else {
+            print("decode-bench: no audio at \(audioPath)")
+            exit(1)
+        }
+        let plan = WindowPlan.standard
+        let tapState = AudioTapState()
+        tapState.reset(rate: deviceRate, plan: plan)
+        var fed = 0
+        var walls: [Double] = []
+        var notes = 0
+        let step = plan.stepWallSeconds
+        for index in 0..<windows {
+            let edge = plan.segmentSeconds + Double(index) * step
+            Self.feed(tapState, from: input, fed: &fed, upTo: Int((edge * deviceRate).rounded()))
+            guard let window = tapState.takeStreamWindow(edgeSeconds: edge) else { break }
+            let forced = Array(repeating: 0, count: WindowGeometry.symbols.count)
+            let start = CACurrentMediaTime()
+            guard let result = context.run(windowIndex: index, edgeSeconds: edge, samples: window,
+                                           deviceRate: deviceRate, forcedStartPos: forced, plan: plan) else {
+                print("decode-bench: decode \(index) failed")
+                break
+            }
+            let wall = CACurrentMediaTime() - start
+            walls.append(wall)
+            notes += result.events.filter { $0.hasOnset }.count
+            print(String(format: "decode-bench: window %d wall %.2f s, %d events", index, wall, result.events.count))
+        }
+        guard !walls.isEmpty else { exit(1) }
+        let sorted = walls.sorted()
+        let median = sorted[sorted.count / 2]
+        print(String(format: "decode-bench: %d windows, median %.2f s, min %.2f s, max %.2f s, %d strikes",
+                     walls.count, median, sorted.first!, sorted.last!, notes))
+    }
+
+    /// Prints the mel front end's view of one instant: the strongest bands    /// Prints the mel front end's view of one instant: the strongest bands
     /// and their values, so "no energy up there" can be separated from "the
     /// model ignores it". Usage: --mel-probe <audio.f32> <rate> <seconds>
     static func runMelProbe(audioPath: String, deviceRate: Double, at seconds: Double) {

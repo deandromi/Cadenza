@@ -303,6 +303,20 @@ final class AudioTapState: @unchecked Sendable {
         return out
     }
 
+    /// The newest model-path audio after `cursor`, for the instantaneous
+    /// strike detector. It reads forward only: audio that has already been
+    /// trimmed from the ring can no longer be guessed at, and skipping it is
+    /// what keeps the detector's own latency bounded.
+    func samples(after cursor: Int, limit: Int = 16384) -> (samples: [Float], end: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let newest = ringStart + ring.count
+        let from = max(cursor, ringStart)
+        guard newest > from else { return ([], cursor) }
+        let to = min(newest, from + limit)
+        return (Array(ring[(from - ringStart)..<(to - ringStart)]), to)
+    }
+
     /// Returns the streaming window ending at `edgeSeconds` content time,
     /// spanning `segmentSeconds` behind it, or nil while the edge has not
     /// arrived. Missing leading audio (the performance is younger than the

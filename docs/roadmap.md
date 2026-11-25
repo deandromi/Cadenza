@@ -60,6 +60,25 @@ conversion close to real time with near-perfect note capture.
   0.864, recall 0.963, F1 0.911, offset error median 0.14 s, latency median
   1.75 s, one 16 s window costing about 0.95 s (0.9 of it the backbone).
 
+### The strike before the decode (built 2026-11-25)
+
+The decode cannot be faster than one window: 0.8 s of backbone over sixteen
+seconds of audio, plus the step that carries the note into a window, is the
+1.75 s a player feels. So a note is now taken twice. `InstantOnsetDetector`
+reads the attack from the newest audio — a 93 ms frame every 11.6 ms, novelty
+against the frame 46 ms back, harmonic summation for the keys — and reports
+the strike while the window is still decoding. The decode then agrees or
+does not: a confirmed guess is not announced twice, and a guess the decode
+never confirms is let go after three seconds.
+
+Measured on the synthesized reference takes, with the guess checked against
+the MIDI it came from: median 89–100 ms, p90 ≤ 107 ms, best 41 ms. Of the
+guesses, 95% and 97% are right on Hey Bulldog and Debussy, 79% on the Satie,
+which is dense enough that one frame often holds six notes. Recall of the
+guesses is 54–63%: a chord too dense to name from one frame is left to the
+decode rather than guessed at, because a wrong note in a DAW costs more than
+a late right one.
+
 ### Next up, in order
 
 1. **A decode under half a second.** Latency is the step that carries a note
