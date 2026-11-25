@@ -71,9 +71,14 @@ the strike while the window is still decoding. The decode then agrees or
 does not: a confirmed guess is not announced twice, and a guess the decode
 never confirms is let go after three seconds.
 
+The analysis window no longer peaks in its middle: at 65% of its length it
+weighs the newest audio most, so a strike that has just arrived is heard from
+the same frame instead of waiting to drift toward the centre. That is worth
+8 ms of median and 5–15 ms at the p90 from identical audio.
+
 Measured through the whole chain as the app runs it — the synthesized take
 delivered in the tap's own 512-frame buffers, the real reader polling every
-5 ms: median 76–91 ms, p90 116–130 ms, best 52 ms. Every millisecond of it
+5 ms: median 68–85 ms, p90 111–119 ms, best 52 ms. Every millisecond of it
 is accounted for: 11 ms of tap chunk, 5 ms of poll, up to a hop of 11.6 ms,
 the frame filling (23–46 ms) and the two hops that confirm the notes. The tap
 mattered more than expected — 4096 frames cost 20 ms of median and 50 ms at

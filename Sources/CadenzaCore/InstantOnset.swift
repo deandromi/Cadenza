@@ -46,6 +46,12 @@ public final class InstantOnsetDetector {
         /// attack has not reached the middle of yet, and loses more to wrong
         /// pitches than it gains in milliseconds.
         public var windowSize = 4096
+        /// Where the analysis window peaks, as a fraction of its length. A
+        /// symmetric window peaks in the middle, so an attack that has just
+        /// arrived — at the trailing edge — weighs almost nothing and is
+        /// heard only once it has moved toward the middle. Leaning the peak
+        /// toward the newest audio hears it sooner from the same frame.
+        public var windowPeak: Double = 0.65
         /// 11.6 ms: one hop is the detector's whole latency budget.
         public var hopSize = 512
         /// The lowest and highest pitch a strike is taken for.
@@ -98,7 +104,7 @@ public final class InstantOnsetDetector {
         private let log2n: vDSP_Length
         private let hann: [Float]
 
-        init(size: Int, rate: Double) {
+        init(size: Int, rate: Double, peak: Double) {
             self.size = size
             // the transform is twice the window: zero padding buys half the
             // bin width, which is what separates neighbouring semitones
@@ -108,9 +114,20 @@ public final class InstantOnsetDetector {
             let log2 = vDSP_Length(round(log2(Double(transform))))
             log2n = log2
             setup = vDSP_create_fftsetup(log2, FFTRadix(kFFTRadix2))!
-            var hann = [Float](repeating: 0, count: size)
-            vDSP_hann_window(&hann, vDSP_Length(size), Int32(vDSP_HANN_NORM))
-            self.hann = hann
+            // a raised cosine peaking where `peak` asks: 0.5 of the window is
+            // the plain Hann, higher leans it toward the newest audio
+            var window = [Float](repeating: 0, count: size)
+            let peakIndex = min(max(Int(Double(size) * peak), 1), size - 2)
+            for index in 0..<size {
+                let phase: Double
+                if index <= peakIndex {
+                    phase = Double(index) / Double(peakIndex)
+                } else {
+                    phase = Double(size - 1 - index) / Double(size - 1 - peakIndex)
+                }
+                window[index] = Float(0.5 - 0.5 * cos(Double.pi * phase))
+            }
+            self.hann = window
         }
 
         deinit {
@@ -194,7 +211,7 @@ public final class InstantOnsetDetector {
     public init(rate: Double = 44100, options: Options = Options()) {
         self.rate = rate
         self.options = options
-        analyser = FrameSpectrum(size: options.windowSize, rate: rate)
+        analyser = FrameSpectrum(size: options.windowSize, rate: rate, peak: options.windowPeak)
         let window = options.windowSize
         pending.reserveCapacity(window + options.hopSize)
         fluxHistoryCap = max(8, Int(0.5 * rate / Double(options.hopSize)))
@@ -219,7 +236,7 @@ public final class InstantOnsetDetector {
             // one frame: the window's own start, which is where its centre is
             let frameStart = fedSamples - pending.count
             let frame = Array(pending[0..<window])
-            let centre = Double(frameStart) / rate + Double(window) / 2 / rate
+            let centre = Double(frameStart) / rate + Double(window) * options.windowPeak / rate
             strikes.append(contentsOf: analyse(frame: frame, centre: centre))
             pending.removeFirst(hop)
         }
