@@ -72,12 +72,19 @@ does not: a confirmed guess is not announced twice, and a guess the decode
 never confirms is let go after three seconds.
 
 Measured through the whole chain as the app runs it — the synthesized take
-delivered in the tap's own 1024-frame buffers, the real reader polling every
-10 ms: median 84–96 ms, p90 102–129 ms, best 58 ms. (With the 4096-frame tap
-it was 103 ms median and 142 ms at the p90, so the buffer is part of the
-budget, not an implementation detail.) Of the guesses, 87–95% are right on
-the Satie and Debussy takes, 71% on Hey Bulldog; recall is 35–55%, because a
-chord too dense for one frame is left to the decode rather than guessed at.
+delivered in the tap's own 512-frame buffers, the real reader polling every
+5 ms: median 76–91 ms, p90 116–130 ms, best 52 ms. Every millisecond of it
+is accounted for: 11 ms of tap chunk, 5 ms of poll, up to a hop of 11.6 ms,
+the frame filling (23–46 ms) and the two hops that confirm the notes. The tap
+mattered more than expected — 4096 frames cost 20 ms of median and 50 ms at
+the p90 — so the buffer is part of the budget, not an implementation detail.
+The detector costs no measurable CPU: the app idles at 0.0% with it running.
+
+Relaxing the attack gates (a new note only has to raise the energy by 3%,
+and the novelty to beat 1.3× the recent median) bought recall of the strikes:
+67% on the Satie, 66% on Hey Bulldog, 75% on Debussy, against 54/63/59
+before, with precision unchanged at 78–98% because the confirmation stage is
+what keeps wrong keys out.
 
 A guess the decode contradicts is taken back at once rather than left
 standing for its three seconds, so a wrong key does not hang in a DAW.

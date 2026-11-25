@@ -73,16 +73,16 @@ public final class InstantOnsetDetector {
         public var confirmationFrames = 2
         /// The flux has to beat the median of the last half second by this
         /// factor to count as an attack rather than a swell.
-        public var thresholdFactor: Float = 1.8
+        public var thresholdFactor: Float = 1.3
         /// The least new magnitude, as a share of the frame a breath back,
         /// that can still be called an attack: below it the spectrum is just
         /// settling.
-        public var minimumFlux: Float = 0.35
+        public var minimumFlux: Float = 0.16
         /// How much louder the frame has to be than the one 46 ms back. A
         /// struck string raises the energy; a ringing one only ever loses it.
         /// The margin is small on purpose: a new note over a note still
         /// sounding raises the total by less than it would in silence.
-        public var powerRise: Float = 1.2
+        public var powerRise: Float = 1.03
         public init() {}
     }
 

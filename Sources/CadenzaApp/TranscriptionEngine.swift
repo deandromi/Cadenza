@@ -46,7 +46,7 @@ final class TranscriptionEngine: ObservableObject {
     /// The tap's chunk. Small enough that a strike is not waiting for audio
     /// that has already been played, large enough that the callback stays
     /// cheap: 1024 frames is 21 ms at 48 kHz.
-    static let tapBuffer: AVAudioFrameCount = 1024
+    static let tapBuffer: AVAudioFrameCount = 512
     /// How far behind the live edge a guess was when it left the detector.
     /// Debug only, but it is the number the whole path is judged by.
     private var instantDelays: [Double] = []
@@ -200,11 +200,11 @@ final class TranscriptionEngine: ObservableObject {
             currentChord = nil
             noteCount = 0
             input.removeTap(onBus: 0)
-            // 1024 frames (21 ms at 48 kHz): the chunk is the first delay a
+            // 512 frames (11 ms at 48 kHz): the chunk is the first delay a
             // strike meets, because the ring only learns about audio when the
-            // buffer arrives. Measured on the live chain, 4096 frames costs
-            // 15 ms of median and 40 ms at the p90 against this; the extra
-            // callbacks (47 a second instead of 12) are allocation-free.
+            // buffer arrives. Measured on the live chain: 4096 frames costs
+            // 20 ms of median and 50 ms at the p90 against this, 1024 costs
+            // about half that. 94 callbacks a second, still allocation-free.
             input.installTap(onBus: 0, bufferSize: Self.tapBuffer, format: format) { @Sendable [tapState] buffer, _ in
                 // InstallTap's block is the plain ObjC type, so without
                 // @Sendable this closure literal would inherit the enclosing

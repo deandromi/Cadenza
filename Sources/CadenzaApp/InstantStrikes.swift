@@ -10,10 +10,11 @@ import Foundation
 /// cursor of its own. A strike found here is a guess at the key and the
 /// force, not a note — the decode still decides what was played.
 final class InstantStrikeReader: @unchecked Sendable {
-    /// How often the newest audio is read. Ten milliseconds is under one
-    /// audio buffer and well under the detector's own hop, so the poll adds
-    /// nothing measurable to the strike.
-    static let interval: Double = 0.010
+    /// How often the newest audio is read. Five milliseconds is a fifth of a
+    /// hop, so the poll costs almost nothing and the strike never waits a
+    /// whole audio buffer for its turn. The detector's work is per hop, not
+    /// per poll, so polling twice as often does not double the cost.
+    static let interval: Double = 0.005
 
     private let tapState: AudioTapState
     private let detector: InstantOnsetDetector
